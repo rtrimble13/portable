@@ -694,3 +694,116 @@ def test_a_dry_run_writes_nothing_but_shows_the_real_effects(
 
     lots = run_pt("--port", port, "lot", "list", "AAPL", "--as-of", "2025-03-01").data
     assert D(lots["rows"][0]["quantity"]) == D("100"), "nothing was written"
+
+
+def test_holdings_grouping_aggregates_and_totals_agree(
+    run_pt: CliRunner, portfolio: Path
+) -> None:
+    """`--by` groups rather than being accepted and ignored.
+
+    A flag that is accepted and does nothing is worse than one that does not
+    exist, because the output looks like it honoured the request.
+    """
+    port = str(portfolio)
+    run_pt(
+        "--port",
+        port,
+        "instrument",
+        "add",
+        "AAPL",
+        "--type",
+        "equity",
+        "--sector",
+        "Technology",
+    )
+    run_pt(
+        "--port",
+        port,
+        "instrument",
+        "add",
+        "MSFT",
+        "--type",
+        "equity",
+        "--sector",
+        "Technology",
+    )
+    run_pt(
+        "--port",
+        port,
+        "buy",
+        "AAPL",
+        "--qty",
+        "100",
+        "--price",
+        "150.00",
+        "--date",
+        "2024-01-03",
+        "-a",
+        "B",
+    )
+    run_pt(
+        "--port",
+        port,
+        "buy",
+        "MSFT",
+        "--qty",
+        "50",
+        "--price",
+        "400.00",
+        "--date",
+        "2024-01-03",
+        "-a",
+        "B",
+    )
+    run_pt(
+        "--port",
+        port,
+        "price",
+        "set",
+        "AAPL",
+        "--price",
+        "200.00",
+        "--date",
+        "2024-06-30",
+        "--valuation-level",
+        "1",
+    )
+    run_pt(
+        "--port",
+        port,
+        "price",
+        "set",
+        "MSFT",
+        "--price",
+        "450.00",
+        "--date",
+        "2024-06-30",
+        "--valuation-level",
+        "1",
+    )
+
+    ungrouped = run_pt("--port", port, "holdings", "--as-of", "2024-06-30").data
+    by_sector = run_pt(
+        "--port", port, "holdings", "--as-of", "2024-06-30", "--by", "sector"
+    ).data
+
+    assert len(ungrouped["rows"]) == 3, "AAPL, MSFT, CASH"
+    # Technology and the unclassified cash row.
+    assert len(by_sector["rows"]) == 2
+    technology = next(r for r in by_sector["rows"] if r["symbol"] == "Technology")
+    assert technology["holdings"] == 2
+    assert D(technology["market_value"]) == D("42500.00")
+
+    # The totals must agree, or the grouping has lost or invented a holding.
+    assert D(ungrouped["total_market_value"]) == D(by_sector["total_market_value"])
+    assert sum(D(r["market_value"]) for r in by_sector["rows"]) == D(
+        ungrouped["total_market_value"]
+    )
+
+
+def test_an_unknown_grouping_is_refused(run_pt: CliRunner, portfolio: Path) -> None:
+    failed = run_pt("--port", str(portfolio), "holdings", "--by", "nonsense", expect=4)
+    assert (
+        "account, position, instrument, sector, asset-class"
+        in (failed.json()["error"]["remedy"])
+    )

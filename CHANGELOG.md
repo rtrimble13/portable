@@ -51,3 +51,44 @@ Two rules specific to this repository:
 ## [0.1.0] — unreleased
 
 Initial release: `portable_core`, the `.port` format, and `pt`.
+
+### Core
+
+- **Domain model** — portfolios, accounts, positions that span instruments,
+  lots, and an append-only transaction ledger. Frozen dataclasses with a
+  runtime guard that rejects a `float` in any money field.
+- **Schema**, 30 tables, including all ten `PORT-GIPS` §5.1 objects in the first
+  version rather than retrofitted. `UPDATE` and `DELETE` on `transaction` abort
+  by trigger; a fee with a `NULL` `fee_class` is rejected;
+  `benchmark.return_type` is `NOT NULL` with no default.
+- **Decimal boundary** — canonical `TEXT` storage, one arithmetic context, and
+  largest-remainder allocation so a split total never loses a cent.
+- **Services** — `LotEngine` (six relief methods), `PositionEngine`,
+  `TaxEngine`, `CorporateActionEngine`, `ValuationEngine`, `ReplayEngine`, and
+  cash-flow classification as one level-aware function.
+- **Formatters** — `table`, `json`, `markdown`, `csv`, with the two return rules
+  (`PORT-GIPS-B07`, `H04`) enforced where no call site can bypass them.
+- **Providers** — `FafnirProvider` (unadjusted prices only, no benchmark
+  capability), `FileProvider`, `NullProvider`, with capability protocols so a
+  partial provider's gaps are visible.
+- **Config** — five layers with provenance and secret redaction.
+- **Errors** — 38 stable codes and seven exit codes.
+
+### `pt`
+
+Portfolio, account, instrument, trading, cash, income, corporate action,
+options-lifecycle, pricing, valuation, position, lot, policy, reporting, query
+and introspect commands. Global flags work before *or* after the subcommand.
+
+### Documentation
+
+`architecture.md`, `domain-model.md`, `tax-methodology.md`, `port-format.md`,
+`schema.md` (generated), `market-data.md`, `output-formats.md`, `roadmap.md`,
+eleven ADRs, and a worked `examples/walkthrough.md` whose every command was run
+and whose output was checked.
+
+### Known gaps
+
+Tracked as issues, not hidden: wash-sale detection (v0.2, P0), several `pt`
+commands from the bootstrap surface, and `--offline` not yet enforced in the
+provider path.

@@ -306,8 +306,15 @@ make test-fast                # unit only — the pre-commit subset
 make cpp                      # configure, build, and run Catch2
 make schemas                  # regenerate + validate JSON Schemas
 make docs                     # regenerate docs/schema.md from DDL comments
+make fixtures                 # rebuild examples/sample.port from its generator
 make check                    # everything CI runs
 ```
+
+Also available: `make install`, `make format`, `make coverage`, `make clean`.
+
+`examples/sample.port` is **generated, not hand-crafted** — a hand-made fixture
+drifts from what the code produces and quietly stops testing anything. Rebuild it
+with `make fixtures`; it is deterministic, so two runs produce identical bytes.
 
 The owner works on **Windows**. CI runs Linux and Windows. Do not introduce
 POSIX-only assumptions — paths, shell invocations, or line endings.
@@ -338,6 +345,22 @@ test that fails without your change.
 ---
 
 ## Reference
+
+- `docs/adr/` — **read this before redesigning anything.** The decisions the
+  bootstrap left open, each with its reasoning:
+
+  | ADR | Decision |
+  |---|---|
+  | 0002 | Raw SQL behind repositories, not an ORM |
+  | 0003 | Frozen dataclasses for domain objects, not Pydantic |
+  | 0004 | Instrument subtype detail tables, not a JSON column |
+  | 0005 | Decimal representation, storage, and the seven rounding boundaries |
+  | 0006 | fafnir access path — and the two capabilities it does not have |
+  | 0007 | Cash-flow classification as one level-aware function |
+  | 0008 | C++ optional extension, with a mandatory Python reference |
+  | 0009 | A position spans instruments; lots hang off legs |
+  | 0010 | Derived state, the replay contract, and what `pt rebuild` guarantees |
+  | 0011 | What the tax engine computes exactly, estimates, and refuses |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

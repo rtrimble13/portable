@@ -99,6 +99,13 @@ make check        # everything CI runs
   asserting on parsed JSON.
 - **Golden files** — so formatting regressions show up in a diff.
 
+**A note on the coverage number.** `portable_pt/commands/*` reports 0%. Those
+modules are *not* untested — `tests/integration` exercises them through the real
+CLI, as a subprocess, so that argument parsing and exit codes are covered too,
+and `coverage` does not follow into a subprocess by default. Do not "fix" the
+number by deleting the integration tests or by omitting the modules from the
+report; see issue #40.
+
 **Before declaring any task done:** `make check` is green, and any new invariant
 has a test that fails without your change.
 

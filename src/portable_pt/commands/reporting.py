@@ -126,22 +126,12 @@ def holdings(
                     (row_value / total) if isinstance(row_value, Decimal) and total else None
                 )
 
-        rows.sort(key=lambda r: (str(r["account"]), str(r["symbol"])))
+        rows = _group_holdings(rows, by)
 
         return CommandResult(
             command="holdings",
             table=Table(
-                columns=(
-                    Column("account", "Account"),
-                    Column("symbol", "Symbol"),
-                    Column("role", "Role"),
-                    Column("quantity", "Qty", ColumnKind.QUANTITY),
-                    Column("price", "Price", ColumnKind.PRICE),
-                    Column("market_value", "Market Value", ColumnKind.MONEY),
-                    Column("cost_basis", "Cost", ColumnKind.MONEY),
-                    Column("unrealized", "Unrealized", ColumnKind.MONEY),
-                    Column("weight", "Weight", ColumnKind.RATE),
-                ),
+                columns=_holdings_columns(by),
                 rows=tuple(rows),
                 title=f"Holdings as of {ctx.as_of.isoformat()}",
                 footnotes=(
@@ -157,6 +147,118 @@ def holdings(
         )
 
     dispatch(action)
+
+
+def _holdings_columns(by: str) -> tuple[Column, ...]:
+    """Columns that match the grouping.
+
+    A grouped row has no single quantity, price, or role, so those columns are
+    dropped rather than rendered empty -- an em dash in every cell of a column
+    invites the reader to wonder what is missing, when the answer is that the
+    question does not apply.
+    """
+    money = (
+        Column("market_value", "Market Value", ColumnKind.MONEY),
+        Column("cost_basis", "Cost", ColumnKind.MONEY),
+        Column("unrealized", "Unrealized", ColumnKind.MONEY),
+        Column("weight", "Weight", ColumnKind.RATE),
+    )
+    if by == "instrument":
+        return (
+            Column("account", "Account"),
+            Column("symbol", "Symbol"),
+            Column("role", "Role"),
+            Column("quantity", "Qty", ColumnKind.QUANTITY),
+            Column("price", "Price", ColumnKind.PRICE),
+            *money,
+        )
+    headers = {
+        "account": "Account",
+        "position": "Position",
+        "sector": "Sector",
+        "asset-class": "Asset Class",
+        "asset_class": "Asset Class",
+    }
+    return (
+        Column("symbol", headers.get(by, by.title())),
+        Column("holdings", "Holdings", ColumnKind.INTEGER),
+        *money,
+    )
+
+
+def _group_holdings(rows: list[dict[str, object]], by: str) -> list[dict[str, object]]:
+    """Aggregate holdings by the requested dimension.
+
+    `--by instrument` (the default) is the ungrouped view, one row per leg.
+    Anything else sums market value, cost and unrealized P&L into one row per
+    group, and blanks the fields that stop meaning anything once summed: a
+    group has no single quantity or price, and rendering the first member's is
+    worse than rendering nothing.
+    """
+    keys = {
+        "instrument": None,
+        "account": "account",
+        "position": "position_id",
+        "sector": "sector",
+        "asset-class": "asset_class",
+        "asset_class": "asset_class",
+    }
+    if by not in keys:
+        raise ValidationError(
+            f"unknown grouping {by!r}",
+            remedy="Choose one of: account, position, instrument, sector, asset-class.",
+            value=by,
+            choices=sorted(set(keys)),
+        )
+
+    key = keys[by]
+    if key is None:
+        return sorted(rows, key=lambda r: (str(r["account"]), str(r["symbol"])))
+
+    grouped: dict[str, dict[str, object]] = {}
+    with money_context():
+        for row in rows:
+            # An ungrouped attribute is "(unclassified)", not blank: a holding
+            # with no sector is a real holding and dropping it would make the
+            # totals disagree with `--by instrument`.
+            label = str(row.get(key) or "(unclassified)")
+            bucket = grouped.setdefault(
+                label,
+                {
+                    by: label,
+                    "account": label if key == "account" else None,
+                    "symbol": label,
+                    "role": None,
+                    "quantity": None,
+                    "price": None,
+                    "market_value": ZERO,
+                    "cost_basis": ZERO,
+                    "unrealized": ZERO,
+                    "weight": None,
+                    "holdings": 0,
+                },
+            )
+            count = bucket["holdings"]
+            bucket["holdings"] = (count if isinstance(count, int) else 0) + 1
+            for field in ("market_value", "cost_basis", "unrealized"):
+                value = row.get(field)
+                running = bucket[field]
+                if isinstance(value, Decimal) and isinstance(running, Decimal):
+                    bucket[field] = running + value
+
+        total = sum(
+            (
+                b["market_value"]
+                for b in grouped.values()
+                if isinstance(b["market_value"], Decimal)
+            ),
+            ZERO,
+        )
+        for bucket in grouped.values():
+            value = bucket["market_value"]
+            bucket["weight"] = value / total if isinstance(value, Decimal) and total else None
+
+    return sorted(grouped.values(), key=lambda r: str(r["symbol"]))
 
 
 # ── pnl ──────────────────────────────────────────────────────────────────────

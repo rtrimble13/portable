@@ -42,6 +42,10 @@ types:  ## mypy (strict on portable_core)
 test:  ## Full suite: unit + property + integration + golden
 	$(BIN)/coverage run -m pytest
 	$(BIN)/coverage report
+	@echo
+	@echo "NOTE: the portable_pt/commands/* modules report 0% here and are NOT"
+	@echo "      untested -- tests/integration runs them through the real CLI as"
+	@echo "      a subprocess, which coverage does not follow. See issue #40."
 
 test-fast:  ## Unit tests only -- the pre-commit subset
 	$(BIN)/pytest -m "unit and not slow" -q
