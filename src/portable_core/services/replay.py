@@ -110,7 +110,7 @@ class ReplayEngine:
 
         for txn in transactions:
             try:
-                self._apply(txn, counters, cash)
+                self.apply_transaction(txn, counters=counters, cash=cash)
             except ValidationError as exc:
                 # A replay that cannot apply a transaction reports it and
                 # continues, so that `pt rebuild` surfaces every problem in one
@@ -132,21 +132,44 @@ class ReplayEngine:
 
     # ── per-transaction application ──────────────────────────────────────────
 
-    def _apply(
+    def apply_transaction(
         self,
         txn: Transaction,
-        counters: dict[str, int],
-        cash: dict[tuple[int, str], Decimal],
+        *,
+        counters: dict[str, int] | None = None,
+        cash: dict[tuple[int, str], Decimal] | None = None,
     ) -> None:
+        """Apply one ledger row to derived state.
+
+        **This is the only code that derives state from a transaction**, and
+        both paths go through it: `rebuild()` calls it for every row in ledger
+        order, and a live `pt buy` calls it once for the row it just appended.
+
+        That is deliberate and it is the whole reason the method is public. If
+        the live path had its own implementation, the two could disagree -- and
+        the symptom would be that `pt rebuild` silently changes your numbers,
+        which is the failure ADR 0010 exists to make impossible.
+
+        Args:
+            counters: incremented in place when supplied, for `rebuild()`'s
+                summary.
+            cash: when supplied, balances accumulate here and the caller writes
+                them once at the end -- which is what makes a full rebuild one
+                write per account rather than one per transaction. When None,
+                the balance is read and written immediately, which is what a
+                live command needs.
+        """
+        counters = counters if counters is not None else {}
+        for key in ("positions", "lots", "dispositions"):
+            counters.setdefault(key, 0)
+
         account = self.repos.accounts.get(txn.account_id)
         if account is None:  # pragma: no cover -- foreign key prevents it
             raise ValidationError(
                 f"unknown account {txn.account_id}", code="PT-E-ACCOUNT-NOT-FOUND"
             )
 
-        key = (txn.account_id, account.currency)
-        with money_context():
-            cash[key] = quantize_money(cash.get(key, ZERO) + txn.net_cash_effect)
+        self._move_cash(txn.account_id, account.currency, txn.net_cash_effect, cash)
 
         # A transfer's other side moves the counter account's cash too. This is
         # the one transaction type that touches two accounts, and it is one row
@@ -154,11 +177,9 @@ class ReplayEngine:
         if txn.txn_type is TransactionType.TRANSFER and txn.counter_account_id is not None:
             counter = self.repos.accounts.get(txn.counter_account_id)
             if counter is not None:
-                counter_key = (txn.counter_account_id, counter.currency)
-                with money_context():
-                    cash[counter_key] = quantize_money(
-                        cash.get(counter_key, ZERO) - txn.net_cash_effect
-                    )
+                self._move_cash(
+                    txn.counter_account_id, counter.currency, -txn.net_cash_effect, cash
+                )
 
         if txn.instrument_id is None or txn.quantity is None:
             return  # a pure cash event: nothing to position
@@ -171,6 +192,25 @@ class ReplayEngine:
             self._open(txn, counters)
         elif txn.txn_type in {TransactionType.SELL, TransactionType.BUY_TO_COVER}:
             self._close(txn, counters)
+
+    def _move_cash(
+        self,
+        account_id: int,
+        currency: str,
+        delta: Decimal,
+        accumulator: dict[tuple[int, str], Decimal] | None,
+    ) -> None:
+        """Apply a cash movement, batched during a rebuild and immediate live."""
+        key = (account_id, currency)
+        if accumulator is not None:
+            with money_context():
+                accumulator[key] = quantize_money(accumulator.get(key, ZERO) + delta)
+            return
+        current, _margin = self.repos.valuations.cash(account_id, currency=currency)
+        with money_context():
+            self.repos.valuations.set_cash(
+                account_id, quantize_money(current + delta), currency=currency
+            )
 
     def _open(self, txn: Transaction, counters: dict[str, int]) -> None:
         """Create or extend a position, and open a lot."""

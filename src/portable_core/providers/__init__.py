@@ -12,6 +12,10 @@ from portable_core.providers.base import (
     CorporateActionRecord,
     MarketDataProvider,
     RiskFreeRate,
+    as_benchmark_provider,
+    as_corporate_action_provider,
+    as_eod_provider,
+    as_security_master,
     require_capability,
 )
 from portable_core.providers.file import FileProvider
@@ -25,6 +29,10 @@ __all__ = [
     "MarketDataProvider",
     "NullProvider",
     "RiskFreeRate",
+    "as_benchmark_provider",
+    "as_corporate_action_provider",
+    "as_eod_provider",
+    "as_security_master",
     "build_provider",
     "require_capability",
 ]

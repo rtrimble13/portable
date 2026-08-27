@@ -739,6 +739,17 @@ class PositionRepository(_Repository):
             (on.isoformat(), position_id),
         )
 
+    def set_strategy(self, position_id: int, strategy_type: str) -> None:
+        """Restate a position's strategy after a regroup.
+
+        Touches only the container's label for the trader's intent -- no leg,
+        no lot, and no basis figure (ADR 0009).
+        """
+        self.con.execute(
+            "UPDATE position SET strategy_type = ? WHERE position_id = ?",
+            (strategy_type, position_id),
+        )
+
     def position_id_for_leg(self, leg_id: int) -> int | None:
         """The position a leg belongs to.
 
@@ -1302,6 +1313,92 @@ class Repositories:
             )
         ]
         return columns, rows
+
+    #: Tables `pt export` dumps, in dependency order so that `pt import` can
+    #: insert them straight through without deferring foreign keys.
+    #:
+    #: Derived tables are deliberately absent: they are reproducible from the
+    #: ledger, carrying them would double the file size, and a round-trip that
+    #: included them could hide a replay bug rather than expose one (ADR 0010).
+    EXPORTABLE_TABLES: ClassVar[tuple[str, ...]] = (
+        "meta",
+        "meta_change_log",
+        "account",
+        "tax_rate_schedule",
+        "instrument",
+        "instrument_symbol_history",
+        "instrument_option",
+        "instrument_bond",
+        "price",
+        "corporate_action",
+        "benchmark",
+        "benchmark_component",
+        "benchmark_level",
+        "portfolio_benchmark",
+        "return_policy",
+        "portfolio_event",
+        "settings",
+        "report_issue",
+        "transaction",
+    )
+
+    def export_table(self, table: str) -> list[dict[str, Any]]:
+        """Every row of one exportable table, as JSON-ready values.
+
+        Ordered by primary key so that two exports of the same portfolio are
+        byte-identical -- which is what makes the export/import/export
+        round-trip test meaningful rather than merely plausible.
+
+        Values are stringified rather than typed: money is already canonical
+        decimal text, and passing it through a JSON number would be the one
+        conversion ADR 0005 exists to prevent.
+        """
+        if table not in self.EXPORTABLE_TABLES:
+            raise ValidationError(
+                f"{table!r} is not an exportable table",
+                code="PT-E-USAGE",
+                known=list(self.EXPORTABLE_TABLES),
+            )
+        columns = [
+            str(row["name"]) for row in self.con.execute(f'PRAGMA table_info("{table}")')
+        ]
+        keys = [
+            str(row["name"])
+            for row in self.con.execute(f'PRAGMA table_info("{table}")')
+            if int(row["pk"]) > 0
+        ]
+        ordering = (
+            ", ".join(f'"{k}"' for k in keys) if keys else ", ".join(f'"{c}"' for c in columns)
+        )
+        selected = ", ".join(f'"{c}"' for c in columns)
+        return [
+            {c: (None if row[c] is None else str(row[c])) for c in columns}
+            for row in self.con.execute(
+                f'SELECT {selected} FROM "{table}" ORDER BY {ordering}'  # noqa: S608 -- table from EXPORTABLE_TABLES, columns from PRAGMA
+            )
+        ]
+
+    def import_tables(self, payload: dict[str, Any]) -> dict[str, int]:
+        """Insert an export payload, in dependency order.
+
+        The ledger's append-only triggers reject UPDATE and DELETE but not
+        INSERT, so a ledger imports normally -- which is the right behaviour:
+        importing is appending history, not editing it.
+        """
+        counts: dict[str, int] = {}
+        for table in self.EXPORTABLE_TABLES:
+            rows = payload.get(table) or []
+            if not rows:
+                counts[table] = 0
+                continue
+            columns = list(rows[0])
+            placeholders = ", ".join("?" for _ in columns)
+            selected = ", ".join(f'"{c}"' for c in columns)
+            statement = f'INSERT OR REPLACE INTO "{table}" ({selected}) VALUES ({placeholders})'  # noqa: S608 -- table from EXPORTABLE_TABLES, columns from the payload's own header
+            for row in rows:
+                self.con.execute(statement, [row.get(c) for c in columns])
+            counts[table] = len(rows)
+        return counts
 
     def clear_derived(self) -> None:
         """Drop every derived table. The first half of `pt rebuild` (ADR 0010).

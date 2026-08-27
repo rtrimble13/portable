@@ -35,6 +35,10 @@ __all__ = [
     "RiskFreeRate",
     "RiskFreeRateCapability",
     "SecurityMasterCapability",
+    "as_benchmark_provider",
+    "as_corporate_action_provider",
+    "as_eod_provider",
+    "as_security_master",
     "require_capability",
 ]
 
@@ -182,6 +186,70 @@ class MarketDataProvider(ABC):
             "provider": self.name,
             "capabilities": sorted(str(c) for c in self.capabilities),
         }
+
+
+def as_eod_provider(provider: MarketDataProvider) -> EndOfDayPriceCapability:
+    """Narrow a provider to its end-of-day price capability, or refuse.
+
+    The capability protocols are deliberately separate from
+    :class:`MarketDataProvider`, so a caller cannot reach ``eod_prices`` on a
+    provider that has not declared it -- the type checker says so before the
+    code runs. These helpers are the one sanctioned way through that boundary:
+    they check the declaration, then confirm the shape, so a provider that
+    claims a capability it does not implement fails here rather than three
+    frames into a valuation.
+    """
+    require_capability(provider, Capability.EOD_PRICES)
+    if not isinstance(provider, EndOfDayPriceCapability):
+        raise _mismatch(provider, Capability.EOD_PRICES)
+    return provider
+
+
+def as_security_master(provider: MarketDataProvider) -> SecurityMasterCapability:
+    """Narrow a provider to its security-master capability, or refuse."""
+    require_capability(provider, Capability.SECURITY_MASTER)
+    if not isinstance(provider, SecurityMasterCapability):
+        raise _mismatch(provider, Capability.SECURITY_MASTER)
+    return provider
+
+
+def as_corporate_action_provider(
+    provider: MarketDataProvider,
+) -> CorporateActionCapability:
+    """Narrow a provider to its corporate-action capability, or refuse."""
+    require_capability(provider, Capability.CORPORATE_ACTIONS)
+    if not isinstance(provider, CorporateActionCapability):
+        raise _mismatch(provider, Capability.CORPORATE_ACTIONS)
+    return provider
+
+
+def as_benchmark_provider(provider: MarketDataProvider) -> BenchmarkCapability:
+    """Narrow a provider to its benchmark capability, or refuse.
+
+    Note that `FafnirProvider` never passes here: the warehouse carries no
+    total-return index series, and PORT-GIPS-G01 requires refusal rather than
+    approximation (ADR 0006).
+    """
+    require_capability(provider, Capability.BENCHMARKS)
+    if not isinstance(provider, BenchmarkCapability):
+        raise _mismatch(provider, Capability.BENCHMARKS)
+    return provider
+
+
+def _mismatch(provider: MarketDataProvider, capability: Capability) -> DataUnavailableError:
+    """A provider declaring a capability it does not implement.
+
+    A bug rather than a user error, and worth its own message: declaring a
+    capability falsely is worse than declaring none, because a caller will
+    trust it.
+    """
+    return DataUnavailableError(
+        f"the {provider.name} provider declares {capability} but does not implement it",
+        code=E_PROVIDER_CAPABILITY,
+        remedy="This is a bug in the provider. Please report it.",
+        provider=provider.name,
+        capability=str(capability),
+    )
 
 
 def require_capability(provider: MarketDataProvider, capability: Capability) -> None:
