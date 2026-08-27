@@ -28,6 +28,14 @@ from portable_core.config.settings import (
     ConfigValue,
     Source,
     load_config,
+    user_config_path,
 )
 
-__all__ = ["DEFAULTS", "Config", "ConfigValue", "Source", "load_config"]
+__all__ = [
+    "DEFAULTS",
+    "Config",
+    "ConfigValue",
+    "Source",
+    "load_config",
+    "user_config_path",
+]

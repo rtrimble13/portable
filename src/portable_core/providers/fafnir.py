@@ -72,10 +72,20 @@ SCHEMA: Final[dict[str, str]] = {
 #: fafnir's, then fafnir's config files -- so somebody who already has `duk`
 #: working needs no new configuration (ADR 0006).
 _DSN_ENV_ORDER: Final[tuple[str, ...]] = ("PORTABLE_FAFNIR_DSN", "FAFNIR_DSN")
-_DSN_FILES: Final[tuple[Path, ...]] = (
-    Path.home() / ".dukrc",
-    Path.home() / ".fafnirrc",
-)
+#: fafnir's own config filenames, resolved against the home directory when
+#: needed. NOT at import: ``Path.home()`` raises on Windows with no
+#: ``USERPROFILE``, and doing this at module scope made the module unimportable
+#: there. See :func:`portable_core.config.user_config_path`.
+_DSN_FILENAMES: Final[tuple[str, ...]] = (".dukrc", ".fafnirrc")
+
+
+def _dsn_files() -> tuple[Path, ...]:
+    """fafnir's config files, or an empty tuple when there is no home."""
+    try:
+        home = Path.home()
+    except (RuntimeError, OSError):
+        return ()
+    return tuple(home / name for name in _DSN_FILENAMES)
 
 
 def resolve_dsn(explicit: str | None = None) -> str | None:
@@ -92,7 +102,7 @@ def resolve_dsn(explicit: str | None = None) -> str | None:
         value = os.environ.get(name)
         if value:
             return value
-    for path in _DSN_FILES:
+    for path in _dsn_files():
         if not path.is_file():
             continue
         try:
@@ -178,7 +188,7 @@ class FafnirProvider(MarketDataProvider):
                     "fafnir_app role."
                 ),
                 provider=self.name,
-                checked=[*_DSN_ENV_ORDER, *(str(p) for p in _DSN_FILES)],
+                checked=[*_DSN_ENV_ORDER, *(str(p) for p in _dsn_files())],
             )
 
         try:

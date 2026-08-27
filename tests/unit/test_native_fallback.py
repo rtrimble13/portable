@@ -85,3 +85,54 @@ def test_native_build_info_is_a_real_cpp_build() -> None:
     assert info.module_version == "0.1.0"
     assert int(info.cxx_standard) >= 201703
     assert native.implementation() == "native"
+
+
+# ── the off-switch has to actually switch it off ─────────────────────────────
+
+
+def test_the_build_flag_is_honoured_from_the_environment() -> None:
+    """`PORTABLE_BUILD_NATIVE=OFF` must reach CMake.
+
+    scikit-build-core reads its OWN configuration -- pyproject's
+    [tool.scikit-build.cmake.define], or SKBUILD_CMAKE_DEFINE -- and does not
+    pass an arbitrary environment variable through. So the switch documented in
+    the README, ADR 0008, both bootstrap scripts and CI silently did nothing,
+    and the extension was built anyway.
+
+    CI caught it only because the no-extension job asserts the extension is
+    genuinely absent rather than trusting the flag. This test pins the fix at
+    the source, so a CMakeLists refactor cannot quietly undo it.
+    """
+    from pathlib import Path
+
+    from portable_core.lint._common import repo_root
+
+    cmake = (repo_root() / "cpp" / "CMakeLists.txt").read_text(encoding="utf-8")
+    assert "DEFINED ENV{PORTABLE_BUILD_NATIVE}" in cmake, (
+        "cpp/CMakeLists.txt must read PORTABLE_BUILD_NATIVE from the environment; "
+        "scikit-build-core will not pass it through"
+    )
+    assert Path(repo_root() / "cpp" / "CMakeLists.txt").is_file()
+
+
+def test_msvc_is_told_to_report_the_real_cplusplus_macro() -> None:
+    """MSVC reports __cplusplus as 199711L unless given /Zc:__cplusplus.
+
+    `build_info()` reads __cplusplus, so the Catch2 assertion that the build is
+    C++17-or-later failed on Windows and passed everywhere else. That is a real
+    difference in what the binary reports about itself, not a test artifact.
+
+    Both targets need the flag: the Catch2 suite links `portable_probe` rather
+    than the extension, so flagging only the module left the test binary and
+    the extension disagreeing -- which is how it was missed.
+    """
+    from portable_core.lint._common import repo_root
+
+    cmake = (repo_root() / "cpp" / "portable_native" / "CMakeLists.txt").read_text(
+        encoding="utf-8"
+    )
+    msvc_blocks = cmake.count("/Zc:__cplusplus")
+    assert msvc_blocks >= 2, (
+        "both portable_native and portable_probe need /Zc:__cplusplus, or the "
+        f"test binary and the extension disagree about __cplusplus (found {msvc_blocks})"
+    )

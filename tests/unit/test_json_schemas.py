@@ -12,6 +12,7 @@ out, so a change to an envelope field fails here rather than in a consumer.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from typing import Any
@@ -69,7 +70,10 @@ def _run(*args: str) -> dict[str, Any]:
         text=True,
         check=False,
         cwd=ROOT,
-        env={"PYTHONPATH": str(ROOT / "src"), "PATH": "/usr/bin:/bin", "NO_COLOR": "1"},
+        # Inherit the real environment rather than replacing it: a hand-built
+        # env with no PATH and no home works on POSIX and breaks on Windows,
+        # where Path.home() needs USERPROFILE and the interpreter needs SYSTEMROOT.
+        env={**os.environ, "PYTHONPATH": str(ROOT / "src"), "NO_COLOR": "1"},
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
     payload: dict[str, Any] = json.loads(completed.stdout)

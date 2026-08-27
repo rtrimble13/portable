@@ -62,11 +62,16 @@ def run_pt(tmp_path: Path) -> CliRunner:
         env |= {
             "PYTHONPATH": str(ROOT / "src"),
             "NO_COLOR": "1",
-            # Never inherit the developer's real portfolio or config.
-            "PORTABLE_PORT": "",
+            # Point the home directory at the temp tree so the run never sees
+            # the developer's real ~/.portablerc. USERPROFILE is the one that
+            # matters on Windows -- HOME alone leaves Path.home() unable to
+            # resolve there, which is a different failure from the one this is
+            # isolating.
             "HOME": str(tmp_path),
+            "USERPROFILE": str(tmp_path),
         }
-        env.pop("PORTABLE_PORT")
+        # Never inherit a portfolio path from the developer's environment.
+        env.pop("PORTABLE_PORT", None)
         completed = subprocess.run(
             [sys.executable, "-m", "portable_pt", "--format", fmt, *args],
             capture_output=True,

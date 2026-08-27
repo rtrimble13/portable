@@ -12,14 +12,46 @@ from typing import Any, Final
 
 from portable_core.errors import UsageError
 
-__all__ = ["DEFAULTS", "Config", "ConfigValue", "Source", "load_config"]
+__all__ = [
+    "DEFAULTS",
+    "Config",
+    "ConfigValue",
+    "Source",
+    "load_config",
+    "user_config_path",
+]
 
 #: Environment variables are prefixed so that `portable`'s configuration is
 #: distinguishable from everything else in a shell.
 ENV_PREFIX: Final = "PORTABLE_"
 
-USER_CONFIG: Final = Path.home() / ".portablerc"
+#: Filename of the user config, resolved against the home directory when it is
+#: needed rather than at import. See :func:`user_config_path`.
+USER_CONFIG_NAME: Final = ".portablerc"
 PROJECT_CONFIG: Final = Path("portable.toml")
+
+
+def user_config_path() -> Path | None:
+    """The user config file, or None when there is no home directory.
+
+    Resolved lazily, and this is not fussiness. ``Path.home()`` **raises** on
+    Windows when neither ``USERPROFILE`` nor ``HOMEDRIVE``/``HOMEPATH`` is set,
+    and calling it at module scope made ``import portable_core.config`` fail
+    outright in that environment -- taking the whole CLI with it, since
+    everything imports config eventually.
+
+    POSIX hides the bug: ``Path.home()`` there falls back to a ``pwd`` lookup
+    and succeeds. So this failed only on Windows, which is exactly the platform
+    the owner works on.
+
+    A library must not fail to import because of its environment. No home
+    directory simply means no user config, which is a perfectly ordinary state
+    for a container, a service account, or a locked-down CI runner.
+    """
+    try:
+        return Path.home() / USER_CONFIG_NAME
+    except (RuntimeError, OSError):
+        return None
 
 
 class Source(StrEnum):
@@ -167,15 +199,16 @@ def load_config(
     machine is the hardest kind to find.
     """
     environment = os.environ if env is None else env
-    user_path = USER_CONFIG if user_config is None else user_config
+    user_path = user_config_path() if user_config is None else user_config
     project_path = PROJECT_CONFIG if project_config is None else project_config
 
     resolved: dict[str, ConfigValue] = {
         key: ConfigValue(key, value, Source.DEFAULT) for key, value in DEFAULTS.items()
     }
 
-    for key, value in _read_toml(user_path).items():
-        resolved[key] = ConfigValue(key, value, Source.USER, str(user_path))
+    if user_path is not None:
+        for key, value in _read_toml(user_path).items():
+            resolved[key] = ConfigValue(key, value, Source.USER, str(user_path))
 
     for key, value in _read_toml(project_path).items():
         resolved[key] = ConfigValue(key, value, Source.PROJECT, str(project_path))
