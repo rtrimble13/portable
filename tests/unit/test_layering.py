@@ -149,7 +149,17 @@ def test_no_cli_imports_another_cli() -> None:
 
 
 def test_sql_appears_only_in_persistence_and_schema() -> None:
-    """ADR 0002. A query anywhere else means the logic is in the wrong file."""
+    """ADR 0002. A query anywhere else means the logic is in the wrong file.
+
+    Scoped to the `.port` file's own SQL. `providers/fafnir.py` queries a
+    FOREIGN database, which CLAUDE.md's other placement rule assigns to it
+    explicitly -- "anything touching fafnir's schema or `duk` lives in
+    providers/fafnir.py and nowhere else". Both rules are right; the boundary
+    between them is which database is being talked to.
+
+    `test_fafnir_is_confined_to_its_adapter` is what keeps that exemption
+    honest: the adapter may know fafnir's tables, and nothing else may.
+    """
     import re
 
     # Deliberately narrow: match SQL verbs at the head of a string, which is
@@ -161,11 +171,12 @@ def test_sql_appears_only_in_persistence_and_schema() -> None:
         re.IGNORECASE,
     )
     allowed_dirs = {"persistence", "schema"}
+    foreign_database_adapters = {SRC / "portable_core" / "providers" / "fafnir.py"}
     violations: list[str] = []
 
     for path in sorted(SRC.rglob("*.py")):
         parts = set(path.relative_to(SRC).parts)
-        if parts & allowed_dirs:
+        if parts & allowed_dirs or path in foreign_database_adapters:
             continue
         text = path.read_text(encoding="utf-8")
         for i, line in enumerate(text.splitlines(), start=1):

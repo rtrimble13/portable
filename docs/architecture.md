@@ -64,7 +64,10 @@ represented, which domain objects are made of. Nothing depends on a CLI.
 `tests/unit/test_layering.py` enforces this by walking the import graph. It also
 enforces the two placement rules that matter most:
 
-- **SQL appears only in `persistence/` and `schema/`.** (ADR 0002)
+- **SQL against the `.port` file appears only in `persistence/` and
+  `schema/`.** (ADR 0002) The one exception is `providers/fafnir.py`, which
+  queries a *foreign* database and which `CLAUDE.md` assigns that job to
+  explicitly; the fafnir-confinement rule below is what keeps that honest.
 - **Nothing fafnir-shaped appears outside `providers/fafnir.py`.** (ADR 0006)
 
 **No CLI imports another CLI.** If `pert` and `po` would need the same code, that
