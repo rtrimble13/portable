@@ -1,0 +1,164 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  FORCE_COLOR: "0"          # determinism: CI output must not depend on a TTY
+
+jobs:
+  # ── The gate: lint, types, and the two project lint rules ─────────────────
+  # Runs once on Linux. These findings do not differ by platform, and putting
+  # them in their own fast job means a style failure does not wait on a
+  # compiler.
+  static:
+    name: lint · types · project rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install
+        run: |
+          python -m pip install -r requirements-dev.txt -c constraints.txt
+          PORTABLE_BUILD_NATIVE=OFF python -m pip install -e . --no-build-isolation --no-deps
+
+      - name: ruff check
+        run: ruff check src tests scripts
+
+      - name: ruff format --check
+        run: ruff format --check src tests scripts
+
+      # CLAUDE.md invariant 1. Not silenceable.
+      - name: no-float-in-money-paths
+        run: python -m portable_core.lint no-float
+
+      # PORT-GIPS-J05 / CLAUDE.md invariant 11. Not silenceable.
+      - name: no-GIPS-compliance-language
+        run: python -m portable_core.lint gips-language
+
+      - name: mypy
+        run: mypy
+
+  # ── The suite, across the platforms the owner and CI actually use ─────────
+  test:
+    name: test · py${{ matrix.python }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install with the native extension
+        run: |
+          python -m pip install -r requirements-dev.txt -c constraints.txt
+          python -m pip install -e . --no-build-isolation --no-deps
+
+      - name: Confirm the extension actually built
+        # A silently-skipped differential test is a differential test that has
+        # stopped being one (ADR 0008). If this job is meant to exercise the
+        # C++, it must fail when the C++ is missing.
+        run: python -c "from portable_core import native; assert native.HAVE_NATIVE, 'extension did not build'; print(native.build_info())"
+
+      - name: pytest with coverage
+        run: |
+          coverage run -m pytest
+          coverage report
+
+      - name: JSON Schema validation
+        run: pytest tests/unit/test_json_schemas.py -q
+
+      - name: Ledger-replay determinism
+        run: pytest tests/property/test_replay_reproduces_state.py -q
+
+  # ── The pure-Python path must not quietly rot ─────────────────────────────
+  # PORTABLE_BUILD_NATIVE=OFF is a supported, complete product, not a degraded
+  # mode -- it is the reference implementation the differential tests compare
+  # against (ADR 0008). If it only ever runs on a developer's laptop it will
+  # break and nobody will notice.
+  no-native:
+    name: test · pure-Python (no extension)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install without the extension
+        run: |
+          python -m pip install -r requirements-dev.txt -c constraints.txt
+          PORTABLE_BUILD_NATIVE=OFF python -m pip install -e . --no-build-isolation --no-deps
+
+      - name: Confirm the extension is genuinely absent
+        run: python -c "from portable_core import native; assert not native.HAVE_NATIVE; assert native.implementation() == 'python'"
+
+      - name: pytest
+        run: pytest -q
+
+  # ── C++ ───────────────────────────────────────────────────────────────────
+  cpp:
+    name: cpp · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pybind11
+        run: python -m pip install "pybind11>=2.12"
+
+      - name: Configure
+        run: cmake -S cpp -B build/cpp -DPORTABLE_BUILD_TESTS=ON -DPORTABLE_BUILD_NATIVE=ON -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build/cpp --config Release
+
+      - name: Catch2
+        run: ctest --test-dir build/cpp --output-on-failure --build-config Release
+
+  # ── One green light for branch protection to key off ──────────────────────
+  check:
+    name: check
+    if: always()
+    needs: [static, test, no-native, cpp]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any required job did not succeed
+        run: |
+          echo "static=${{ needs.static.result }}"
+          echo "test=${{ needs.test.result }}"
+          echo "no-native=${{ needs.no-native.result }}"
+          echo "cpp=${{ needs.cpp.result }}"
+          [ "${{ needs.static.result }}" = "success" ] || exit 1
+          [ "${{ needs.test.result }}" = "success" ] || exit 1
+          [ "${{ needs.no-native.result }}" = "success" ] || exit 1
+          [ "${{ needs.cpp.result }}" = "success" ] || exit 1
+          echo "check: green"

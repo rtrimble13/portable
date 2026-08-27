@@ -1,0 +1,23 @@
+# Lockfile-style constraints. Regenerate with:
+#     pip install -r requirements-dev.txt && pip freeze > constraints.txt
+#
+# These are the versions CI resolves and the versions the owner's Windows
+# environment is expected to reproduce. Bump them deliberately, in their own
+# commit, with `make check` green.
+click==8.3.0
+coverage==7.15.4
+hypothesis==6.165.10
+jsonschema==4.26.0
+markdown-it-py==4.0.0
+mdurl==0.1.2
+mypy==2.3.1
+mypy_extensions==1.1.0
+pathspec==1.1.1
+pluggy==1.6.0
+Pygments==2.19.2
+pytest==9.1.1
+rich==15.0.0
+ruff==0.16.5
+shellingham==1.5.4
+typer==0.27.1
+typing_extensions==4.15.0

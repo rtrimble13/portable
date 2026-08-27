@@ -1,0 +1,162 @@
+[build-system]
+requires = ["scikit-build-core>=0.9", "pybind11>=2.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "portable"
+version = "0.1.0"
+description = "A family of standalone command-line tools for investment portfolio analysis"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "rtrimble13" }]
+keywords = ["portfolio", "investment", "tax-lots", "performance", "finance"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Financial and Insurance Industry",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Office/Business :: Financial :: Investment",
+]
+dependencies = [
+  "typer>=0.12",
+  "rich>=13.7",
+]
+
+[project.optional-dependencies]
+# psycopg is optional on purpose: its absence must make FafnirProvider
+# unavailable with a clear message, never an ImportError at CLI start.
+# ADR 0006.
+fafnir = ["psycopg[binary]>=3.1"]
+
+[project.scripts]
+pt = "portable_pt.__main__:main"
+pert = "portable_pert.__main__:main"
+po = "portable_po.__main__:main"
+risky = "portable_risky.__main__:main"
+portable = "portable_core.cli.portable_cmd:main"
+
+[project.urls]
+Homepage = "https://github.com/rtrimble13/portable"
+Documentation = "https://github.com/rtrimble13/portable/tree/main/docs"
+
+# ── scikit-build-core ────────────────────────────────────────────────────────
+# The extension is real but optional (ADR 0008): PORTABLE_BUILD_NATIVE=OFF
+# yields a complete, correct, pure-Python install. That is not a degraded
+# mode — it is the reference implementation the differential tests compare
+# against, and it is what lets someone without a compiler still read their
+# own tax report.
+[tool.scikit-build]
+minimum-version = "0.9"
+cmake.source-dir = "cpp"
+cmake.version = ">=3.20"
+wheel.packages = [
+  "src/portable_core",
+  "src/portable_pt",
+  "src/portable_pert",
+  "src/portable_po",
+  "src/portable_risky",
+]
+sdist.include = ["cpp/**", "src/**", "schemas/**", "docs/**"]
+build-dir = "build/{wheel_tag}"
+
+[tool.scikit-build.cmake.define]
+PORTABLE_BUILD_NATIVE = "ON"
+PORTABLE_BUILD_TESTS = "OFF"
+
+# ── ruff ─────────────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 96
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E", "W",      # pycodestyle
+  "F",           # pyflakes
+  "I",           # isort
+  "B",           # bugbear
+  "UP",          # pyupgrade
+  "SIM",         # simplify
+  "C4",          # comprehensions
+  "RET",         # returns
+  "ARG",         # unused arguments
+  "PTH",         # use pathlib
+  "RUF",
+  "S",           # bandit
+  "DTZ",         # naive datetime -- matters: CLAUDE.md invariant 6
+  "T20",         # no print() -- structured output goes through formatters
+]
+ignore = [
+  "S101",   # assert: used deliberately for invariant checks in services
+  "RET504", # named return values read better in money code
+  "SIM108", # ternaries are not always clearer
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "ARG", "T20", "DTZ"]
+"scripts/**" = ["T20", "S"]
+"src/portable_core/lint/**" = ["T20"]   # the lint rules print their findings
+"src/portable_core/formatters/**" = ["T20"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["portable_core", "portable_pt", "portable_pert", "portable_po", "portable_risky"]
+
+# ── mypy ─────────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.11"
+files = ["src", "tests"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+pretty = true
+
+# strict on portable_core, per the bootstrap's fixed tooling decisions
+[[tool.mypy.overrides]]
+module = "portable_core.*"
+strict = true
+disallow_any_explicit = false
+warn_return_any = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["portable_native.*", "hypothesis.*"]
+ignore_missing_imports = true
+
+# ── pytest ───────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+  "unit: fast, no database, no filesystem",
+  "integration: end-to-end through the real CLI against a real .port file",
+  "property: hypothesis-driven invariant tests",
+  "gips: acceptance tests named in docs/gips-standard.md",
+  "golden: golden-file output comparisons",
+  "native: requires the compiled portable_native extension",
+  "slow: excluded from make test-fast",
+]
+filterwarnings = ["error"]
+
+# ── coverage ─────────────────────────────────────────────────────────────────
+[tool.coverage.run]
+branch = true
+source = ["src"]
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+skip_covered = false
+show_missing = true
+exclude_lines = [
+  "pragma: no cover",
+  "raise NotImplementedError",
+  "if TYPE_CHECKING:",
+  "@overload",
+]

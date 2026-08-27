@@ -79,11 +79,11 @@ believe one is wrong, say so and propose an ADR — do not quietly work around i
 
 11. **Never claim GIPS compliance, in any form.** `portable` implements performance
     methodology *modelled on* the 2020 GIPS standards. It is not, and cannot be,
-    GIPS-compliant: compliance is an entity-wide assertion and "cannot be met on a
+    GIPS-compliant: compliance is an entity-wide assertion and "cannot be met on a  <!-- gips-lint: allow -->
     composite, pooled fund, or portfolio basis" (GIPS for Firms 1.A.1; for Asset Owners
     21.A.1), and the standards do not apply to individuals. The phrases
-    **"GIPS-compliant"**, **"GIPS-consistent"**, **"in compliance with"**, **"in accordance
-    with"**, and **"consistent with the GIPS standards"** are prohibited in source, docs,
+    **"GIPS-compliant"**, **"GIPS-consistent"**, **"in compliance with"**, **"in accordance  <!-- gips-lint: allow -->
+    with"**, and **"consistent with the GIPS standards"** are prohibited in source, docs,  <!-- gips-lint: allow -->
     templates, fixtures, and output — GIPS 1.A.9 names that last one verbatim. There is a
     lint rule. Do not silence it. The one approved disclaimer is in
     `docs/gips-standard.md` §9.3. The rule allow-lists three things and nothing else:

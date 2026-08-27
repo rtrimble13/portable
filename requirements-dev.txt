@@ -1,0 +1,24 @@
+# Development dependencies. Install with:
+#     pip install -r requirements-dev.txt -c constraints.txt
+-r requirements.txt
+
+# build
+scikit-build-core>=0.9
+pybind11>=2.12
+
+# lint, format, types
+ruff>=0.6
+mypy>=1.11
+
+# test
+pytest>=8.0
+hypothesis>=6.100
+coverage[toml]>=7.5
+jsonschema>=4.22
+
+# optional provider — installed in dev so its code path is type-checked and
+# import-tested even though it is optional at runtime (ADR 0006)
+psycopg[binary]>=3.1
+
+# hooks
+pre-commit>=3.7
