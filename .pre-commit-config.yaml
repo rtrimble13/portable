@@ -1,0 +1,62 @@
+# Pre-commit hooks: ruff, mypy, both project lint rules, and the fast test
+# subset. `make check` remains the real gate; these are the parts fast enough
+# to run on every commit.
+#
+#     pip install pre-commit && pre-commit install
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.fixture$'          # fixtures are byte-exact on purpose
+      - id: end-of-file-fixer
+        exclude: '\.fixture$'
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
+      - id: mixed-line-ending
+        # The owner works on Windows and CI runs both. Normalise in the repo
+        # and let git handle checkout, so a CRLF does not change a golden file.
+        args: ["--fix=lf"]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      # CLAUDE.md invariant 1. Not silenceable.
+      - id: no-float-in-money-paths
+        name: no float in money paths
+        entry: python -m portable_core.lint no-float
+        language: system
+        pass_filenames: false
+        types_or: [python, sql]
+
+      # PORT-GIPS-J05 / CLAUDE.md invariant 11. Not silenceable.
+      - id: no-gips-compliance-language
+        name: no GIPS compliance language
+        entry: python -m portable_core.lint gips-language
+        language: system
+        pass_filenames: false
+
+      - id: mypy
+        name: mypy (strict on portable_core)
+        entry: mypy
+        language: system
+        pass_filenames: false
+        types: [python]
+
+      - id: pytest-fast
+        name: pytest (unit subset)
+        entry: pytest -m "unit and not slow" -q
+        language: system
+        pass_filenames: false
+        types: [python]

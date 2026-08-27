@@ -1,0 +1,4 @@
+"""Fixture for the no-float rule. Every line below must be caught."""
+RATE = 0.0725
+def price_of(x: float) -> float:
+    return float(x) * 1.5

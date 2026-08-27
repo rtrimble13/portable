@@ -1,0 +1,7 @@
+-- Fixture: SQLite column types that are binary floating point in disguise.
+CREATE TABLE bad (
+    amount   REAL NOT NULL,
+    price    NUMERIC(20, 6),
+    weight   DOUBLE PRECISION,
+    factor   FLOAT
+);

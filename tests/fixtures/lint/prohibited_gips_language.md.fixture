@@ -1,0 +1,17 @@
+Fixture for PORT-GIPS-J05. Every line below carries one prohibited construction.
+This file is deliberately NOT scanned by the rule in normal operation -- its
+suffix is `.fixture`, not `.md` -- and it exists so the rule's own test can
+point the scanner at it and assert every phrase is caught.
+
+If you are reading this because a real file tripped the rule: the fix is to
+change the words, not to add a marker. See docs/gips-standard.md §9.3 for the
+one approved form of words.
+
+1. This report is GIPS-compliant.
+2. Methodology is GIPS-consistent throughout.
+3. Returns are calculated in compliance with the GIPS standards.
+4. Performance is presented in accordance with GIPS.
+5. The calculation is consistent with the GIPS standards.
+6. This tool complies with the GIPS standards.
+7. The track record is GIPS-verified.
+8. Prepared in conformity with the GIPS standards.

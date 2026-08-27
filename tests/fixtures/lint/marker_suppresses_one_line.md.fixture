@@ -1,0 +1,4 @@
+Fixture asserting the marker suppresses exactly one line and not the file.
+
+This line is GIPS-compliant and carries a marker.  <!-- gips-lint: allow -->
+This line is GIPS-compliant and carries no marker, so it must still be caught.

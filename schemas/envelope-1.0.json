@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rtrimble13/portable/schemas/envelope-1.0.json",
+  "title": "portable --format json envelope",
+  "description": "The envelope every portable command wraps its result in. Versioned by `schema_version`, which consumers pin against rather than against the tool version: a patch release that changes nothing in the output must not look like a breaking change.\n\nThe `disclaimer` key is always PRESENT, and null when the command emits no return. Absent and null must not look the same to a consumer.\n\nEvery Decimal is a STRING. A JSON number cannot round-trip a decimal, and a consumer parsing one as a float silently loses the guarantee the whole codebase is built on.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "command",
+    "generated_at",
+    "as_of",
+    "portfolio",
+    "data",
+    "warnings",
+    "disclaimer"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$",
+      "description": "The envelope's version. Pin against this."
+    },
+    "portable_version": {
+      "type": "string",
+      "description": "The tool version. Informational; not part of the contract."
+    },
+    "command": {
+      "type": "string",
+      "description": "The command that produced this result."
+    },
+    "generated_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+      "description": "ISO-8601 UTC. The only wall-clock value portable emits, and excluded from the content hash for that reason."
+    },
+    "as_of": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "The date the result describes. Always explicit, never an implicit 'now'."
+    },
+    "portfolio": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "data": {
+      "description": "The result. Either a table block or a flat object. `anyOf`, not `oneOf`: a table block is also an object, so requiring exactly one branch could never be satisfied.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/tableBlock"
+        },
+        {
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Non-fatal problems. Rendered to stderr in human formats."
+    },
+    "disclaimer": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Present on any command emitting a return or a tax figure. A FIELD, not a rendered string, so a consumer that drops it has to drop a named key."
+    },
+    "$schema": {
+      "type": "string"
+    },
+    "error": {
+      "$ref": "#/$defs/error"
+    }
+  },
+  "$defs": {
+    "decimal": {
+      "type": "string",
+      "pattern": "^-?\\d+(\\.\\d+)?$",
+      "description": "A decimal, as canonical text. Never a JSON number."
+    },
+    "tableBlock": {
+      "type": "object",
+      "required": [
+        "rows",
+        "columns"
+      ],
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "key",
+              "header",
+              "kind"
+            ],
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "header": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "text",
+                  "money",
+                  "quantity",
+                  "price",
+                  "rate",
+                  "date",
+                  "integer",
+                  "bool",
+                  "return"
+                ]
+              }
+            }
+          }
+        },
+        "title": {
+          "type": "string"
+        },
+        "footnotes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "code",
+        "message",
+        "exit_code",
+        "context"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^PT-E-[A-Z0-9-]+$",
+          "description": "Stable. Branch on this, never on the message text."
+        },
+        "message": {
+          "type": "string"
+        },
+        "exit_code": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "remedy": {
+          "type": "string"
+        },
+        "context": {
+          "type": "object"
+        }
+      }
+    },
+    "returnValue": {
+      "type": "object",
+      "description": "A return, with everything needed to label it honestly (PORT-GIPS-H04). There is no shape here that carries a bare number.",
+      "required": [
+        "value",
+        "method",
+        "basis",
+        "period_start",
+        "period_end",
+        "period_days",
+        "is_annualized",
+        "is_supplemental"
+      ],
+      "properties": {
+        "value": {
+          "$ref": "#/$defs/decimal"
+        },
+        "method": {
+          "type": "string"
+        },
+        "basis": {
+          "enum": [
+            "gross_of_fees",
+            "net_of_external_costs_only",
+            "net_of_fees"
+          ]
+        },
+        "period_start": {
+          "type": "string"
+        },
+        "period_end": {
+          "type": "string"
+        },
+        "period_days": {
+          "type": "integer"
+        },
+        "is_annualized": {
+          "type": "boolean"
+        },
+        "is_supplemental": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

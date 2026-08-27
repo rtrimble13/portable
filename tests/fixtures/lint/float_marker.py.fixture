@@ -1,0 +1,4 @@
+"""Fixture: the marker suppresses a line only when it carries a reason."""
+TIMEOUT_SECONDS = 2.5  # no-float: allow -- a socket timeout is not money
+BARE = 1.5  # no-float: allow
+UNMARKED = 3.5

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rtrimble13/portable/schemas/holdings-1.0.json",
+  "title": "pt holdings",
+  "allOf": [{ "$ref": "envelope-1.0.json" }],
+  "type": "object",
+  "properties": {
+    "command": { "const": "holdings" },
+    "data": {
+      "type": "object",
+      "required": ["rows", "columns", "total_market_value"],
+      "properties": {
+        "total_market_value": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["symbol", "market_value"],
+            "properties": {
+              "account": { "type": ["string", "null"] },
+              "symbol": { "type": "string" },
+              "quantity": {
+                "description": "Null for cash. Null is never zero.",
+                "anyOf": [
+                  { "$ref": "envelope-1.0.json#/$defs/decimal" },
+                  { "type": "null" }
+                ]
+              },
+              "price": {
+                "anyOf": [
+                  { "$ref": "envelope-1.0.json#/$defs/decimal" },
+                  { "type": "null" }
+                ]
+              },
+              "market_value": {
+                "description": "Null when the instrument could not be priced. NOT zero.",
+                "anyOf": [
+                  { "$ref": "envelope-1.0.json#/$defs/decimal" },
+                  { "type": "null" }
+                ]
+              },
+              "cost_basis": {
+                "anyOf": [
+                  { "$ref": "envelope-1.0.json#/$defs/decimal" },
+                  { "type": "null" }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

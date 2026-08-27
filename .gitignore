@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# portable
+/build/
+/.venv/
+*.port
+*.port-wal
+*.port-shm
+!examples/sample.port
+/htmlcov/

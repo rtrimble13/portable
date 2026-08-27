@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rtrimble13/portable/schemas/introspect-1.0.json",
+  "title": "pt introspect",
+  "description": "The complete command tree, sufficient for a generator to produce MCP tool definitions without parsing --help.",
+  "allOf": [{ "$ref": "envelope-1.0.json" }],
+  "type": "object",
+  "properties": {
+    "command": { "const": "introspect" },
+    "data": {
+      "type": "object",
+      "required": ["tool", "commands", "exit_codes", "error_codes", "formats"],
+      "properties": {
+        "tool": { "type": "string" },
+        "formats": {
+          "type": "array",
+          "items": { "enum": ["table", "json", "markdown", "csv"] }
+        },
+        "exit_codes": { "type": "object" },
+        "error_codes": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^PT-E-[A-Z0-9-]+$" }
+        },
+        "commands": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/command" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "command": {
+      "type": "object",
+      "required": ["name", "path", "invocation", "help", "parameters"],
+      "properties": {
+        "name": { "type": "string" },
+        "path": { "type": "array", "items": { "type": "string" } },
+        "invocation": { "type": "string" },
+        "help": { "type": "string" },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "kind", "required"],
+            "properties": {
+              "name": { "type": ["string", "null"] },
+              "kind": { "enum": ["option", "argument"] },
+              "type": { "type": "string" },
+              "required": { "type": "boolean" },
+              "default": { "type": ["string", "null"] },
+              "is_flag": { "type": "boolean" },
+              "help": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "commands": { "type": "array", "items": { "$ref": "#/$defs/command" } }
+      }
+    }
+  }
+}
