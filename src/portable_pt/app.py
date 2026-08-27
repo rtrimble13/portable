@@ -23,8 +23,10 @@ from portable_pt import state
 from portable_pt.commands import (
     account,
     cash,
+    corporate_actions,
     instrument,
     introspect,
+    options,
     portfolio,
     positions,
     pricing,
@@ -132,6 +134,8 @@ app.add_typer(pricing.price_app, name="price")
 app.add_typer(positions.position_app, name="position")
 app.add_typer(positions.lot_app, name="lot")
 app.add_typer(reporting.policy_app, name="policy")
+app.add_typer(corporate_actions.app, name="ca")
+app.add_typer(options.app, name="option")
 
 # ── trading verbs, promoted to the top level ─────────────────────────────────
 # `pt buy AAPL --qty 100` is the most-typed command in the tool. `pt trade buy`
