@@ -25,7 +25,7 @@ from portable_core.domain.enums import (
     ReliefMethod,
     TransactionType,
 )
-from portable_core.domain.models import Account, Instrument
+from portable_core.domain.models import Account, CorporateAction, Instrument
 from portable_core.persistence.repositories import Repositories
 from portable_core.schema import migrations as M
 from portable_core.services.replay import ReplayEngine, derived_state_digest
@@ -425,3 +425,145 @@ def test_the_digest_changes_when_derived_state_changes(
     )
     assert engine.rebuild().digest != before
     assert derived_state_digest(repos) == engine.rebuild().digest
+
+
+# ── corporate actions must survive a rebuild ─────────────────────────────────
+
+
+def _corporate_action_portfolio(repos: Repositories) -> tuple[int, int]:
+    """An account holding 100 shares, ready for a split or a spinoff."""
+    account_id = repos.accounts.add(
+        Account(
+            account_id=0,
+            name="CA",
+            account_type=AccountType.TAX_EXEMPT,
+            opened_date=START,
+            default_relief_method=ReliefMethod.FIFO,
+        )
+    )
+    instrument_id = repos.instruments.add(
+        Instrument(instrument_id=0, symbol="ACME", instrument_type=InstrumentType.EQUITY)
+    )
+    _buy(repos, account_id, instrument_id, date(2024, 2, 1), "100", "60.00")
+    return account_id, instrument_id
+
+
+def test_a_split_survives_a_rebuild(repos: Repositories) -> None:
+    """CLAUDE.md invariant 3, for the case that actually broke.
+
+    `pt rebuild` used to silently revert a split -- 300 shares back to 100 --
+    because replay had no case for a SPLIT transaction and a free-text note is
+    not machine-readable. The parameters now live on the `corporate_action`
+    REFERENCE row, which replay reads.
+    """
+    account_id, instrument_id = _corporate_action_portfolio(repos)
+    ex_date = date(2024, 6, 3)
+
+    txn_id = append(
+        repos,
+        account_id,
+        TransactionType.SPLIT,
+        ex_date,
+        instrument_id=instrument_id,
+        quantity=D("300"),
+        ex_date=ex_date,
+    )
+    repos.corporate_actions.add(
+        CorporateAction(
+            instrument_id=instrument_id,
+            action_type="split",
+            ex_date=ex_date,
+            split_numerator=D("3"),
+            split_denominator=D("1"),
+            applied_txn_id=txn_id,
+        )
+    )
+
+    engine = ReplayEngine(repos)
+    first = engine.rebuild()
+    assert first.warnings == (), first.warnings
+
+    lots = repos.lots.open_lots(account_id, instrument_id)
+    assert len(lots) == 1
+    assert lots[0].remaining_quantity == D("300")
+    assert lots[0].adjusted_cost_basis == D("6000.00"), "total basis unchanged"
+    assert lots[0].holding_period_start == date(2024, 2, 1), "period NOT reset"
+
+    # And it is stable: a second rebuild does not compound the split.
+    assert engine.rebuild().digest == first.digest
+    assert repos.lots.open_lots(account_id, instrument_id)[0].remaining_quantity == D("300")
+
+
+def test_a_spinoff_survives_a_rebuild(repos: Repositories) -> None:
+    """The same bug's sibling, which hid one level deeper.
+
+    A spinoff carries an instrument but no quantity -- the quantity is a
+    consequence of the action, not an input to it -- so an early return on a
+    missing quantity skipped it while splits, which do carry one, went through.
+    """
+    account_id, instrument_id = _corporate_action_portfolio(repos)
+    spun_id = repos.instruments.add(
+        Instrument(instrument_id=0, symbol="NEWCO", instrument_type=InstrumentType.EQUITY)
+    )
+    ex_date = date(2024, 9, 3)
+
+    txn_id = append(
+        repos,
+        account_id,
+        TransactionType.SPINOFF,
+        ex_date,
+        instrument_id=instrument_id,
+        ex_date=ex_date,
+    )
+    repos.corporate_actions.add(
+        CorporateAction(
+            instrument_id=instrument_id,
+            action_type="spinoff",
+            ex_date=ex_date,
+            target_instrument_id=spun_id,
+            target_ratio=D("0.5"),
+            parent_fmv=D("18.00"),
+            target_fmv=D("6.00"),
+            applied_txn_id=txn_id,
+        )
+    )
+
+    engine = ReplayEngine(repos)
+    first = engine.rebuild()
+    assert first.warnings == (), first.warnings
+
+    parent = repos.lots.open_lots(account_id, instrument_id)
+    spun = repos.lots.open_lots(account_id, spun_id)
+    assert len(parent) == 1 and len(spun) == 1
+    assert spun[0].remaining_quantity == D("50")
+    assert parent[0].adjusted_cost_basis + spun[0].adjusted_cost_basis == D("6000.00"), (
+        "no basis created or destroyed"
+    )
+    assert spun[0].holding_period_start == date(2024, 2, 1), (
+        "the spun shares inherit the parent's holding period"
+    )
+
+    assert engine.rebuild().digest == first.digest
+
+
+def test_a_corporate_action_with_no_parameters_is_reported_not_ignored(
+    repos: Repositories,
+) -> None:
+    """A ledger row saying "a split happened" cannot be reapplied on its own.
+
+    Silently skipping it is how the original bug looked from the outside: the
+    numbers just quietly changed. Replay reports it instead.
+    """
+    account_id, instrument_id = _corporate_action_portfolio(repos)
+    append(
+        repos,
+        account_id,
+        TransactionType.SPLIT,
+        date(2024, 6, 3),
+        instrument_id=instrument_id,
+        quantity=D("300"),
+        ex_date=date(2024, 6, 3),
+    )
+
+    result = ReplayEngine(repos).rebuild()
+    assert any("cannot be reapplied" in w for w in result.warnings), result.warnings

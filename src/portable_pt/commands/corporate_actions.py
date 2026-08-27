@@ -31,7 +31,13 @@ from portable_core.domain.enums import (
     TransactionSource,
     TransactionType,
 )
-from portable_core.domain.models import Instrument, Position, PositionLeg, Transaction
+from portable_core.domain.models import (
+    CorporateAction,
+    Instrument,
+    Position,
+    PositionLeg,
+    Transaction,
+)
 from portable_core.errors import ValidationError
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.persistence.connection import transaction as db_transaction
@@ -146,7 +152,23 @@ def split(
                         source=TransactionSource.DERIVED,
                         created_at=_now(),
                     )
-                    repos.transactions.append(txn)
+                    txn_id = repos.transactions.append(txn)
+                    # The ledger says a split happened; the corporate_action
+                    # row says WHAT split, which is what lets `pt rebuild`
+                    # reproduce it rather than silently reverting it
+                    # (ADR 0010, CLAUDE.md invariant 3).
+                    repos.corporate_actions.add(
+                        CorporateAction(
+                            instrument_id=instrument.instrument_id,
+                            action_type=(
+                                "split" if numerator > denominator else "reverse_split"
+                            ),
+                            ex_date=on,
+                            split_numerator=numerator,
+                            split_denominator=denominator,
+                            applied_txn_id=txn_id,
+                        )
+                    )
                     for leg in {lot.leg_id for lot in lots}:
                         repos.positions.update_leg_quantity(
                             leg,
@@ -329,7 +351,7 @@ def spinoff(
 
             if not ctx.dry_run:
                 with db_transaction(repos.con):
-                    repos.transactions.append(
+                    spinoff_txn_id = repos.transactions.append(
                         Transaction(
                             txn_id=0,
                             account_id=target.account_id,
@@ -345,6 +367,18 @@ def spinoff(
                             ),
                             source=TransactionSource.DERIVED,
                             created_at=_now(),
+                        )
+                    )
+                    repos.corporate_actions.add(
+                        CorporateAction(
+                            instrument_id=parent.instrument_id,
+                            action_type="spinoff",
+                            ex_date=on,
+                            target_instrument_id=child.instrument_id,
+                            target_ratio=from_text(ratio),
+                            parent_fmv=from_text(parent_fmv),
+                            target_fmv=from_text(spun_fmv),
+                            applied_txn_id=spinoff_txn_id,
                         )
                     )
                     repos.positions.update_leg_quantity(

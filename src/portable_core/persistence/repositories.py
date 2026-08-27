@@ -26,6 +26,7 @@ from portable_core.domain.models import (
     Account,
     BasisAdjustment,
     Benchmark,
+    CorporateAction,
     Instrument,
     Lot,
     LotDisposition,
@@ -49,6 +50,7 @@ from portable_core.persistence import mappers
 __all__ = [
     "AccountRepository",
     "BenchmarkRepository",
+    "CorporateActionRepository",
     "InstrumentRepository",
     "LotRepository",
     "MetaRepository",
@@ -456,6 +458,82 @@ class InstrumentRepository(_Repository):
 
 
 # ── prices ───────────────────────────────────────────────────────────────────
+
+
+class CorporateActionRepository(_Repository):
+    """Corporate actions as recorded facts about the world.
+
+    A REFERENCE table (ADR 0010): never rebuilt, and the parameters a replay
+    needs in order to reapply an action live here rather than in the ledger
+    row. That is what makes `pt rebuild` able to reproduce a split's effect --
+    a ledger row saying "a split happened" is not enough to redo it, and a
+    free-text note is not machine-readable.
+    """
+
+    def add(self, action: CorporateAction) -> int:
+        cursor = self.con.execute(
+            "INSERT INTO corporate_action (instrument_id, action_type, ex_date, "
+            "record_date, pay_date, split_numerator, split_denominator, cash_amount, "
+            "target_instrument_id, target_ratio, parent_fmv, target_fmv, new_symbol, "
+            "source, provider_ref, applied_txn_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(instrument_id, action_type, ex_date) DO UPDATE SET "
+            "split_numerator = excluded.split_numerator, "
+            "split_denominator = excluded.split_denominator, "
+            "cash_amount = excluded.cash_amount, "
+            "target_instrument_id = excluded.target_instrument_id, "
+            "target_ratio = excluded.target_ratio, "
+            "parent_fmv = excluded.parent_fmv, "
+            "target_fmv = excluded.target_fmv, "
+            "new_symbol = excluded.new_symbol, "
+            "applied_txn_id = excluded.applied_txn_id",
+            (
+                action.instrument_id,
+                action.action_type,
+                action.ex_date.isoformat(),
+                action.record_date.isoformat() if action.record_date else None,
+                action.pay_date.isoformat() if action.pay_date else None,
+                _text(action.split_numerator),
+                _text(action.split_denominator),
+                _text(action.cash_amount),
+                action.target_instrument_id,
+                _text(action.target_ratio),
+                _text(action.parent_fmv),
+                _text(action.target_fmv),
+                action.new_symbol,
+                action.source,
+                action.provider_ref,
+                action.applied_txn_id,
+                _now(),
+            ),
+        )
+        return int(cursor.lastrowid or 0)
+
+    def for_instrument(
+        self, instrument_id: int, action_type: str, ex_date: date
+    ) -> CorporateAction | None:
+        """The action a ledger row refers to, by its natural key.
+
+        Looked up by (instrument, type, date) rather than by a foreign key on
+        the transaction, because the ledger is append-only: `applied_txn_id`
+        can be set on the action afterwards, but the transaction cannot be
+        updated to point back.
+        """
+        row = self.con.execute(
+            "SELECT * FROM corporate_action WHERE instrument_id = ? "
+            "AND action_type = ? AND ex_date = ?",
+            (instrument_id, action_type, ex_date.isoformat()),
+        ).fetchone()
+        return None if row is None else mappers.to_corporate_action(row)
+
+    def all(self, *, instrument_id: int | None = None) -> list[CorporateAction]:
+        sql = "SELECT * FROM corporate_action"
+        params: list[Any] = []
+        if instrument_id is not None:
+            sql += " WHERE instrument_id = ?"
+            params.append(instrument_id)
+        sql += " ORDER BY ex_date, corporate_action_id"
+        return [mappers.to_corporate_action(r) for r in self.con.execute(sql, params)]
 
 
 class PriceRepository(_Repository):
@@ -1258,6 +1336,7 @@ class Repositories:
         self.accounts = AccountRepository(con)
         self.instruments = InstrumentRepository(con)
         self.prices = PriceRepository(con)
+        self.corporate_actions = CorporateActionRepository(con)
         self.transactions = TransactionRepository(con)
         self.positions = PositionRepository(con)
         self.lots = LotRepository(con)

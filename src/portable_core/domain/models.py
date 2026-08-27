@@ -480,6 +480,40 @@ class RealizedGain:
         check_decimal_fields(self)
 
 
+@dataclass(frozen=True, slots=True)
+class CorporateAction:
+    """A corporate action as reported, with the parameters needed to apply it.
+
+    This is a fact about the world, not about the portfolio. Applying it
+    produces ledger transactions -- and because the parameters live here rather
+    than in a free-text note on the ledger row, `pt rebuild` can reproduce the
+    action's effect rather than losing it (ADR 0010, CLAUDE.md invariant 3).
+    """
+
+    instrument_id: int
+    action_type: str
+    ex_date: date
+    corporate_action_id: int | None = None
+    record_date: date | None = None
+    pay_date: date | None = None
+    split_numerator: Decimal | None = None
+    split_denominator: Decimal | None = None
+    cash_amount: Decimal | None = None
+    target_instrument_id: int | None = None
+    target_ratio: Decimal | None = None
+    #: Relative fair market values, recorded because a spinoff's basis
+    #: allocation is only defensible if its inputs are.
+    parent_fmv: Decimal | None = None
+    target_fmv: Decimal | None = None
+    new_symbol: str | None = None
+    source: str = "manual"
+    provider_ref: str | None = None
+    applied_txn_id: int | None = None
+
+    def __post_init__(self) -> None:
+        check_decimal_fields(self)
+
+
 # ── Valuation ────────────────────────────────────────────────────────────────
 
 

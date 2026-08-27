@@ -40,6 +40,7 @@ from portable_core.domain.models import (
     BasisAdjustment,
     Benchmark,
     BondDetail,
+    CorporateAction,
     Instrument,
     Lot,
     LotDisposition,
@@ -57,6 +58,7 @@ __all__ = [
     "to_account",
     "to_basis_adjustment",
     "to_benchmark",
+    "to_corporate_action",
     "to_date",
     "to_decimal",
     "to_disposition",
@@ -355,6 +357,28 @@ def to_realized_gain(row: sqlite3.Row) -> RealizedGain:
         state_rate=to_optional_decimal(row["state_rate"]),
         niit_rate=to_optional_decimal(row["niit_rate"]),
         estimated_tax=to_optional_decimal(row["estimated_tax"]),
+    )
+
+
+def to_corporate_action(row: sqlite3.Row) -> CorporateAction:
+    return CorporateAction(
+        corporate_action_id=int(row["corporate_action_id"]),
+        instrument_id=int(row["instrument_id"]),
+        action_type=str(row["action_type"]),
+        ex_date=to_date(row["ex_date"]),
+        record_date=to_optional_date(row["record_date"]),
+        pay_date=to_optional_date(row["pay_date"]),
+        split_numerator=to_optional_decimal(row["split_numerator"]),
+        split_denominator=to_optional_decimal(row["split_denominator"]),
+        cash_amount=to_optional_decimal(row["cash_amount"]),
+        target_instrument_id=row["target_instrument_id"],
+        target_ratio=to_optional_decimal(row["target_ratio"]),
+        parent_fmv=to_optional_decimal(row["parent_fmv"]),
+        target_fmv=to_optional_decimal(row["target_fmv"]),
+        new_symbol=row["new_symbol"],
+        source=str(row["source"]),
+        provider_ref=row["provider_ref"],
+        applied_txn_id=row["applied_txn_id"],
     )
 
 

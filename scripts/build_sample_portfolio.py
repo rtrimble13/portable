@@ -53,6 +53,7 @@ from portable_core.domain.enums import (  # noqa: E402
 from portable_core.domain.models import (  # noqa: E402
     Account,
     BondDetail,
+    CorporateAction,
     Instrument,
     OptionDetail,
     Price,
@@ -527,7 +528,11 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
 
         # ── 2024: a split, and a spinoff ─────────────────────────────────────
         # 100 ACME becomes 200; total basis unchanged, holding period NOT reset.
-        _txn(
+        # Each corporate action is TWO records: the ledger entry saying it
+        # happened, and the corporate_action row carrying the parameters. The
+        # second is what lets `pt rebuild` reproduce the effect rather than
+        # silently reverting it (ADR 0010).
+        split_txn = _txn(
             repos,
             account_id=taxable,
             trade_date=date(2024, 4, 1),
@@ -539,8 +544,18 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
             source=TransactionSource.DERIVED,
             note="2-for-1 split. Basis unchanged; holding period NOT reset.",
         )
+        repos.corporate_actions.add(
+            CorporateAction(
+                instrument_id=acme,
+                action_type="split",
+                ex_date=date(2024, 4, 1),
+                split_numerator=D("2"),
+                split_denominator=D("1"),
+                applied_txn_id=split_txn,
+            )
+        )
 
-        _txn(
+        spinoff_txn = _txn(
             repos,
             account_id=taxable,
             trade_date=date(2024, 9, 3),
@@ -553,6 +568,18 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
                 "Spinoff of NEWCO, 0.25 per ACME share. Basis allocated by "
                 "relative FMV 48.00/12.00; NEWCO inherits ACME's holding period."
             ),
+        )
+        repos.corporate_actions.add(
+            CorporateAction(
+                instrument_id=acme,
+                action_type="spinoff",
+                ex_date=date(2024, 9, 3),
+                target_instrument_id=newco,
+                target_ratio=D("0.25"),
+                parent_fmv=D("48.00"),
+                target_fmv=D("12.00"),
+                applied_txn_id=spinoff_txn,
+            )
         )
 
         _buy(repos, ira, aapl, date(2024, 2, 20), "100", "181.56")

@@ -29,15 +29,23 @@ from decimal import Decimal
 
 from portable_core.decimals import money_context, quantize_money, to_text
 from portable_core.domain.enums import (
+    LegRole,
     LotStatus,
     PositionStatus,
     StrategyType,
     TransactionType,
 )
-from portable_core.domain.models import Lot, Position, PositionLeg, Transaction
+from portable_core.domain.models import (
+    CorporateAction,
+    Lot,
+    Position,
+    PositionLeg,
+    Transaction,
+)
 from portable_core.errors import ValidationError
-from portable_core.errors.kinds import E_CASH_NOT_CONSERVED
+from portable_core.errors.kinds import E_CASH_NOT_CONSERVED, E_REPLAY_MISMATCH
 from portable_core.persistence.repositories import Repositories
+from portable_core.services.corporate_actions import CorporateActionEngine
 from portable_core.services.lots import LotEngine
 from portable_core.services.positions import PositionEngine, leg_role_for
 from portable_core.services.tax import TaxEngine
@@ -45,6 +53,15 @@ from portable_core.services.tax import TaxEngine
 __all__ = ["ReplayEngine", "ReplayResult", "derived_state_digest"]
 
 ZERO = Decimal("0.00")
+
+#: Corporate-action transaction types replay must reapply, mapped to the
+#: `corporate_action.action_type` each corresponds to.
+_ACTION_TYPE_FOR: dict[TransactionType, str] = {
+    TransactionType.SPLIT: "split",
+    TransactionType.REVERSE_SPLIT: "reverse_split",
+    TransactionType.SPINOFF: "spinoff",
+}
+_CORPORATE_ACTIONS = frozenset(_ACTION_TYPE_FOR)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +108,7 @@ class ReplayEngine:
     def __init__(self, repos: Repositories) -> None:
         self.repos = repos
         self.lots = LotEngine()
+        self.corporate_actions = CorporateActionEngine()
         self.positions = PositionEngine()
         self.tax = TaxEngine()
 
@@ -201,8 +219,20 @@ class ReplayEngine:
                     txn.counter_account_id, counter.currency, -txn.net_cash_effect, cash
                 )
 
-        if txn.instrument_id is None or txn.quantity is None:
+        if txn.instrument_id is None:
             return  # a pure cash event: nothing to position
+
+        # Dispatched BEFORE the quantity check, because a spinoff carries an
+        # instrument but no quantity -- the quantity is a consequence of the
+        # action, not an input to it. Ordering these the other way round meant
+        # spinoffs were silently skipped on rebuild while splits, which do
+        # carry a quantity, were not.
+        if txn.txn_type in _CORPORATE_ACTIONS:
+            self._corporate_action(txn, counters)
+            return
+
+        if txn.quantity is None:
+            return
 
         if txn.txn_type in {
             TransactionType.BUY,
@@ -372,6 +402,131 @@ class ReplayEngine:
 
         for leg_id in sorted(leg_ids):
             self._refresh_leg(leg_id, txn.trade_date)
+
+    def _corporate_action(self, txn: Transaction, counters: dict[str, int]) -> None:
+        """Reapply a corporate action during replay.
+
+        The parameters come from the `corporate_action` REFERENCE row, not from
+        the ledger entry: a ledger row saying "a split happened" is not enough
+        to redo it, and a free-text note is not machine-readable. That is why
+        `pt ca split` writes both.
+
+        Without this, `pt rebuild` silently reverted a split -- 300 shares back
+        to 100 -- which is exactly the class of failure CLAUDE.md invariant 3
+        exists to make impossible. It went unnoticed until the walkthrough was
+        run end to end, which is the argument for running it.
+        """
+        assert txn.instrument_id is not None
+        action = self.repos.corporate_actions.for_instrument(
+            txn.instrument_id, _ACTION_TYPE_FOR[txn.txn_type], txn.trade_date
+        )
+        if action is None:
+            raise ValidationError(
+                f"transaction {txn.txn_id} records a {txn.txn_type} but no matching "
+                "corporate_action row carries its parameters, so it cannot be "
+                "reapplied",
+                code=E_REPLAY_MISMATCH,
+                remedy=(
+                    "Re-enter the action with `pt ca ...`, which records both the "
+                    "ledger entry and the parameters replay needs."
+                ),
+                txn_id=txn.txn_id,
+            )
+
+        if txn.txn_type in {TransactionType.SPLIT, TransactionType.REVERSE_SPLIT}:
+            self._replay_split(txn, action)
+        elif txn.txn_type is TransactionType.SPINOFF:
+            self._replay_spinoff(txn, action, counters)
+
+    def _replay_split(self, txn: Transaction, action: CorporateAction) -> None:
+        assert txn.instrument_id is not None
+        account = self.repos.accounts.get(txn.account_id)
+        if account is None or action.split_numerator is None:
+            return
+
+        lots = self.repos.lots.open_lots(
+            txn.account_id, txn.instrument_id, as_of=txn.trade_date
+        )
+        if not lots:
+            return
+
+        result = self.corporate_actions.split(
+            lots,
+            numerator=action.split_numerator,
+            denominator=action.split_denominator or Decimal(1),
+            ex_date=txn.trade_date,
+            txn_id=txn.txn_id,
+            allows_fractional=account.allows_fractional,
+        )
+        for adjusted, adjustment in zip(result.lots, result.adjustments, strict=True):
+            self.repos.lots.update_basis(adjusted)
+            self.repos.lots.add_adjustment(replace(adjustment, adjustment_id=0))
+        for leg_id in {lot.leg_id for lot in lots}:
+            self._refresh_leg(leg_id, txn.trade_date)
+
+    def _replay_spinoff(
+        self, txn: Transaction, action: CorporateAction, counters: dict[str, int]
+    ) -> None:
+        assert txn.instrument_id is not None
+        account = self.repos.accounts.get(txn.account_id)
+        if (
+            account is None
+            or action.target_instrument_id is None
+            or action.target_ratio is None
+        ):
+            return
+
+        lots = self.repos.lots.open_lots(
+            txn.account_id, txn.instrument_id, as_of=txn.trade_date
+        )
+        if not lots:
+            return
+
+        position_id = self.repos.positions.add(
+            Position(
+                position_id=0,
+                account_id=txn.account_id,
+                strategy_type=StrategyType.SINGLE,
+                opened_date=txn.trade_date,
+                status=PositionStatus.OPEN,
+                opened_txn_id=txn.txn_id,
+            )
+        )
+        counters["positions"] += 1
+        leg_id = self.repos.positions.add_leg(
+            PositionLeg(
+                leg_id=0,
+                position_id=position_id,
+                instrument_id=action.target_instrument_id,
+                role=LegRole.LONG_STOCK,
+                sign=1,
+                quantity=ZERO,
+                opened_date=txn.trade_date,
+            )
+        )
+
+        outcome = self.corporate_actions.spinoff(
+            lots,
+            ratio=action.target_ratio,
+            parent_fmv=action.parent_fmv or ZERO,
+            spun_fmv=action.target_fmv or ZERO,
+            ex_date=txn.trade_date,
+            spun_instrument_id=action.target_instrument_id,
+            spun_leg_id=leg_id,
+            spun_position_id=position_id,
+            txn_id=txn.txn_id,
+            allows_fractional=account.allows_fractional,
+        )
+        for adjusted, adjustment in zip(outcome.parent_lots, outcome.adjustments, strict=True):
+            self.repos.lots.update_basis(adjusted)
+            self.repos.lots.add_adjustment(replace(adjustment, adjustment_id=0))
+        for spun in outcome.spun_lots:
+            self.repos.lots.add(replace(spun, lot_id=0))
+            counters["lots"] += 1
+
+        self._refresh_leg(leg_id, txn.trade_date)
+        for parent_leg in {lot.leg_id for lot in lots}:
+            self._refresh_leg(parent_leg, txn.trade_date)
 
     def _refresh_leg(self, leg_id: int, on: date) -> None:
         """Re-materialize a leg's quantity from its lots, and close it if empty.
