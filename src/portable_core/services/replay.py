@@ -108,7 +108,27 @@ class ReplayEngine:
         warnings: list[str] = []
         cash: dict[tuple[int, str], Decimal] = {}
 
+        # A reversal and the entry it reverses net to zero in DERIVED state.
+        # Both are skipped here -- and both remain in the ledger, which is the
+        # point: history shows the mistake, the reversal, and the correction,
+        # while the current position reflects only the net effect
+        # (CLAUDE.md invariant 2).
+        #
+        # Netting the pair out is stronger than trying to unwind the original's
+        # effect after the fact. Unwinding would have to decide what to do with
+        # lots that a later trade had already consumed; skipping surfaces that
+        # as an unmatched closing trade, which is the honest answer -- reversing
+        # a purchase whose shares were subsequently sold is a conflict a person
+        # has to resolve, not something replay should paper over.
+        reversed_ids = {
+            txn.reverses_txn_id
+            for txn in transactions
+            if txn.txn_type is TransactionType.REVERSAL and txn.reverses_txn_id
+        }
+
         for txn in transactions:
+            if txn.txn_id in reversed_ids or txn.txn_type is TransactionType.REVERSAL:
+                continue
             try:
                 self.apply_transaction(txn, counters=counters, cash=cash)
             except ValidationError as exc:
@@ -383,15 +403,28 @@ class ReplayEngine:
         effect was computed one way when written and another when replayed --
         which is a wrong number that nothing else would surface.
         """
+        every = self.repos.transactions.in_ledger_order()
+        # The same netting rebuild() applies -- otherwise this check would
+        # disagree with the balances rebuild() just wrote, and report a break
+        # that is really a difference of opinion between two functions.
+        reversed_ids = {
+            txn.reverses_txn_id
+            for txn in every
+            if txn.txn_type is TransactionType.REVERSAL and txn.reverses_txn_id
+        }
+        effective = [
+            txn
+            for txn in every
+            if txn.txn_id not in reversed_ids and txn.txn_type is not TransactionType.REVERSAL
+        ]
+
         problems: list[str] = []
         for account in self.repos.accounts.all():
-            ledger_total = ZERO
             with money_context():
-                for txn in self.repos.transactions.in_ledger_order(
-                    account_id=account.account_id
-                ):
-                    ledger_total += txn.net_cash_effect
-                for txn in self.repos.transactions.in_ledger_order():
+                ledger_total = ZERO
+                for txn in effective:
+                    if txn.account_id == account.account_id:
+                        ledger_total += txn.net_cash_effect
                     if (
                         txn.txn_type is TransactionType.TRANSFER
                         and txn.counter_account_id == account.account_id

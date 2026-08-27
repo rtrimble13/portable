@@ -126,7 +126,13 @@ disallow_untyped_defs = false
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["portable_native.*", "hypothesis.*", "psycopg.*"]
+module = [
+  "portable_native.*",
+  "hypothesis.*",
+  "psycopg.*",
+  "jsonschema.*",
+  "referencing.*",
+]
 ignore_missing_imports = true
 
 # ── pytest ───────────────────────────────────────────────────────────────────

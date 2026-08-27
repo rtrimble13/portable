@@ -21,7 +21,7 @@ from typing import Protocol, runtime_checkable
 
 from portable_core.domain.models import Instrument, Price
 from portable_core.errors import DataUnavailableError
-from portable_core.errors.kinds import E_PROVIDER_CAPABILITY
+from portable_core.errors.kinds import E_PROVIDER_CAPABILITY, E_PROVIDER_UNAVAILABLE
 
 __all__ = [
     "BenchmarkCapability",
@@ -261,6 +261,22 @@ def require_capability(provider: MarketDataProvider, capability: Capability) -> 
     """
     if provider.has(capability):
         return
+    if not provider.capabilities:
+        # A provider that can do nothing at all is almost always an
+        # unconfigured one, and "cannot supply eod_prices" is a worse first
+        # message than "no source is configured, here is how to pick one".
+        raise DataUnavailableError(
+            f"no market data provider is configured, so {capability} is unavailable",
+            code=E_PROVIDER_UNAVAILABLE,
+            remedy=(
+                "Choose a source with --source file (and --price-file PATH) or "
+                "--source fafnir, or set it in ~/.portablerc. Prices already cached "
+                "in the .port file are still usable with --offline; you can also set "
+                "one by hand with `pt price set`."
+            ),
+            provider=provider.name,
+            capability=str(capability),
+        )
     raise DataUnavailableError(
         f"the {provider.name} provider cannot supply {capability}",
         code=E_PROVIDER_CAPABILITY,

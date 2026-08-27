@@ -1,0 +1,24 @@
+{
+  "_note": "Benchmarks enter portable through the file provider, because it is the one place the PORT-GIPS-G01 question gets asked. `return_type` is REQUIRED and has no default: a price-only series understates its benchmark by roughly the dividend yield every year, and portable refuses one rather than assuming.",
+  "SPXTR": {
+    "return_type": "total_return",
+    "periodicity": "daily",
+    "is_net_of_withholding": false,
+    "levels": {
+      "2021-12-31": "9989.09",
+      "2022-12-30": "8177.36",
+      "2023-12-29": "10394.42",
+      "2024-12-31": "12966.94",
+      "2025-06-30": "13724.11",
+      "2025-12-31": "14488.62"
+    }
+  },
+  "SPX_PRICE_ONLY": {
+    "_note": "Included deliberately so the refusal path has something real to refuse. portable will not use this as a benchmark.",
+    "return_type": "price_only",
+    "periodicity": "daily",
+    "levels": {
+      "2025-06-30": "6204.95"
+    }
+  }
+}

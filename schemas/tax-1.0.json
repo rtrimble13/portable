@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rtrimble13/portable/schemas/tax-1.0.json",
+  "title": "pt tax",
+  "description": "Realized gains by holding period with an estimated liability.\n\n`disclaimer` is REQUIRED to be a non-empty string here, and `excludes_wash_sales` is required to be present. A tax report that quietly omitted either would be the silently-wrong-number failure mode by definition.",
+  "allOf": [{ "$ref": "envelope-1.0.json" }],
+  "type": "object",
+  "required": ["disclaimer"],
+  "properties": {
+    "command": { "const": "tax" },
+    "disclaimer": { "type": "string", "minLength": 1 },
+    "data": {
+      "type": "object",
+      "required": [
+        "tax_year",
+        "short_term_gain",
+        "long_term_gain",
+        "short_term_tax",
+        "long_term_tax",
+        "excludes_wash_sales"
+      ],
+      "properties": {
+        "tax_year": { "type": "integer" },
+        "short_term_gain": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+        "long_term_gain": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+        "short_term_tax": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+        "long_term_tax": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+        "excludes_wash_sales": {
+          "const": true,
+          "description": "True until wash-sale detection lands in v0.2. A const, so that flipping it silently is impossible: the schema has to change too."
+        }
+      }
+    }
+  }
+}
