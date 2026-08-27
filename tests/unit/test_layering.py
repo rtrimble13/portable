@@ -24,7 +24,13 @@ SRC = ROOT / "src"
 #: For each package, what it may import from within the repo. See the table in
 #: docs/architecture.md §1 -- if you change one, change both.
 ALLOWED: dict[str, frozenset[str]] = {
-    "portable_core.domain": frozenset({"portable_core.domain", "portable_core.errors"}),
+    # `portable_core.decimals` is a stdlib-only leaf: the Decimal boundary
+    # itself (ADR 0005). Domain objects are made OF Decimals, so depending on
+    # the module that defines how a Decimal is represented is not a layer
+    # violation -- it is the layer below.
+    "portable_core.domain": frozenset(
+        {"portable_core.domain", "portable_core.errors", "portable_core.decimals"}
+    ),
     "portable_core.errors": frozenset({"portable_core.errors"}),
     # `portable_core` itself is the root package: a version string and a
     # schema-version constant, with no dependencies of its own. Importing it

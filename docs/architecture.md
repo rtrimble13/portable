@@ -48,11 +48,13 @@ flowchart TB
 ```
 
 **The dependency rule, in one line:** arrows point inward and down. `domain/`
-depends on nothing but the standard library. Nothing depends on a CLI.
+depends on nothing but the standard library, the error hierarchy, and
+`decimals` -- the stdlib-only leaf that defines how a `Decimal` is
+represented, which domain objects are made of. Nothing depends on a CLI.
 
 | Layer | May import | May **not** import |
 |---|---|---|
-| `domain/` | stdlib, `errors/` | anything else in core |
+| `domain/` | stdlib, `errors/`, `decimals` | anything else in core |
 | `services/` | `domain/`, `persistence/`, `providers/`, `errors/` | `formatters/`, `cli/` |
 | `persistence/` | `domain/`, `schema/`, `errors/` | `services/`, `providers/`, `cli/` |
 | `providers/` | `domain/`, `config/`, `errors/` | `services/`, `persistence/`, `cli/` |
