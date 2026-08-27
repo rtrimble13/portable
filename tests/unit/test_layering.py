@@ -26,7 +26,12 @@ SRC = ROOT / "src"
 ALLOWED: dict[str, frozenset[str]] = {
     "portable_core.domain": frozenset({"portable_core.domain", "portable_core.errors"}),
     "portable_core.errors": frozenset({"portable_core.errors"}),
-    "portable_core.schema": frozenset({"portable_core.schema", "portable_core.errors"}),
+    # `portable_core` itself is the root package: a version string and a
+    # schema-version constant, with no dependencies of its own. Importing it
+    # does not create a cycle or a layer violation.
+    "portable_core.schema": frozenset(
+        {"portable_core.schema", "portable_core.errors", "portable_core"}
+    ),
     "portable_core.persistence": frozenset(
         {
             "portable_core.persistence",
