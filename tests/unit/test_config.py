@@ -154,3 +154,65 @@ def test_flow_thresholds_are_not_configuration() -> None:
         "materiality_return_bps",
     ):
         assert forbidden not in DEFAULTS
+
+
+# ── importable without a home directory ──────────────────────────────────────
+
+
+def test_the_config_module_imports_without_a_home_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A library must not fail to import because of its environment.
+
+    `Path.home()` **raises** on Windows when neither USERPROFILE nor
+    HOMEDRIVE/HOMEPATH is set. Resolving the user config path at module scope
+    therefore made `import portable_core.config` fail outright there -- and,
+    since everything imports config eventually, took the whole CLI with it.
+
+    POSIX hid it: `Path.home()` there falls back to a `pwd` lookup and
+    succeeds. So this passed on Linux and failed only on Windows, which is the
+    platform the owner works on. The monkeypatch reproduces the Windows
+    behaviour on any platform.
+    """
+    from portable_core.config.settings import user_config_path
+
+    def no_home() -> Path:
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(Path, "home", no_home)
+    assert user_config_path() is None
+
+
+def test_config_loads_with_no_home_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No home simply means no user config, which is an ordinary state.
+
+    A container, a service account, and a locked-down CI runner are all
+    normal places to run this.
+    """
+
+    def no_home() -> Path:
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(Path, "home", no_home)
+    config = load_config({"format": "json"}, env={}, project_config=Path("/nonexistent"))
+
+    assert config.get("format") == "json"
+    assert config.source_of("format") is Source.FLAG
+    assert config.get("no_color") is False
+
+
+def test_the_fafnir_dsn_lookup_survives_no_home_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same import-time bug existed in the fafnir adapter."""
+    from portable_core.providers.fafnir import _dsn_files, resolve_dsn
+
+    def no_home() -> Path:
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(Path, "home", no_home)
+    monkeypatch.delenv("PORTABLE_FAFNIR_DSN", raising=False)
+    monkeypatch.delenv("FAFNIR_DSN", raising=False)
+
+    assert _dsn_files() == ()
+    assert resolve_dsn() is None

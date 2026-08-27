@@ -32,6 +32,15 @@ on **`PORTABLE_BUILD_NATIVE`** (default `ON`), and `cpp/CMakeLists.txt` mirrors
 `po`'s option-flag style with a `PORTABLE_` prefix and the same pybind11 and
 Catch2 tags, so the two dependency sets reconcile rather than collide.
 
+**`cpp/CMakeLists.txt` reads `PORTABLE_BUILD_NATIVE` from the environment
+itself, and that is load-bearing.** scikit-build-core reads its *own*
+configuration — `[tool.scikit-build.cmake.define]` in `pyproject.toml`, or
+`SKBUILD_CMAKE_DEFINE` — and does **not** pass an arbitrary environment variable
+through to CMake. Without the explicit `if(DEFINED ENV{...})` block,
+`PORTABLE_BUILD_NATIVE=OFF pip install .` silently builds the extension anyway,
+which makes every document describing the switch wrong. `-D` and
+`SKBUILD_CMAKE_DEFINE` continue to work.
+
 Setting `PORTABLE_BUILD_NATIVE=OFF` produces a **complete, correct, pure-Python
 install**. This is not a degraded mode; it is the reference implementation, and
 it is what the differential tests compare against. It exists so that a user
@@ -83,6 +92,18 @@ binding, the twin, and their agreement.
   quietly rotting.
 - `FetchContent` needs network at configure time. CI caches the build directory;
   `make cpp` documents the requirement. The `OFF` path needs neither.
+- **MSVC needs `/Zc:__cplusplus`.** Without it MSVC reports `__cplusplus` as
+  `199711L` regardless of `/std:c++17`, for backward compatibility.
+  `build_info()` reads that macro, so a Catch2 assertion about the standard
+  fails on Windows and passes everywhere else. Both the extension **and** the
+  `portable_probe` static library the Catch2 suite links carry the flag —
+  flagging only one leaves the test binary and the extension disagreeing about
+  what standard they were built to.
+- **The no-extension CI job asserts the extension is genuinely absent**, rather
+  than trusting the flag it just passed. That assertion is what caught
+  `PORTABLE_BUILD_NATIVE=OFF` doing nothing, and it exists for the same reason
+  the differential test skips loudly: a check that silently passes when its
+  subject is missing has stopped being a check.
 - Integrating `portopt` in v0.3 is `add_subdirectory` plus dependency-tag
   reconciliation, which is the point.
 

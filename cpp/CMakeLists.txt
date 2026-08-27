@@ -24,6 +24,26 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(PORTABLE_BUILD_NATIVE "Build the pybind11 extension module" ON)
 option(PORTABLE_BUILD_TESTS  "Build the Catch2 test suite"        OFF)
 
+# Honour a plain PORTABLE_BUILD_NATIVE=OFF in the environment.
+#
+# This is load-bearing, not a convenience. scikit-build-core reads its own
+# configuration -- pyproject's [tool.scikit-build.cmake.define], or
+# SKBUILD_CMAKE_DEFINE -- and does NOT pass an arbitrary environment variable
+# through to CMake. So `PORTABLE_BUILD_NATIVE=OFF pip install .`, which the
+# README, ADR 0008, both bootstrap scripts and CI all document, silently built
+# the extension anyway. CI caught it because the no-extension job asserts the
+# extension is genuinely absent rather than trusting the flag.
+#
+# Reading the variable here makes the documented interface the real one,
+# wherever it is set, and leaves -D and SKBUILD_CMAKE_DEFINE working as before.
+if(DEFINED ENV{PORTABLE_BUILD_NATIVE})
+    set(PORTABLE_BUILD_NATIVE "$ENV{PORTABLE_BUILD_NATIVE}" CACHE BOOL "" FORCE)
+    message(STATUS "portable: PORTABLE_BUILD_NATIVE=$ENV{PORTABLE_BUILD_NATIVE} from the environment")
+endif()
+if(DEFINED ENV{PORTABLE_BUILD_TESTS})
+    set(PORTABLE_BUILD_TESTS "$ENV{PORTABLE_BUILD_TESTS}" CACHE BOOL "" FORCE)
+endif()
+
 # pybind11 resolution, in order:
 #   1. the pip-installed pybind11 (what scikit-build-core gives us, no network)
 #   2. FetchContent at po's pinned tag (what `make cpp` falls back to)
