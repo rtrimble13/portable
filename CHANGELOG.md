@@ -41,12 +41,46 @@ Two rules specific to this repository:
   and the C++ build with Catch2 on both platforms.
 - Documentation: `docs/architecture.md`, `docs/domain-model.md`, and eleven
   ADRs covering every decision the bootstrap prompt left open.
+- `docs/broker-import.md` — the design for turning custodian exports into ledger
+  rows: the three-stage pipeline, the canonical batch format, the activity and
+  instrument maps as reviewed data files, the refusal list, and reconciliation as
+  the acceptance criterion. **Design only; nothing is implemented.**
+- Five ADRs for the decisions that design rests on:
+  - **0012** — import is a staged pipeline with a reviewable batch file between
+    extraction and commit, because the ledger is append-only and the cheap place to
+    catch a bad row is before it is written.
+  - **0013** — a cash sweep vehicle is cash. Its transfer rows are discarded at
+    import (a third of the sample export), its income is income on the cash
+    balance, and `account.sweep_instrument_id` is dropped rather than left as a
+    column no code reads.
+  - **0014** — an adviser fee billed to one account and settled from another is a
+    `transfer` plus a `fee`, never two fees; an unpaired settlement to an account
+    outside the portfolio is a `withdrawal`, never a fee.
+  - **0015** — `transfer_in` / `transfer_out` for securities crossing the portfolio
+    boundary, carrying the lot's original basis and acquisition date separately
+    from the market value that forms the flow. This is how a position acquired
+    before the ledger begins enters it without inventing a cash flow.
+  - **0016** — a back-dated append forces a full rebuild in the same transaction,
+    and `pt validate` digests stored derived state *before* rebuilding so that it
+    compares stored against replayed rather than one rebuild against another.
 
 ### Changed
 
 - `CLAUDE.md` invariant 11 carries `gips-lint: allow` markers on the three lines
   that name the prohibited phrases in order to forbid them. This is the case the
   marker exists for, and `CLAUDE.md` says so itself.
+- `docs/roadmap.md` — broker import pulled forward from v1.0 to the head of v0.2,
+  ahead of the return engine, because there is nothing to compute a return on
+  until the real portfolio is loaded.
+
+### Found, not yet fixed
+
+- **A back-dated ledger append leaves derived state disagreeing with the ledger**,
+  and `pt validate` reports no problem because it rebuilds before it compares —
+  measuring idempotence rather than the fidelity `CLAUDE.md` invariant 3 requires.
+  Reproduced with a three-transaction portfolio in which the live realized gain and
+  the gain after `pt rebuild` differ. ADR 0016 records the fix; it lands in v0.2
+  ahead of any import work.
 
 ## [0.1.0] — unreleased
 

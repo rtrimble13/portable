@@ -361,6 +361,11 @@ test that fails without your change.
   | 0009 | A position spans instruments; lots hang off legs |
   | 0010 | Derived state, the replay contract, and what `pt rebuild` guarantees |
   | 0011 | What the tax engine computes exactly, estimates, and refuses |
+  | 0012 | Broker import is a staged pipeline with a human gate |
+  | 0013 | A cash sweep vehicle is cash, not an instrument |
+  | 0014 | Advisory fees paid by one account for another |
+  | 0015 | In-kind transfers, and positions that predate the ledger |
+  | 0016 | Out-of-order appends force a rebuild; `pt validate` compares stored state |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager
@@ -372,6 +377,9 @@ test that fails without your change.
   what is estimated vs. exact
 - `docs/port-format.md`, `docs/schema.md` — the `.port` file
 - `docs/market-data.md` — provider interface, fafnir adapter, cache and staleness
+- `docs/broker-import.md` — how custodian exports become ledger rows: the batch
+  format, the activity and instrument maps, the refusals, and the reconciliation
+  that makes an import acceptable
 - `docs/output-formats.md` — JSON envelope, versioning, agent/MCP integration
 - `docs/roadmap.md` — what is coming and in which milestone
 - Prior art: [fafnir](https://github.com/rtrimble13/fafnir) (market data warehouse,
