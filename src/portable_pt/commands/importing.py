@@ -8,6 +8,7 @@ reviewed batch file and writes the ledger.
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from typing import Annotated
 
@@ -18,6 +19,7 @@ from portable_core.importers import ABSENCE_MEANS, TabularAdapter
 from portable_core.persistence.connection import scratch_transaction
 from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.services.import_batch import BatchImporter, ImportBatch, load_batch
+from portable_core.services.reconstruction import Reconstruction, reconstruct
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, maybe_dry_run
 
@@ -226,3 +228,182 @@ def import_inspect(
         )
 
     dispatch(action)
+
+
+def import_reconstruct(
+    adapter: Annotated[
+        Path,
+        typer.Argument(help="An adapter directory holding source.toml and activity_map.toml."),
+    ],
+    cutover: Annotated[
+        str | None,
+        typer.Option(
+            "--cutover",
+            help="Cut over at this date instead of the day before the history begins.",
+        ),
+    ] = None,
+) -> None:
+    """Derive the opening position set by rolling the history back.
+
+    Most custodians will not supply history to account inception, so a
+    portfolio built from their exports has to start somewhere the records do
+    not. The cutover is the transaction history's first date, and the positions
+    on the day before it are **derived, not read**: the history applied in
+    reverse to the dated snapshot is what was held (ADR 0017).
+
+    Read the basis column. Quantities come back exactly — they are arithmetic
+    on numbers the custodian stated. Basis comes back exactly *as an aggregate*
+    for a block untouched since the cutover, is solved backwards under an
+    assumed FIFO relief for one partly consumed, and comes back **not at all**
+    for a block with nothing surviving to anchor against. That last case gets
+    no number rather than a plausible one: today's basis constrains the block
+    only through what survives of it, so where nothing survives there is no
+    equation to solve under any relief method.
+
+    Findings are the other half. A position that rolls back below zero proves
+    the history is missing an event — usually a corporate action — which is what
+    makes that gap detectable rather than something to take on trust.
+
+    Nothing is written. This reads files and reports.
+    """
+
+    def action() -> CommandResult:
+        report = TabularAdapter.load(adapter).read()
+        boundary = date.fromisoformat(cutover) if cutover else None
+        result = reconstruct(report.holdings, report.transactions, cutover=boundary)
+
+        # One row list, rendered as a table and carried in `data`. A consumer
+        # reading `--format json` must be able to see which position rests on
+        # which rung of the ladder, not merely how many do: the count is the
+        # part that is safe to summarise and the attribution is not.
+        rows = tuple(
+            {
+                "account": position.account,
+                "identifier": position.identifier,
+                "quantity": position.quantity,
+                "basis_source": position.basis_source.value,
+                # Explicitly null, never zero: "the evidence supports no
+                # figure" and "the basis is nothing" are different claims.
+                "cost_basis": position.cost_basis,
+                "still_held": position.still_held,
+                "added_after": position.added_after,
+                "disposed_after": position.disposed_after,
+                "assumption": position.assumption,
+            }
+            for position in result.positions
+        )
+        notes = _reconstruction_notes(result)
+
+        table = Table(
+            columns=(
+                Column("account", "Account"),
+                Column("identifier", "Instrument"),
+                Column("quantity", "Quantity", ColumnKind.QUANTITY),
+                Column("basis_source", "Basis from"),
+                Column("cost_basis", "Cost basis", ColumnKind.MONEY),
+                Column("still_held", "Still held", ColumnKind.BOOL),
+            ),
+            rows=rows,
+            title=f"Positions held at the cutover, {result.cutover.isoformat()}",
+            footnotes=notes,
+        )
+
+        return CommandResult(
+            command="import reconstruct",
+            data={
+                "adapter": str(adapter),
+                "broker": report.broker,
+                "cutover": result.cutover.isoformat(),
+                "as_of": result.as_of.isoformat(),
+                "positions": [
+                    {
+                        **row,
+                        "quantity": str(row["quantity"]),
+                        "added_after": str(row["added_after"]),
+                        "disposed_after": str(row["disposed_after"]),
+                        "cost_basis": (
+                            None if row["cost_basis"] is None else str(row["cost_basis"])
+                        ),
+                    }
+                    for row in rows
+                ],
+                # The qualification is an envelope field, not a rendered string,
+                # for the same reason the performance disclaimer is: a consumer
+                # must not be able to drop it without noticing.
+                "notes": list(notes),
+                "by_source": {
+                    source.value: count for source, count in result.by_source().items()
+                },
+                "exact_basis_share": (
+                    None if result.exact_basis_share is None else str(result.exact_basis_share)
+                ),
+                "cash": [
+                    {
+                        "account": entry.account,
+                        "amount": str(entry.amount),
+                        "moved_after": str(entry.moved_after),
+                    }
+                    for entry in result.cash
+                ],
+                "opened_after": [
+                    {"account": account, "identifier": identifier}
+                    for account, identifier in result.opened_after
+                ],
+                "findings": [
+                    {
+                        "account": finding.account,
+                        "identifier": finding.identifier,
+                        "kind": finding.kind,
+                        "detail": finding.detail,
+                    }
+                    for finding in result.findings
+                ],
+                "uncertain_dispositions": [
+                    {
+                        "account": item.account,
+                        "identifier": item.identifier,
+                        "trade_date": item.trade_date.isoformat(),
+                        "quantity": str(item.quantity),
+                        "days_after_cutover": item.days_after_cutover,
+                    }
+                    for item in result.uncertain_dispositions
+                ],
+            },
+            table=table,
+            as_of=result.as_of,
+            schema_ref="import-reconstruct-1.0.json",
+        )
+
+    dispatch(action)
+
+
+def _reconstruction_notes(result: Reconstruction) -> tuple[str, ...]:
+    """What the reader has to know before using any figure in the table."""
+    notes = [
+        "Quantities are exact — arithmetic on numbers the custodian stated. "
+        "Basis is not uniformly exact; read the 'Basis from' column.",
+        "reconstructed: today's basis less every subsequent addition. Exact as "
+        "an aggregate, averaged within the block — specific identification "
+        "inside it is not available.",
+        "estimated: solved backwards under an assumed FIFO relief, anchored to "
+        "the part of the block that survives. Nothing in the exports states the "
+        "custodian's actual method.",
+        "unavailable: nothing of the block survives, so there is no equation to "
+        "solve under any relief method. The lot is seeded at cutover market "
+        "value so the arithmetic closes; that value is not a basis claim, and "
+        "`pt tax` excludes those dispositions from every total.",
+    ]
+    share = result.exact_basis_share
+    if share is not None:
+        notes.append(
+            f"{share:.1%} of the recovered basis is exact as an aggregate; the "
+            f"rest rests on the FIFO assumption."
+        )
+    if result.uncertain_dispositions:
+        notes.append(
+            f"{len(result.uncertain_dispositions)} disposition(s) fall within a "
+            f"year of the cutover, so their holding-period character rests on "
+            f"the seeded acquisition date. They are enumerated in the JSON "
+            f"output and are reviewed individually, not counted."
+        )
+    return tuple(notes)

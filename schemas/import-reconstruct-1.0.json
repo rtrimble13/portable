@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rtrimble13/portable/schemas/import-reconstruct-1.0.json",
+  "title": "pt import reconstruct",
+  "description": "The opening position set derived by rolling a custodian's history back from its dated snapshot, with where each basis came from. ADR 0017.",
+  "allOf": [{ "$ref": "envelope-1.0.json" }],
+  "type": "object",
+  "properties": {
+    "command": { "const": "import reconstruct" },
+    "data": {
+      "type": "object",
+      "required": [
+        "adapter",
+        "broker",
+        "cutover",
+        "as_of",
+        "positions",
+        "notes",
+        "by_source",
+        "exact_basis_share",
+        "cash",
+        "opened_after",
+        "findings",
+        "uncertain_dispositions"
+      ],
+      "properties": {
+        "adapter": { "type": "string" },
+        "broker": { "type": "string" },
+        "cutover": {
+          "description": "The day before the transaction history begins, unless overridden.",
+          "type": "string",
+          "format": "date"
+        },
+        "as_of": {
+          "description": "The holdings snapshot's date — the anchor the roll-back starts from.",
+          "type": "string",
+          "format": "date"
+        },
+        "positions": {
+          "description": "Every position held at the cutover. Carried here and not only in the rendered table: a consumer must be able to see WHICH position rests on which rung, not merely how many do.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "account",
+              "identifier",
+              "quantity",
+              "basis_source",
+              "cost_basis",
+              "still_held",
+              "added_after",
+              "disposed_after",
+              "assumption"
+            ],
+            "properties": {
+              "account": { "type": "string" },
+              "identifier": { "type": "string" },
+              "quantity": {
+                "description": "The holding at the cutover, derived by roll-back. Exact.",
+                "$ref": "envelope-1.0.json#/$defs/decimal"
+              },
+              "basis_source": { "$ref": "#/$defs/basis_source" },
+              "cost_basis": {
+                "description": "Null under `unavailable`, where the evidence supports no figure. Null is NOT zero: zero would claim a basis of nothing.",
+                "anyOf": [
+                  { "$ref": "envelope-1.0.json#/$defs/decimal" },
+                  { "type": "null" }
+                ]
+              },
+              "still_held": { "type": "boolean" },
+              "added_after": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+              "disposed_after": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+              "assumption": {
+                "description": "The arithmetic that produced the basis, in words, so it can be re-derived and re-argued rather than merely trusted.",
+                "type": ["string", "null"]
+              }
+            }
+          }
+        },
+        "notes": {
+          "description": "What the reader has to know before using any figure here. An envelope field rather than a rendered string, for the same reason the performance disclaimer is one: a consumer must not be able to drop it without noticing.",
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "by_source": {
+          "description": "How many seeded positions sit on each rung of the provenance ladder.",
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 1 },
+          "propertyNames": { "$ref": "#/$defs/basis_source" }
+        },
+        "exact_basis_share": {
+          "description": "Share of recovered basis that is exact as an aggregate. Null when no basis was recovered at all — which is NOT zero: zero would say the evidence supported nothing.",
+          "anyOf": [
+            { "$ref": "envelope-1.0.json#/$defs/decimal" },
+            { "type": "null" }
+          ]
+        },
+        "cash": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["account", "amount", "moved_after"],
+            "properties": {
+              "account": { "type": "string" },
+              "amount": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+              "moved_after": { "$ref": "envelope-1.0.json#/$defs/decimal" }
+            }
+          }
+        },
+        "opened_after": {
+          "description": "Instruments the history opened after the cutover. Named rather than merely absent: 'held nothing' and 'was not looked at' differ.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["account", "identifier"],
+            "properties": {
+              "account": { "type": "string" },
+              "identifier": { "type": "string" }
+            }
+          }
+        },
+        "findings": {
+          "description": "What the roll-back proves about the history rather than about a position — a hole in the record, not a number to carry forward.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["account", "identifier", "kind", "detail"],
+            "properties": {
+              "account": { "type": "string" },
+              "identifier": { "type": "string" },
+              "kind": {
+                "type": "string",
+                "enum": ["negative_rollback", "subshare_residue", "negative_basis"]
+              },
+              "detail": { "type": "string" }
+            }
+          }
+        },
+        "uncertain_dispositions": {
+          "description": "Sales within a year of the cutover, whose holding-period character rests on the seeded acquisition date. Enumerated rather than counted, because the seeded date is the block's earliest acquisition and therefore biases toward long-term.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "account",
+              "identifier",
+              "trade_date",
+              "quantity",
+              "days_after_cutover"
+            ],
+            "properties": {
+              "account": { "type": "string" },
+              "identifier": { "type": "string" },
+              "trade_date": { "type": "string", "format": "date" },
+              "quantity": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+              "days_after_cutover": { "type": "integer", "minimum": 0, "maximum": 365 }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "basis_source": {
+      "type": "string",
+      "enum": [
+        "derived",
+        "reconstructed",
+        "estimated",
+        "unavailable",
+        "custodian_asserted"
+      ]
+    }
+  }
+}

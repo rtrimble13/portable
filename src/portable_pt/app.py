@@ -132,6 +132,7 @@ app.command("backup")(portfolio.backup)
 importing.app.command("portfolio")(portfolio.import_portfolio)
 importing.app.command("batch")(importing.import_batch)
 importing.app.command("inspect")(importing.import_inspect)
+importing.app.command("reconstruct")(importing.import_reconstruct)
 app.add_typer(importing.app, name="import")
 
 app.add_typer(account.app, name="account")

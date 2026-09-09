@@ -1,5 +1,12 @@
 """The canonical records every adapter emits, and nothing downstream looks past.
 
+They live in `domain` rather than in `importers` for the reason ADR 0018 §5
+gives them at all: the reconstruction, the batch builder and the reconciler
+operate on these and have no knowledge of adapters. A service reaching into
+`importers` for its input type would put the layering the wrong way round and
+make the adapter, rather than the record, the thing everything depends on.
+These are what `domain` is for -- frozen dataclasses, no I/O, no business rules.
+
 ADR 0018 §5. The cutover reconstruction, the batch builder, the reconciler and
 every refusal operate on these two types and have **no knowledge of
 spreadsheets, custodians, or column names**. That is what makes the

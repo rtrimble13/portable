@@ -324,3 +324,42 @@ class TransactionSource(enum.StrEnum):
     MANUAL = "manual"
     IMPORT = "import"
     DERIVED = "derived"
+
+
+class BasisSource(enum.StrEnum):
+    """Where a lot's cost basis came from. ADR 0017 §2.
+
+    This is the provenance ladder that lets a reconstruction exist at all. ADR
+    0015 originally refused to seed a position whose basis could only be
+    averaged; ADR 0017 replaced that with a recorded source, on the reasoning
+    that a tool which declines to build the portfolio produces no wrong numbers
+    and no right ones either. The requirement was never "refuse approximation"
+    -- it is **never let an approximate number be mistaken for an exact one**.
+
+    Every report that consumes a lot has to be able to say which of these it
+    rested on, which is why the column is `NOT NULL` with no default: a writer
+    that does not answer the question does not get to create a lot.
+    """
+
+    #: Computed by `portable` from its own ledger. Exact.
+    DERIVED = "derived"
+    #: A cutover block whose basis is the custodian's stated present basis less
+    #: the cost of every subsequent addition. Exact **as an aggregate**, and
+    #: averaged within the block -- so specific identification inside it is
+    #: gone, which is a real reduction in capability and stated as one.
+    RECONSTRUCTED = "reconstructed"
+    #: A cutover block partly consumed since the cutover, solved backwards
+    #: under an assumed relief method and anchored to the surviving remainder.
+    ESTIMATED = "estimated"
+    #: A cutover block with nothing surviving to anchor to. No basis can be
+    #: derived from the available evidence -- today's basis constrains the
+    #: block only through what survives of it, and where nothing survives there
+    #: is no equation to solve, under any relief method. Seeded at cutover
+    #: market value so the arithmetic closes (invariant 4), and that value is
+    #: **not a basis claim**: `pt tax` excludes such dispositions from every
+    #: total rather than printing a gain measured from an arbitrary date.
+    UNAVAILABLE = "unavailable"
+    #: Taken directly from a custodian lot-detail report. Reserved; nothing
+    #: supplies it today, and it is here so that the ladder is complete rather
+    #: than growing a member later that changes what the others mean.
+    CUSTODIAN_ASSERTED = "custodian_asserted"

@@ -145,6 +145,10 @@ def test_decimals_are_specified_as_strings_not_numbers() -> None:
             "import-inspect-1.0.json",
             ("import", "inspect", "examples/importers/example-brokerage"),
         ),
+        (
+            "import-reconstruct-1.0.json",
+            ("import", "reconstruct", "examples/importers/example-brokerage"),
+        ),
     ],
 )
 def test_real_command_output_validates(schema: str, args: tuple[str, ...]) -> None:

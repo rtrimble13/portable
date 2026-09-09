@@ -57,11 +57,23 @@ fixtures has been validated against the easy case. Designed in
 3. **In-kind transfers** ([ADR 0015](adr/0015-in-kind-transfers-and-opening-positions.md))
    — `transfer_in` / `transfer_out`, so a position that predates the ledger enters
    it without inventing the cash flow that would rewrite the track record.
+   **This is now the gating item**, and it is a schema change of a particular
+   kind: adding a `txn_type` value means altering a `CHECK` constraint, and
+   SQLite can only do that by rebuilding the table — the ledger table, the one
+   with the append-only triggers on it and four tables holding foreign keys into
+   it. The documented procedure needs `PRAGMA foreign_keys = OFF` *outside* any
+   transaction, which the current migration runner cannot do because it opens
+   one before executing a migration's statements. So the runner changes first,
+   or migration 0003 does. That decision belongs in an ADR.
 3a. **Cutover reconstruction** ([ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md))
-   — roll the transaction file back from the holdings snapshot to derive the
-   opening position set, and `lot.basis_source` so an approximate basis can never
-   be mistaken for an exact one. Required because no further broker report is
-   obtainable: these three exports are the whole of the evidence.
+   — *the roll-back is done*. `pt import reconstruct` derives the opening
+   position set and each block's basis provenance from the canonical records,
+   reports the findings the roll-back proves about the history, and enumerates
+   the dispositions whose holding-period character rests on a seeded date. It
+   writes nothing. **Still to do:** `lot.basis_source NOT NULL` and the seeding
+   itself, which needs item 3's transaction types — see the note under item 3.
+   Required because no further broker report is obtainable: these three exports
+   are the whole of the evidence.
 4. **The generic tabular adapter** ([ADR 0018](adr/0018-minimum-broker-dataset.md))
    — *done*. Two required documents (a holdings snapshot with cash, and a
    transaction history), everything beyond them a declared capability whose

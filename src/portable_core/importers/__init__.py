@@ -13,6 +13,7 @@ a documented deviation rather than the norm.
 
 from __future__ import annotations
 
+from portable_core.domain.import_records import HoldingRecord, TransactionRecord
 from portable_core.importers.activity import (
     ActivityMap,
     ActivityRule,
@@ -26,7 +27,6 @@ from portable_core.importers.capabilities import (
     ImportCapability,
 )
 from portable_core.importers.checks import CHECKS
-from portable_core.importers.records import HoldingRecord, TransactionRecord
 from portable_core.importers.source import CapabilityCheck, SourceSpec, load_source
 from portable_core.importers.tabular import AdapterReport, SkippedRow, TabularAdapter
 

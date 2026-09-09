@@ -16,6 +16,62 @@ Two rules specific to this repository:
 
 ### Added
 
+- **The cutover reconstruction, and `pt import reconstruct`** — the opening
+  position set derived by rolling a custodian's history back from its dated
+  snapshot (ADR 0017). `src/portable_core/services/reconstruction.py`.
+  - **Quantities come back exactly** — arithmetic on numbers the custodian
+    stated, nothing assumed. Cash rolls back the same way and is reported per
+    account, because it is the reconciliation anchor's other half: quantities
+    that reconcile and cash that does not is the signature of a sign error or a
+    dropped row.
+  - **The basis ladder.** One formula serves the top two rungs: the custodian's
+    present basis is `surviving_block * unit_cost + cost of surviving
+    additions`, so the unit cost is what is left when the additions come out,
+    divided by what survives. Untouched since the cutover →
+    `reconstructed`; partly consumed → `estimated` under an assumed FIFO
+    relief, recorded as an assumption on every lot it touches.
+  - **A block with no anchor gets no number.** Today's basis constrains the
+    block only through what survives of it, so a block fully consumed — or a
+    position liquidated entirely — has no equation to solve under FIFO or any
+    other method. Those are `unavailable` with a **null** basis, not a zero and
+    not a plausible figure: null says the evidence supports no number, zero
+    would claim a basis of nothing. Seeding them at cutover market value is a
+    later step and is explicitly not a basis claim (ADR 0017 §2b).
+  - **The roll-back is also the completeness check.** A position that rolls back
+    below zero proves the history is missing an event — usually a corporate
+    action — which is what makes that gap *detectable* rather than something to
+    take on trust. Reported by instrument, and distinguished from the sub-share
+    residue that comes of a custodian stating transaction and holding
+    quantities to different precisions.
+  - **Dispositions inside the first year after the cutover are enumerated, not
+    counted** (ADR 0017 §4). Beyond a year the character is certain whatever the
+    seeded date says; inside it the seeded date is the block's *earliest*
+    acquisition and biases toward long-term, which is the wrong direction to be
+    relaxed about.
+  - `BasisSource` in `domain/enums.py`; `schemas/import-reconstruct-1.0.json`
+    published and validated in CI. Every position, its basis source and the
+    assumption behind it are carried in `data`, not only in the rendered table:
+    a consumer reading `--format json` must be able to see *which* position
+    rests on which rung, and the ladder's caveats are an envelope field for the
+    same reason the performance disclaimer is one.
+  - 34 tests (546 in the suite). Nothing is written to a portfolio.
+
+### Changed
+
+- **`HoldingRecord` and `TransactionRecord` move to
+  `portable_core.domain.import_records`** from `portable_core.importers`. ADR
+  0018 §5 has the reconstruction, the batch builder and the reconciler
+  operating on these with no knowledge of adapters — so a service importing its
+  input type from `importers` had the dependency the wrong way round. They
+  re-export from `portable_core.importers` unchanged.
+- **`portable_core.importers` gains a layering rule**, which it had never had:
+  `domain`, `errors`, `decimals` and itself. That gap is why nothing caught the
+  reversed dependency until a service tripped over it. An adapter that could
+  reach a repository would be able to write, and the point of the three-stage
+  pipeline (ADR 0012) is that extraction cannot.
+
+### Added
+
 - **The generic tabular adapter, and `pt import inspect`** — a custodian whose
   exports are plain tabular files is now two TOML mapping files and a fixture,
   with no Python (ADR 0018). `src/portable_core/importers/`.

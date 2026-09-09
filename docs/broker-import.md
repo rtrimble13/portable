@@ -33,6 +33,7 @@ custodian export ──[extract]──▶ batch file ──[review]──▶ ─
 
 ```bash
 pt import inspect adapters/<name>/       # what this custodian can support
+pt import reconstruct adapters/<name>/   # what was held before the history begins
 pt import broker adapters/<name>/ -o batch.json
 $EDITOR batch.json                       # the review is the point
 pt import batch batch.json --dry-run
@@ -41,10 +42,13 @@ pt reconcile --account <acct> --against holdings.csv --as-of <date>
 ```
 
 **Implemented so far:** `pt import inspect` (the adapter and the capability
-report) and `pt import batch` (validate and commit). `pt import broker` — the
-step that turns canonical records into a batch — needs the cutover
-reconstruction of §7 and is the next piece of work; until it lands, `inspect`
-reads and reports and nothing writes a batch.
+report), `pt import reconstruct` (the roll-back of §7, reported and not
+written), and `pt import batch` (validate and commit). `pt import broker` — the
+step that turns canonical records and a reconstruction into a batch — needs the
+`transfer_in` / `transfer_out` transaction types of ADR 0015 and the
+`lot.basis_source` column of ADR 0017, both of which are schema changes; until
+those land, `inspect` and `reconstruct` read and report and nothing writes a
+batch.
 
 Three commands rather than one, deliberately. The ledger is append-only: a wrong
 row is corrected with a reversing entry that stays visible for the life of the
@@ -114,7 +118,11 @@ reader months later needs to know which they have.
 
 Adapters emit two record types and everything downstream sees only these — the
 reconstruction, the batch builder, the reconciler, and every refusal have no
-knowledge of spreadsheets, custodians, or column names.
+knowledge of spreadsheets, custodians, or column names. They live in
+`portable_core.domain.import_records`, not in `importers`: a service reaching
+into an adapter package for its input type would put the dependency the wrong
+way round and make the adapter, rather than the record, the thing everything
+depends on. A layering test enforces it.
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -355,9 +363,18 @@ default to a two-year window — the portfolio's reporting inception is the
 transaction history's first date, not the date the accounts opened
 ([ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md)).
 
+**Implemented as `pt import reconstruct`**, which reports and writes nothing.
+Seeding the ledger from it is a separate step, and keeping the two apart is what
+makes the reconstruction re-runnable — the correct response to finding a mapping
+error is to re-derive the cutover state and rebuild, never to patch lots.
+
 **The opening position set is derived, not read.** Apply the transaction history
 **in reverse** to the holdings snapshot to obtain the holding of every instrument
 on the day before the ledger begins. Each becomes a `transfer_in` (ADR 0015).
+
+Cash rolls back the same way and is reported per account, because it is the
+reconciliation anchor's other half: quantities that reconcile and cash that does
+not is the signature of a sign error or a dropped row.
 
 The roll-back is also the completeness check. A position that rolls back to a
 negative holding proves the history is missing something — most often a corporate
@@ -372,6 +389,12 @@ to take on trust.
 | Block partly survives: solved backwards under the account's assumed relief method | `estimated` |
 | Nothing of the block survives — sold out, or fully consumed | `unavailable` |
 | Read from a lot-detail report, where `LOT_DETAIL` is present | `custodian_asserted` |
+
+One formula serves the first two rows. The custodian's present basis is
+`surviving_block * unit_cost + cost of every surviving addition`, so the block's
+unit cost is what is left when the additions are taken out, divided by what
+survives. With no disposals the whole block survives and it degenerates to
+"today's basis less what was added since".
 
 The third row is the one to understand. The solve anchors to the custodian's
 stated *present* basis, so a block that contributes nothing to the present

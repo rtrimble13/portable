@@ -39,6 +39,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Final
 
+from portable_core.domain.import_records import HoldingRecord, TransactionRecord
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import (
     E_IMPORT_COLUMN_MISSING,
@@ -51,7 +52,6 @@ from portable_core.importers.capabilities import (
     ImportCapability,
 )
 from portable_core.importers.checks import CHECKS, CheckInput, run_check
-from portable_core.importers.records import HoldingRecord, TransactionRecord
 from portable_core.importers.source import (
     HOLDINGS,
     TRANSACTIONS,
