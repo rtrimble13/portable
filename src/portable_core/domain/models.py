@@ -20,6 +20,7 @@ from portable_core.domain.enums import (
     AccountStatus,
     AccountType,
     BasisAdjustmentReason,
+    BasisSource,
     BenchmarkReturnType,
     CashTreatment,
     DayCount,
@@ -281,10 +282,33 @@ class Transaction:
     note: str | None = None
     external_ref: str | None = None
     source: TransactionSource = TransactionSource.MANUAL
+    #: ADR 0015. On a `transfer_in` / `transfer_out` only: the delivering
+    #: custodian's basis and acquisition date. These are **not** the transfer's
+    #: value -- that is `price` and `gross_amount`, as for any other row. Using
+    #: market value as basis makes every future sale report the wrong gain;
+    #: using basis as the flow amount makes the period's return wrong by the
+    #: whole unrealized gain. A schema CHECK binds them to those two types.
+    original_basis: Decimal | None = None
+    original_acquired_date: date | None = None
+    #: ADR 0017. Where a seeded lot's basis came from. On the ledger row and not
+    #: only on the lot, because the difference between `reconstructed`,
+    #: `estimated` and `unavailable` is an assertion by whoever built it rather
+    #: than a consequence of the numbers -- and invariant 3 requires derived
+    #: state to be reproducible by replaying the ledger.
+    basis_source: BasisSource | None = None
+    basis_assumption: str | None = None
     created_at: str = ""
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)
+
+    @property
+    def is_in_kind(self) -> bool:
+        """Securities crossed the portfolio boundary; no cash moved."""
+        return self.txn_type in {
+            TransactionType.TRANSFER_IN,
+            TransactionType.TRANSFER_OUT,
+        }
 
     @property
     def total_costs(self) -> Decimal:
@@ -395,6 +419,14 @@ class Lot:
     #: A split does NOT reset this. A spinoff's new shares INHERIT it. Wash
     #: sales (v0.2) will move it forward.
     holding_period_start: date
+    #: ADR 0017 §2. NOT NULL in the schema with no default, so no writer can
+    #: create a lot without answering the question. Every report that consumes
+    #: a lot has to be able to say which rung it rested on.
+    basis_source: BasisSource = BasisSource.DERIVED
+    #: The arithmetic behind a non-derived basis, in words. Required by a schema
+    #: CHECK for anything but `derived`: an approximation with no stated
+    #: reasoning is indistinguishable from a number somebody made up.
+    basis_assumption: str | None = None
     allocated_fees: Decimal = Decimal("0.00")
     is_short: bool = False
     status: LotStatus = LotStatus.OPEN

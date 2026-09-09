@@ -29,6 +29,7 @@ from decimal import Decimal
 
 from portable_core.decimals import money_context, quantize_money, to_text
 from portable_core.domain.enums import (
+    BasisSource,
     LegRole,
     LotStatus,
     PositionStatus,
@@ -297,9 +298,18 @@ class ReplayEngine:
             TransactionType.BUY,
             TransactionType.SELL_SHORT,
             TransactionType.DIVIDEND_REINVEST,
+            # ADR 0015. A lot-creating path that consumes no cash: the cash
+            # movement above was '0.00' and nothing else here has to change,
+            # which is the whole argument for a transaction type rather than a
+            # back-dated buy plus an invented deposit.
+            TransactionType.TRANSFER_IN,
         }:
             self._open(txn, counters)
-        elif txn.txn_type in {TransactionType.SELL, TransactionType.BUY_TO_COVER}:
+        elif txn.txn_type in {
+            TransactionType.SELL,
+            TransactionType.BUY_TO_COVER,
+            TransactionType.TRANSFER_OUT,
+        }:
             self._close(txn, counters)
 
     def _move_cash(
@@ -366,16 +376,48 @@ class ReplayEngine:
         else:
             position_id, leg_id = leg.position_id, leg.leg_id
 
+        in_kind = txn.txn_type is TransactionType.TRANSFER_IN
         with money_context():
-            gross = (
-                txn.gross_amount
-                if txn.gross_amount is not None
-                else ((txn.price or ZERO) * txn.quantity * instrument.contract_size)
-            )
-            # Commissions and fees are part of basis on an opening trade: they
-            # are a cost of acquiring, not a separate deduction.
-            basis = quantize_money(abs(gross) + txn.total_costs)
+            if in_kind:
+                # ADR 0015, and the distinction the whole type exists for. The
+                # lot's basis is what the OWNER paid at the DELIVERING
+                # custodian; the transfer's own value (price, gross_amount) is
+                # the flow amount and has nothing to do with it. Reading gross
+                # here would be the single most common way this is got wrong:
+                # every future sale would report the gain since the transfer
+                # rather than since the purchase.
+                #
+                # `original_basis` is None only under BasisSource.UNAVAILABLE,
+                # where no equation constrains the block (ADR 0017 §2b). The
+                # lot is then seeded at the transfer's stated value so the
+                # arithmetic closes -- and that value is not a basis claim,
+                # which is precisely what `basis_source` records.
+                basis = quantize_money(
+                    txn.original_basis
+                    if txn.original_basis is not None
+                    else abs(txn.gross_amount or ZERO)
+                )
+            else:
+                gross = (
+                    txn.gross_amount
+                    if txn.gross_amount is not None
+                    else ((txn.price or ZERO) * txn.quantity * instrument.contract_size)
+                )
+                # Commissions and fees are part of basis on an opening trade:
+                # they are a cost of acquiring, not a separate deduction.
+                basis = quantize_money(abs(gross) + txn.total_costs)
             per_unit = basis / txn.quantity if txn.quantity else ZERO
+
+        # A change of custodian is not a disposition: the holding period runs
+        # from the original acquisition. Restarting it would convert long-term
+        # gains into short-term ones on the next sale -- a wrong number in the
+        # direction of a larger tax bill, arrived at silently.
+        #
+        # So `trade_date` and `open_date` are no longer the same date for these
+        # rows. Replay ordering still uses (trade_date, seq): the ledger's order
+        # is the order things were recorded, while lot ageing uses open_date.
+        acquired = txn.original_acquired_date if in_kind else None
+        opened = acquired or txn.trade_date
 
         self.repos.lots.add(
             Lot(
@@ -384,14 +426,21 @@ class ReplayEngine:
                 position_id=position_id,
                 instrument_id=txn.instrument_id,
                 account_id=txn.account_id,
-                open_date=txn.trade_date,
+                open_date=opened,
                 open_txn_id=txn.txn_id,
                 original_quantity=txn.quantity,
                 remaining_quantity=txn.quantity,
                 per_unit_price=per_unit,
                 original_cost_basis=basis,
                 adjusted_cost_basis=basis,
-                holding_period_start=txn.trade_date,
+                holding_period_start=opened,
+                # ADR 0017. Carried from the ledger row rather than decided
+                # here: invariant 3 requires derived state to be reproducible
+                # by replay, and the difference between `reconstructed`,
+                # `estimated` and `unavailable` is an assertion nobody can
+                # recompute from the numbers.
+                basis_source=txn.basis_source or BasisSource.DERIVED,
+                basis_assumption=txn.basis_assumption,
                 allocated_fees=txn.total_costs,
                 is_short=is_short,
                 status=LotStatus.OPEN,

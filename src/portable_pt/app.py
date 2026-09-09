@@ -34,6 +34,7 @@ from portable_pt.commands import (
     query,
     reporting,
     trade,
+    transfers,
 )
 
 app = typer.Typer(
@@ -134,6 +135,9 @@ importing.app.command("batch")(importing.import_batch)
 importing.app.command("inspect")(importing.import_inspect)
 importing.app.command("reconstruct")(importing.import_reconstruct)
 app.add_typer(importing.app, name="import")
+transfers.app.command("in")(transfers.transfer_in)
+transfers.app.command("out")(transfers.transfer_out)
+app.add_typer(transfers.app, name="transfer")
 
 app.add_typer(account.app, name="account")
 app.add_typer(instrument.app, name="instrument")

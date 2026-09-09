@@ -111,6 +111,36 @@ def classify(
                 )
             return FlowResult(FlowClassification.INTERNAL, zero, txn.trade_date)
 
+        # ── Securities crossing the portfolio boundary without being traded.
+        #
+        # EXTERNAL at BOTH levels, in kind, valued at the transfer date
+        # (PORT-GIPS-C02; the gips-standard.md §6 matrix row for an in-kind
+        # transfer). Note how this differs from TRANSFER directly above: a
+        # transfer moves money between two of the owner's own accounts and
+        # nets to zero at portfolio level, while these cross the boundary and
+        # do not net. That is the whole reason ADR 0015 refused to overload one
+        # type -- it would put two opposite classifications behind it.
+        #
+        # The value is the market value on the transfer date, NOT
+        # `original_basis`. Using basis as the flow amount would make the
+        # period's return wrong by the entire unrealized gain, which is the
+        # single most common way this is got wrong elsewhere.
+        #
+        # ADR 0015 states one exception this function cannot apply: a transfer
+        # on the account's `opened_date` establishes the account's beginning
+        # market value rather than a flow into it, because there is no prior
+        # period for capital to flow from. That needs the account, and
+        # `classify` is deliberately pure over one transaction. It belongs to
+        # the return engine, which does not exist yet -- so it is stated here
+        # and implemented nowhere, rather than half-implemented (invariant 10).
+        case TransactionType.TRANSFER_IN | TransactionType.TRANSFER_OUT:
+            value = in_kind_value if in_kind_value is not None else txn.gross_amount
+            magnitude = abs(value) if value is not None else zero
+            signed = magnitude if kind is TransactionType.TRANSFER_IN else -magnitude
+            return FlowResult(
+                FlowClassification.EXTERNAL, signed, txn.trade_date, is_in_kind=True
+            )
+
         # A journal moves value within one account -- a cash sweep, a
         # reclassification. Never a flow at either level.
         case TransactionType.JOURNAL:

@@ -181,11 +181,15 @@ def test_a_clean_file_migrates_and_meta_keeps_step(
     assert M.schema_version(con) == 1
 
     before, after, applied, _ = M.migrate(con, path, backup=False)
-    assert (before, after) == (1, 2)
-    assert [m.version for m in applied] == [2]
-    assert M.schema_version(con) == 2
+    head = M.CURRENT_SCHEMA_VERSION
+    # Asserted against the head rather than a hard-coded number: the claim is
+    # that `meta` keeps step with whatever was applied, and pinning a version
+    # here would make this fail on every future migration for no reason.
+    assert (before, after) == (1, head)
+    assert [m.version for m in applied] == list(range(2, head + 1))
+    assert M.schema_version(con) == head
     stored = con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
-    assert stored[0] == "2"
+    assert stored[0] == str(head)
     con.close()
 
 

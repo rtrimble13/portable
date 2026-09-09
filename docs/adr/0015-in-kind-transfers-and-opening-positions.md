@@ -1,6 +1,6 @@
 # ADR 0015 — In-kind transfers, and how a position that predates the ledger enters it
 
-- **Status:** Proposed
+- **Status:** Accepted — implemented in schema 0003, `pt transfer in` / `pt transfer out`
 - **Date:** 2026-09-08
 - **Milestone:** v0.2
 - **Governs:** `PORT-GIPS-B02`, `PORT-GIPS-C02`; `CLAUDE.md` invariants 2, 3, 5

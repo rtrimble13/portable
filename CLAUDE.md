@@ -369,6 +369,7 @@ test that fails without your change.
   | 0016 | Out-of-order appends force a rebuild; `pt validate` compares stored state |
   | 0017 | Cutover reconstruction by roll-back, and where each basis came from |
   | 0018 | The minimum broker dataset, and capability-gated import |
+  | 0019 | A migration may rebuild a table, and what that costs |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

@@ -55,25 +55,27 @@ fixtures has been validated against the easy case. Designed in
    back, source-document hash checking, and refusal by name for the transaction
    types a batch cannot carry in version 1.
 3. **In-kind transfers** ([ADR 0015](adr/0015-in-kind-transfers-and-opening-positions.md))
-   — `transfer_in` / `transfer_out`, so a position that predates the ledger enters
-   it without inventing the cash flow that would rewrite the track record.
-   **This is now the gating item**, and it is a schema change of a particular
-   kind: adding a `txn_type` value means altering a `CHECK` constraint, and
-   SQLite can only do that by rebuilding the table — the ledger table, the one
-   with the append-only triggers on it and four tables holding foreign keys into
-   it. The documented procedure needs `PRAGMA foreign_keys = OFF` *outside* any
-   transaction, which the current migration runner cannot do because it opens
-   one before executing a migration's statements. So the runner changes first,
-   or migration 0003 does. That decision belongs in an ADR.
+   — *done*. `transfer_in` / `transfer_out` in schema **0003**, so a position
+   that predates the ledger enters it without inventing the cash flow that
+   would rewrite the track record. `pt transfer in` / `pt transfer out`. Two
+   numbers travel on the row and are kept apart by construction: the market
+   value on the transfer date, which is the flow, and the delivering
+   custodian's basis and acquisition date, which are what the tax engine uses.
+   Getting the migration there needed
+   [ADR 0019](adr/0019-migrations-that-rebuild-a-table.md) first — SQLite
+   cannot alter a `CHECK` constraint, so a new `txn_type` value means
+   rebuilding the ledger table.
 3a. **Cutover reconstruction** ([ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md))
-   — *the roll-back is done*. `pt import reconstruct` derives the opening
-   position set and each block's basis provenance from the canonical records,
-   reports the findings the roll-back proves about the history, and enumerates
-   the dispositions whose holding-period character rests on a seeded date. It
-   writes nothing. **Still to do:** `lot.basis_source NOT NULL` and the seeding
-   itself, which needs item 3's transaction types — see the note under item 3.
-   Required because no further broker report is obtainable: these three exports
-   are the whole of the evidence.
+   — *the roll-back and the provenance column are done*. `pt import
+   reconstruct` derives the opening position set and each block's basis
+   provenance from the canonical records, reports the findings the roll-back
+   proves about the history, and enumerates the dispositions whose
+   holding-period character rests on a seeded date; `lot.basis_source` is
+   `NOT NULL` with no default, so no writer can create a lot without answering
+   the question. **Still to do:** the seeding step that turns a reconstruction
+   into `transfer_in` rows, and the `pt tax` disclosure of §3 — a realized gain
+   resting on a lot that is not `derived` must be marked, and `unavailable`
+   dispositions excluded from every total rather than printed.
 4. **The generic tabular adapter** ([ADR 0018](adr/0018-minimum-broker-dataset.md))
    — *done*. Two required documents (a holdings snapshot with cash, and a
    transaction history), everything beyond them a declared capability whose

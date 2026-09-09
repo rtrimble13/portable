@@ -37,10 +37,14 @@ from portable_core.errors.kinds import (
 _SCHEMA_DIR: Final[Path] = Path(__file__).parent
 _FILENAME = re.compile(r"^(?P<version>\d{4})_(?P<name>[a-z0-9_]+)\.sql$")
 
+#: Marks a migration that alters a table SQLite can only alter by rebuilding it
+#: -- a CHECK constraint, or a NOT NULL column with no default. ADR 0019.
+REBUILD_MARKER: Final = "-- portable:rebuild"
+
 #: The schema version this build of `portable` writes and understands. Bumped
 #: by every migration, in the same commit as the migration and its CHANGELOG
 #: entry.
-CURRENT_SCHEMA_VERSION: Final[int] = 2
+CURRENT_SCHEMA_VERSION: Final[int] = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +55,17 @@ class Migration:
     name: str
     path: Path
     sql: str
+
+    @property
+    def rebuilds(self) -> bool:
+        """Whether this migration rebuilds a table. ADR 0019 §1.
+
+        Declared by a marker comment in the file rather than in a registry, so
+        the fact travels with the thing it describes. It is inside the
+        checksummed text, so a migration cannot be quietly promoted to rebuild
+        mode after it has been applied.
+        """
+        return any(line.strip() == REBUILD_MARKER for line in self.sql.splitlines()[:5])
 
     @property
     def checksum(self) -> str:
@@ -215,15 +230,82 @@ def check_preconditions(con: sqlite3.Connection, migration: Migration) -> None:
     )
 
 
+def _triggers(con: sqlite3.Connection) -> set[str]:
+    """Every trigger in the file, by name.
+
+    Compared across a rebuild because a rebuild drops and recreates them, and a
+    file that lost `trg_transaction_no_update` looks entirely fine while no
+    longer being append-only. No test of the migration's *data* would catch it
+    (`CLAUDE.md` invariant 2).
+    """
+    return {
+        str(row[0])
+        for row in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+    }
+
+
+def _check_foreign_keys(con: sqlite3.Connection, migration: Migration) -> None:
+    """The enforcement a rebuild switches off, reinstated once at the end.
+
+    ADR 0019 §1. `PRAGMA foreign_keys = OFF` is required by SQLite's own
+    rebuild procedure and is a no-op inside a transaction, so it is issued
+    before one opens. This is what stops that being a hole: the check is not
+    skipped, it moves from per-statement to once-before-commit.
+    """
+    violations = list(con.execute("PRAGMA foreign_key_check"))
+    if not violations:
+        return
+    named = [f"{row[0]} rowid {row[1]} -> {row[2]}" for row in violations[:20]]
+    raise PortfolioFileError(
+        f"migration {migration.version:04d}_{migration.name} left "
+        f"{len(violations)} foreign key violation(s); the file is unchanged",
+        code=E_MIGRATION_FAILED,
+        remedy="This is a bug in the migration, not in the file. Report it.",
+        version=migration.version,
+        violations=named,
+    )
+
+
 def _apply(con: sqlite3.Connection, migration: Migration) -> None:
     """Apply one migration and record it. All or nothing."""
     # Before the transaction, so a refusal costs nothing and reads as a refusal
     # rather than as a failed write.
     check_preconditions(con, migration)
+    if migration.rebuilds:
+        # Outside the transaction, because the pragma is a documented no-op
+        # inside one -- which is exactly why the runner had to change before a
+        # rebuild migration could exist at all (ADR 0019).
+        con.execute("PRAGMA foreign_keys = OFF")
+    triggers_before = _triggers(con) if migration.rebuilds else set()
+    try:
+        _run(con, migration, triggers_before)
+    finally:
+        if migration.rebuilds:
+            # `foreign_keys` is connection state, not file state. Leaving it OFF
+            # after a failure would hand the caller a connection on which every
+            # later write silently skips referential integrity -- in a CLI whose
+            # very next action is often `pt rebuild`.
+            con.execute("PRAGMA foreign_keys = ON")
+
+
+def _run(con: sqlite3.Connection, migration: Migration, triggers_before: set[str]) -> None:
     con.execute("BEGIN IMMEDIATE")
     try:
         for statement in split_statements(migration.sql):
             con.execute(statement)
+        if migration.rebuilds:
+            _check_foreign_keys(con, migration)
+            lost = triggers_before - _triggers(con)
+            if lost:
+                raise PortfolioFileError(
+                    f"migration {migration.version:04d}_{migration.name} did not "
+                    f"restore trigger(s) {', '.join(sorted(lost))}; the file is "
+                    f"unchanged",
+                    code=E_MIGRATION_FAILED,
+                    remedy="This is a bug in the migration, not in the file. Report it.",
+                    version=migration.version,
+                    triggers=sorted(lost),
+                )
         # `meta.schema_version` is a required key that `pt validate` checks and
         # `pt export` carries. Nothing updated it after a migration, which never
         # showed because 0001 was the only migration: every upgraded file would
@@ -243,6 +325,12 @@ def _apply(con: sqlite3.Connection, migration: Migration) -> None:
                 f"portable {__version__}",
             ),
         )
+    except PortfolioFileError:
+        # Raised by the two rebuild checks above, which have already said
+        # precisely what is wrong. Rolled back and re-raised unchanged rather
+        # than wrapped in a generic "migration failed".
+        con.execute("ROLLBACK")
+        raise
     except sqlite3.Error as exc:
         con.execute("ROLLBACK")
         raise PortfolioFileError(
