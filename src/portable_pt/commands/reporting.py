@@ -19,6 +19,10 @@ from portable_core.errors.kinds import E_GIPS_NO_FLOW_POLICY, E_RECONCILE_BREAK
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.services import cash_flow
+from portable_core.services.reconciliation import (
+    ExternalHolding,
+    ReconciliationService,
+)
 from portable_core.services.tax import TaxEngine
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, maybe_dry_run, money_arg, resolve_date
@@ -642,18 +646,45 @@ def cash_flows(
 
 
 def reconcile(
-    against: Annotated[Path, typer.Option("--against", help="Broker extract, CSV.")],
-    account: Annotated[str | None, typer.Option("--account", "-a")] = None,
+    against: Annotated[
+        Path, typer.Option("--against", help="The custodian's position statement, CSV.")
+    ],
+    account: Annotated[
+        str | None,
+        typer.Option("--account", "-a", help="Reconcile one account. Default: all of them."),
+    ] = None,
+    cash: Annotated[
+        str | None,
+        typer.Option(
+            "--cash",
+            help=(
+                "The custodian's cash for --account, where the file does not carry it. "
+                "Include any sweep or money-market balance (ADR 0013)."
+            ),
+        ),
+    ] = None,
     tolerance: Annotated[
-        str, typer.Option("--tolerance", help="Absolute money tolerance per line.")
+        str, typer.Option("--tolerance", help="Absolute, per line, for quantities and money.")
     ] = "0.01",
 ) -> None:
-    """Compare holdings and cash against a broker extract.
+    """Compare holdings and cash against a custodian's statement, per account.
 
-    Expects CSV with `symbol` and `quantity`, and optionally `market_value`.
+    **The file:** one row per line of the statement. `quantity` plus one of
+    `symbol`, `cusip` or `isin`. Optionally `account` -- required once more than
+    one account is being reconciled -- and `cash`, marking a row as the cash
+    line or a sweep vehicle, whose amount is taken from `market_value` when
+    present.
+
+    Cash is compared, not only quantities. It is the only check that catches a
+    sign error, a dropped row, or a double-counted transfer: the failures that
+    leave every share count right and the money wrong.
+
+    Cash equivalents are folded into cash before comparing, because a custodian
+    reports its sweep as a position and `portable` holds it as cash (ADR 0013).
+
     A break beyond tolerance exits **6** -- a distinct code, because a
     reconciliation break is not a bug in portable and not a bad argument: it
-    means the book and the broker disagree, which needs a person.
+    means the book and the custodian disagree, which needs a person.
     """
 
     def action() -> CommandResult:
@@ -661,86 +692,165 @@ def reconcile(
         repos = ctx.require_portfolio()
         limit = money_arg(tolerance, what="--tolerance")
 
+        if state.current_options().as_of is not None:
+            # Reconciliation compares what the portfolio holds *now* against the
+            # statement. There is no as-of position query, and silently ignoring
+            # the flag would answer a question nobody asked.
+            raise ValidationError(
+                "`pt reconcile` compares current holdings, so --as-of does not apply",
+                remedy=(
+                    "Drop --as-of and reconcile against a current statement. Reconciling "
+                    "to a past date needs positions as they stood then, which portable "
+                    "does not yet reconstruct."
+                ),
+            )
+
         if not against.is_file():
             raise ValidationError(
-                f"extract not found: {against}",
-                remedy="Point --against at a CSV with symbol and quantity columns.",
+                f"statement not found: {against}",
+                remedy="Point --against at a CSV with quantity and an identifier column.",
                 path=str(against),
             )
 
-        external: dict[str, Decimal] = {}
-        for row in csv.DictReader(against.read_text(encoding="utf-8").splitlines()):
-            if "symbol" not in row or "quantity" not in row:
+        external = _read_statement(against)
+        targets = [repos.accounts.resolve(account)] if account else list(repos.accounts.all())
+        if not targets:
+            raise ValidationError(
+                "the portfolio has no accounts to reconcile",
+                remedy="Add one with `pt account add`.",
+            )
+
+        overrides: dict[str, Decimal] = {}
+        if cash is not None:
+            if account is None:
                 raise ValidationError(
-                    f"{against}: needs at least `symbol` and `quantity` columns",
-                    remedy="Export holdings from the broker with those two columns.",
+                    "--cash names one account's cash, so it needs --account",
+                    remedy=(
+                        "Reconcile one account at a time with --account, or put the cash "
+                        "in the file as a row marked `cash`."
+                    ),
                 )
-            external[str(row["symbol"]).strip().upper()] = from_text(
-                str(row["quantity"]).strip()
-            )
+            overrides[targets[0].name] = money_arg(cash, what="--cash")
 
-        accounts = [repos.accounts.resolve(account)] if account else repos.accounts.all()
-        internal: dict[str, Decimal] = {}
-        for target in accounts:
-            for position in repos.positions.all(account_id=target.account_id, open_only=True):
-                for leg in position.legs:
-                    instrument = repos.instruments.get(leg.instrument_id)
-                    if instrument is None:
-                        continue
-                    internal[instrument.symbol] = (
-                        internal.get(instrument.symbol, Decimal(0)) + leg.quantity
-                    )
+        outcome = ReconciliationService(repos).reconcile(
+            external, targets, tolerance=limit, cash_override=overrides
+        )
 
-        rows: list[dict[str, object]] = []
-        breaks = 0
-        for symbol in sorted(set(internal) | set(external)):
-            ours = internal.get(symbol, Decimal(0))
-            theirs = external.get(symbol, Decimal(0))
-            difference = ours - theirs
-            is_break = abs(difference) > limit
-            breaks += int(is_break)
-            rows.append(
-                {
-                    "symbol": symbol,
-                    "portable": ours,
-                    "broker": theirs,
-                    "difference": difference,
-                    "break": is_break,
-                }
-            )
-
+        rows = [
+            {
+                "account": line.account,
+                "kind": line.kind,
+                "identifier": line.identifier,
+                "portable": line.ours,
+                "custodian": line.theirs,
+                "difference": line.difference,
+                "break": line.is_break,
+            }
+            for line in outcome.lines
+        ]
         result = CommandResult(
             command="reconcile",
             table=Table(
                 columns=(
-                    Column("symbol", "Symbol"),
+                    Column("account", "Account"),
+                    Column("kind", "Kind"),
+                    Column("identifier", "Identifier"),
                     Column("portable", "portable", ColumnKind.QUANTITY),
-                    Column("broker", "Broker", ColumnKind.QUANTITY),
+                    Column("custodian", "Custodian", ColumnKind.QUANTITY),
                     Column("difference", "Difference", ColumnKind.QUANTITY),
                     Column("break", "Break", ColumnKind.BOOL),
                 ),
                 rows=tuple(rows),
                 title=f"Reconciliation against {against.name}",
             ),
-            data={"breaks": breaks, "tolerance": limit, "lines": len(rows)},
-            as_of=ctx.as_of,
+            data={
+                "breaks": len(outcome.breaks),
+                "tolerance": limit,
+                "lines": len(outcome.lines),
+                "accounts": [target.name for target in targets],
+            },
             portfolio=ctx.portfolio_name(),
         )
 
-        if breaks:
+        if outcome.breaks:
             raise ReconciliationBreakError(
-                f"{breaks} reconciliation break(s) beyond a tolerance of {limit}",
+                f"{len(outcome.breaks)} reconciliation break(s) beyond a tolerance of {limit}",
                 code=E_RECONCILE_BREAK,
                 remedy=(
-                    "Compare the ledger with the broker's activity for the period. "
+                    "Compare the ledger with the custodian's activity for the period. "
                     "A missing transaction is the usual cause; correct it with a new "
-                    "entry rather than by editing history."
+                    "entry rather than by editing history. A cash break with clean "
+                    "quantities usually means a sign convention or a transfer counted "
+                    "twice."
                 ),
-                breaks=[r["symbol"] for r in rows if r["break"]],
+                breaks=[
+                    f"{line.account} {line.kind} {line.identifier}: "
+                    f"portable {line.ours} vs custodian {line.theirs}"
+                    for line in outcome.breaks
+                ],
             )
         return result
 
     dispatch(action)
+
+
+_TRUE = frozenset({"1", "true", "yes", "y", "t"})
+
+
+def _read_statement(path: Path) -> list[ExternalHolding]:
+    """Parse a custodian statement into canonical lines.
+
+    Deliberately forgiving about *which* identifier a custodian uses and strict
+    about there being one: a row `portable` cannot identify is a row it cannot
+    reconcile, and reporting it as absent would read as agreement.
+    """
+    rows: list[ExternalHolding] = []
+    reader = csv.DictReader(path.read_text(encoding="utf-8").splitlines())
+    for line_number, row in enumerate(reader, start=2):
+        cleaned = {
+            (key or "").strip().lower(): (value or "").strip() for key, value in row.items()
+        }
+        identifier = cleaned.get("symbol") or cleaned.get("cusip") or cleaned.get("isin") or ""
+        is_cash = cleaned.get("cash", "").lower() in _TRUE
+        if not identifier and not is_cash:
+            raise ValidationError(
+                f"{path}:{line_number}: no symbol, cusip or isin",
+                remedy=(
+                    "Every line needs an identifier, or a `cash` column marking it as the "
+                    "cash line. A line that cannot be identified cannot be reconciled."
+                ),
+                path=str(path),
+                line=line_number,
+            )
+
+        # A statement's cash row carries a value and no share count.
+        raw = (cleaned.get("market_value") if is_cash else "") or cleaned.get("quantity", "")
+        if not raw:
+            raise ValidationError(
+                f"{path}:{line_number}: no quantity" + (" or market_value" if is_cash else ""),
+                remedy="Each line needs an amount to compare against.",
+                path=str(path),
+                line=line_number,
+            )
+        try:
+            amount = from_text(raw.replace(",", "").replace("$", ""))
+        except ValueError as exc:
+            raise ValidationError(
+                f"{path}:{line_number}: {raw!r} is not a decimal",
+                remedy="Amounts are plain decimals; strip any currency formatting.",
+                path=str(path),
+                line=line_number,
+            ) from exc
+
+        rows.append(
+            ExternalHolding(
+                account=cleaned.get("account") or None,
+                identifier=identifier.upper() or "CASH",
+                amount=amount,
+                is_cash_equivalent=is_cash,
+            )
+        )
+    return rows
 
 
 # ── policy ───────────────────────────────────────────────────────────────────

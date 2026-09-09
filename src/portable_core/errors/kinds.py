@@ -71,7 +71,7 @@ class GipsRefusalError(ValidationError):
 
 # ── The stable code registry ─────────────────────────────────────────────────
 # Every code `portable` raises, named once. `pt introspect` publishes this and
-# `tests/unit/test_errors.py` asserts the values are unique -- a duplicated
+# `tests/unit/test_error_codes.py` asserts the values are unique -- a duplicated
 # code is a script somewhere branching on the wrong failure.
 
 E_USAGE: Final = "PT-E-USAGE"
@@ -82,6 +82,7 @@ E_PORTFOLIO_CORRUPT: Final = "PT-E-PORTFOLIO-CORRUPT"
 E_SCHEMA_TOO_NEW: Final = "PT-E-SCHEMA-TOO-NEW"
 E_SCHEMA_TOO_OLD: Final = "PT-E-SCHEMA-TOO-OLD"
 E_MIGRATION_FAILED: Final = "PT-E-MIGRATION-FAILED"
+E_MIGRATION_BLOCKED: Final = "PT-E-MIGRATION-BLOCKED"
 
 E_LEDGER_IMMUTABLE: Final = "PT-E-LEDGER-IMMUTABLE"
 E_ACCOUNT_NOT_FOUND: Final = "PT-E-ACCOUNT-NOT-FOUND"
@@ -101,6 +102,8 @@ E_CASH_INSUFFICIENT: Final = "PT-E-CASH-INSUFFICIENT"
 E_CASH_NOT_CONSERVED: Final = "PT-E-CASH-NOT-CONSERVED"
 E_FRACTIONAL_SHARE: Final = "PT-E-FRACTIONAL-SHARE"
 E_FEE_CLASS_MISSING: Final = "PT-E-FEE-CLASS-MISSING"
+E_WITHHOLDING_INVALID: Final = "PT-E-WITHHOLDING-INVALID"
+E_DUPLICATE_REF: Final = "PT-E-DUPLICATE-REF"
 E_INVARIANT_BROKEN: Final = "PT-E-INVARIANT-BROKEN"
 E_REPLAY_MISMATCH: Final = "PT-E-REPLAY-MISMATCH"
 
@@ -111,6 +114,12 @@ E_PROVIDER_CAPABILITY: Final = "PT-E-PROVIDER-CAPABILITY"
 E_OFFLINE_CACHE_MISS: Final = "PT-E-OFFLINE-CACHE-MISS"
 
 E_RECONCILE_BREAK: Final = "PT-E-RECONCILE-BREAK"
+
+# Broker import (ADRs 0012, 0018)
+E_IMPORT_SOURCE_INVALID: Final = "PT-E-IMPORT-SOURCE"
+E_IMPORT_COLUMN_MISSING: Final = "PT-E-IMPORT-COLUMN"
+E_ACTIVITY_UNMAPPED: Final = "PT-E-ACTIVITY-UNMAPPED"
+E_IMPORT_CAPABILITY: Final = "PT-E-IMPORT-CAPABILITY"
 
 # Refusals the performance standard requires. See docs/gips-standard.md.
 E_GIPS_NO_FLOW_POLICY: Final = "PT-E-GIPS-NO-FLOW-POLICY"
@@ -130,6 +139,7 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_SCHEMA_TOO_NEW,
     E_SCHEMA_TOO_OLD,
     E_MIGRATION_FAILED,
+    E_MIGRATION_BLOCKED,
     E_LEDGER_IMMUTABLE,
     E_ACCOUNT_NOT_FOUND,
     E_ACCOUNT_CLOSED,
@@ -146,6 +156,8 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_CASH_NOT_CONSERVED,
     E_FRACTIONAL_SHARE,
     E_FEE_CLASS_MISSING,
+    E_WITHHOLDING_INVALID,
+    E_DUPLICATE_REF,
     E_INVARIANT_BROKEN,
     E_REPLAY_MISMATCH,
     E_PRICE_MISSING,
@@ -154,6 +166,10 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_PROVIDER_CAPABILITY,
     E_OFFLINE_CACHE_MISS,
     E_RECONCILE_BREAK,
+    E_IMPORT_SOURCE_INVALID,
+    E_IMPORT_COLUMN_MISSING,
+    E_ACTIVITY_UNMAPPED,
+    E_IMPORT_CAPABILITY,
     E_GIPS_NO_FLOW_POLICY,
     E_GIPS_PRICE_ONLY_BENCHMARK,
     E_GIPS_ANNUALIZE_SUB_YEAR,

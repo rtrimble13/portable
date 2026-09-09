@@ -1,6 +1,6 @@
 # ADR 0017 — Reconstructing the cutover state by roll-back, and recording where each basis came from
 
-- **Status:** Proposed
+- **Status:** Proposed — the roll-back, the basis ladder and the completeness checks are implemented as `pt import reconstruct`, which writes nothing; `lot.basis_source`, the seeding, and the `pt tax` disclosure of §3 are not
 - **Date:** 2026-09-09
 - **Milestone:** v0.2
 - **Governs:** `CLAUDE.md` invariants 9, 10; `PORT-GIPS-J03`

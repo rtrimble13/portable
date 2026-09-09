@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rtrimble13/portable/schemas/import-batch-1.0.json",
+  "title": "portable import batch",
+  "description": "The reviewable artifact between extracting a custodian's export and committing it to the ledger (ADR 0012). Unlike every other schema here this describes an INPUT, so it does not extend the output envelope. It is the interface an adapter targets: a future OFX adapter, or a batch written by hand for a handful of corrections, is a first-class input on the same footing as any shipped one.",
+  "type": "object",
+  "required": ["format", "format_version", "source", "rows"],
+  "additionalProperties": false,
+  "properties": {
+    "format": { "const": "portable-import-batch" },
+    "format_version": { "const": 1 },
+    "source": { "$ref": "#/$defs/source" },
+    "rows": {
+      "type": "array",
+      "description": "Every row the adapter produced AND every row it deliberately discarded. A silently dropped row and a deliberately dropped row are the same absence in the ledger and completely different claims about the import.",
+      "items": { "$ref": "#/$defs/row" }
+    }
+  },
+  "$defs": {
+    "decimal": {
+      "type": "string",
+      "pattern": "^-?\\d+(\\.\\d+)?$",
+      "description": "A decimal, as canonical text. Never a JSON number: a JSON number cannot round-trip a decimal, and a generated client would parse it to float and lose the guarantee."
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "YYYY-MM-DD, in every field, in every locale."
+    },
+    "source": {
+      "type": "object",
+      "required": ["broker", "files"],
+      "additionalProperties": false,
+      "properties": {
+        "broker": {
+          "type": "string",
+          "description": "The adapter that produced this batch."
+        },
+        "capabilities": {
+          "type": "array",
+          "description": "What the adapter declared its sources support (ADR 0018). Carried with the batch because what the rows mean depends on it.",
+          "items": { "type": "string" }
+        },
+        "files": {
+          "type": "array",
+          "description": "The documents this batch was extracted from. The hash is checked against the file on disk where it can be found, so a batch reviewed against one export cannot be committed after that export changed.",
+          "items": {
+            "type": "object",
+            "required": ["name", "sha256"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            }
+          }
+        },
+        "period": {
+          "type": "object",
+          "required": ["from", "to"],
+          "additionalProperties": false,
+          "properties": {
+            "from": { "$ref": "#/$defs/date" },
+            "to": { "$ref": "#/$defs/date" }
+          }
+        }
+      }
+    },
+    "row": {
+      "type": "object",
+      "required": ["action", "rule", "source_row"],
+      "properties": {
+        "action": {
+          "enum": ["append", "drop", "skip"],
+          "description": "append: becomes a ledger row. drop: deliberately discarded by a rule, such as a cash-equivalent sweep transfer (ADR 0013). skip: already in the ledger, recognised at extract time so that re-importing an overlapping statement period is visible in review rather than a refusal at commit."
+        },
+        "rule": {
+          "type": "string",
+          "description": "The mapping rule that handled this row. What makes a review per-rule rather than per-row."
+        },
+        "source_row": {
+          "type": "object",
+          "description": "The custodian's row, verbatim. Carried so a review needs no second window on the original, and so the mapping stays auditable afterwards."
+        },
+        "external_ref": {
+          "type": ["string", "null"],
+          "description": "The source row's identity: a confirm id where the custodian supplies one, otherwise a key the adapter synthesizes. Unique per account (schema 0002)."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "action": { "const": "append" } } },
+          "then": { "$ref": "#/$defs/appendRow" }
+        }
+      ]
+    },
+    "appendRow": {
+      "type": "object",
+      "required": ["account", "txn_type", "trade_date"],
+      "description": "A row that becomes a ledger entry. It states what happened, not what follows from it: portable derives the cash effect, the lot relief and the tax through the same services a typed command uses, so every refusal that guards hand entry guards an import too.",
+      "properties": {
+        "account": { "type": "string" },
+        "txn_type": {
+          "enum": [
+            "buy", "sell", "sell_short", "buy_to_cover",
+            "deposit", "withdrawal", "transfer", "interest", "fee", "margin_interest",
+            "dividend", "coupon", "return_of_capital"
+          ],
+          "description": "The types a batch can carry in format_version 1 -- those with a service behind them. Corporate actions and the options lifecycle are refused rather than half-supported: they need the position context a typed command has."
+        },
+        "trade_date": { "$ref": "#/$defs/date" },
+        "settlement_date": { "anyOf": [{ "$ref": "#/$defs/date" }, { "type": "null" }] },
+        "symbol": {
+          "type": ["string", "null"],
+          "description": "Required for a trade or an income row; null for pure cash."
+        },
+        "quantity": { "anyOf": [{ "$ref": "#/$defs/decimal" }, { "type": "null" }] },
+        "price": { "anyOf": [{ "$ref": "#/$defs/decimal" }, { "type": "null" }] },
+        "amount": {
+          "anyOf": [{ "$ref": "#/$defs/decimal" }, { "type": "null" }],
+          "description": "For cash and income: the gross, always positive. Direction comes from txn_type, never from the sign -- letting a negative amount mean a withdrawal makes a mistyped deposit a silent withdrawal."
+        },
+        "fees": { "$ref": "#/$defs/decimal" },
+        "commissions": { "$ref": "#/$defs/decimal" },
+        "fee_class": {
+          "type": ["string", "null"],
+          "enum": [
+            "transaction_cost", "embedded_fund_fee", "external_mgmt_fee",
+            "internal_mgmt_cost", "other_admin", null
+          ],
+          "description": "Required wherever a fee is present. The three return bases are derived from it, so portable refuses rather than guessing (PORT-GIPS-D01)."
+        },
+        "taxes_withheld": { "anyOf": [{ "$ref": "#/$defs/decimal" }, { "type": "null" }] },
+        "withholding_reclaimable": {
+          "anyOf": [{ "$ref": "#/$defs/decimal" }, { "type": "null" }],
+          "description": "Null and zero differ: null says nobody stated a split, zero says none of it is reclaimable (PORT-GIPS-A06)."
+        },
+        "counter_account": {
+          "type": ["string", "null"],
+          "description": "The other side of a transfer, which is ONE ledger row rather than two so that portfolio-level netting is structural (ADR 0007)."
+        },
+        "ex_date": { "anyOf": [{ "$ref": "#/$defs/date" }, { "type": "null" }] },
+        "is_qualified": { "type": ["boolean", "null"] },
+        "note": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

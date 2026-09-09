@@ -16,6 +16,270 @@ Two rules specific to this repository:
 
 ### Added
 
+- **The cutover reconstruction, and `pt import reconstruct`** — the opening
+  position set derived by rolling a custodian's history back from its dated
+  snapshot (ADR 0017). `src/portable_core/services/reconstruction.py`.
+  - **Quantities come back exactly** — arithmetic on numbers the custodian
+    stated, nothing assumed. Cash rolls back the same way and is reported per
+    account, because it is the reconciliation anchor's other half: quantities
+    that reconcile and cash that does not is the signature of a sign error or a
+    dropped row.
+  - **The basis ladder.** One formula serves the top two rungs: the custodian's
+    present basis is `surviving_block * unit_cost + cost of surviving
+    additions`, so the unit cost is what is left when the additions come out,
+    divided by what survives. Untouched since the cutover →
+    `reconstructed`; partly consumed → `estimated` under an assumed FIFO
+    relief, recorded as an assumption on every lot it touches.
+  - **A block with no anchor gets no number.** Today's basis constrains the
+    block only through what survives of it, so a block fully consumed — or a
+    position liquidated entirely — has no equation to solve under FIFO or any
+    other method. Those are `unavailable` with a **null** basis, not a zero and
+    not a plausible figure: null says the evidence supports no number, zero
+    would claim a basis of nothing. Seeding them at cutover market value is a
+    later step and is explicitly not a basis claim (ADR 0017 §2b).
+  - **The roll-back is also the completeness check.** A position that rolls back
+    below zero proves the history is missing an event — usually a corporate
+    action — which is what makes that gap *detectable* rather than something to
+    take on trust. Reported by instrument, and distinguished from the sub-share
+    residue that comes of a custodian stating transaction and holding
+    quantities to different precisions.
+  - **Dispositions inside the first year after the cutover are enumerated, not
+    counted** (ADR 0017 §4). Beyond a year the character is certain whatever the
+    seeded date says; inside it the seeded date is the block's *earliest*
+    acquisition and biases toward long-term, which is the wrong direction to be
+    relaxed about.
+  - `BasisSource` in `domain/enums.py`; `schemas/import-reconstruct-1.0.json`
+    published and validated in CI. Every position, its basis source and the
+    assumption behind it are carried in `data`, not only in the rendered table:
+    a consumer reading `--format json` must be able to see *which* position
+    rests on which rung, and the ladder's caveats are an envelope field for the
+    same reason the performance disclaimer is one.
+  - 34 tests (546 in the suite). Nothing is written to a portfolio.
+
+### Changed
+
+- **`HoldingRecord` and `TransactionRecord` move to
+  `portable_core.domain.import_records`** from `portable_core.importers`. ADR
+  0018 §5 has the reconstruction, the batch builder and the reconciler
+  operating on these with no knowledge of adapters — so a service importing its
+  input type from `importers` had the dependency the wrong way round. They
+  re-export from `portable_core.importers` unchanged.
+- **`portable_core.importers` gains a layering rule**, which it had never had:
+  `domain`, `errors`, `decimals` and itself. That gap is why nothing caught the
+  reversed dependency until a service tripped over it. An adapter that could
+  reach a repository would be able to write, and the point of the three-stage
+  pipeline (ADR 0012) is that extraction cannot.
+
+### Added
+
+- **The generic tabular adapter, and `pt import inspect`** — a custodian whose
+  exports are plain tabular files is now two TOML mapping files and a fixture,
+  with no Python (ADR 0018). `src/portable_core/importers/`.
+  - **Two documents are required and nothing else is** — a holdings snapshot
+    carrying cash, and a transaction history. Everything beyond them is a
+    declared capability. Cash on the snapshot is required rather than optional
+    because cash reconciliation is the only check that catches a sign error, a
+    dropped row or a double-counted transfer; an account whose custodian
+    genuinely reports no cash line is listed in `allow_missing_cash`, so the
+    exception is on the record rather than silent.
+  - **A capability is declared on validated data, not on a present column.**
+    Six named checks — `populated`, `unique`, `matches`,
+    `not_before_trade_date`, `history_since`, `activity_covers` — run over the
+    parsed rows, and a capability is declared only if its check passes. The
+    reference custodian's settlement column, most of whose populated cells
+    precede their own trade dates, is the case this exists for.
+  - **A withheld capability's data is not read.** Not merely unreported: if
+    `settlement_date` fails its check the records carry no settlement dates,
+    rather than carrying the dates that failed. A capability that labels data
+    which flows through anyway is a comment, not a safeguard.
+  - **`activity_map.toml` has no default arm.** An activity string the map does
+    not name stops the import and quotes the row. Everything wrong with a
+    mapping is refused when the file *loads* — two rules for one string, a fee
+    with no `fee_class` (`PORT-GIPS-D01`), a skip with no reason, an unknown
+    type or check name — because a map is reviewed once and used for every row
+    after.
+  - **Sign conventions are declared per activity**, then normalised to one
+    canonical convention: positive is cash in, negative is out. Custodians are
+    not consistent even with themselves, and taking an amount column at face
+    value is how a sign error gets in.
+  - **A date pattern must carry a whole date.** `%Y-%m` parses without
+    complaint and silently returns the first of the month; a round-trip check
+    at load refuses it, along with bogus directives that would otherwise not
+    surface until six thousand rows into an import.
+  - Spreadsheets are refused by name with the remedy. The runtime dependencies
+    stay Typer and Rich; a workbook parser for a file the custodian also emits
+    as CSV is a large dependency for no capability (invariant 10).
+  - `pt import inspect <directory>` reads both documents and reports the
+    capability set with **what each absence costs**, before anything is
+    written. `schemas/import-inspect-1.0.json` published and validated in CI.
+  - `examples/importers/example-brokerage/` — a worked example, exercised by
+    the suite so it cannot drift from the code.
+  - 71 tests.
+
+### Fixed
+
+- **The error-code registry had never been tested, and had drifted.**
+  `errors/kinds.py` said `tests/unit/test_errors.py` asserted its codes were
+  unique; that file did not exist. `PT-E-WITHHOLDING-INVALID`,
+  `PT-E-DUPLICATE-REF` and `PT-E-MIGRATION-BLOCKED` were raised in production
+  and absent from `ERROR_CODES`, so `pt introspect` under-reported the failures
+  a consumer has to handle. All three are published, `tests/unit/
+  test_error_codes.py` now asserts every declared constant appears — reading
+  the module source, so a constant added to the file and forgotten in the tuple
+  fails — and the docstring names a file that exists.
+
+### Schema
+
+- **`schema_version` 1 → 2**, migration `0002_external_ref_unique`.
+  `UNIQUE (account_id, external_ref)` on `transaction`, where a reference is
+  present, replacing the non-unique lookup index it supersedes.
+  - **Scoped per account, not globally.** `pt ca split --ref X` with no
+    `--account` writes one ledger row per holding account, all naming one
+    corporate action; global uniqueness would refuse a correct command and force
+    invented suffixes. Imported rows are unaffected either way — ADR 0012's
+    synthesized key already hashes the account in.
+  - **Partial.** A row with no reference is the ordinary hand-entered case and
+    stays unconstrained.
+  - **`source` is deliberately not part of the key.** A hand-entered row and an
+    imported row claiming one reference in one account *should* collide: that is
+    exactly the case where somebody typed in a transaction the importer is about
+    to add again.
+  - `TransactionRepository.append` refuses a duplicate with
+    `PT-E-DUPLICATE-REF`, naming the transaction that already holds it. Being in
+    `append` rather than a service is what covers the corporate-action and
+    options commands, which build their rows directly — before this they
+    surfaced the raw `IntegrityError` as `PT-E-GENERIC: unexpected error … this
+    is a bug`, at exit 1, for what is a user-fixable duplicate.
+    `TradingService.check_external_ref` runs the same check earlier so
+    `--dry-run` refuses rather than planning a trade that could never commit.
+  - `pt import` scans an export's ledger before its first insert, so a payload
+    carrying duplicates leaves no half-written file behind.
+
+### Fixed
+
+- **Migrations can state a data precondition**, checked before the transaction
+  opens. A migration is pure SQL and cannot branch, so a constraint added over
+  existing data either applies or fails with whatever SQLite says — and
+  `_apply`'s remedy, *restore the backup*, would reproduce the same data and the
+  same failure. For the one operation that can lose a ledger that is not good
+  enough. 0002's precondition names every offending `(account, reference,
+  transaction ids)` group and a remedy that works.
+- **`meta.schema_version` is updated by a migration.** It is a required key that
+  `pt validate` checks and `pt export` carries, and nothing had ever updated it —
+  which never showed, because 0001 was the only migration there had ever been.
+  Every upgraded file would otherwise have reported forever the version it was
+  created at.
+
+### Added
+
+- **The import batch format, and `pt import batch`** — the reviewable artifact
+  between extracting a custodian's export and committing it (ADR 0012).
+  - `schemas/import-batch-1.0.json`, published and validated in CI. The first
+    schema here that describes an **input**, so it does not extend the output
+    envelope. A test asserts that anything the runtime loader accepts also
+    validates against it; the loader checks by hand because `jsonschema` is a
+    development dependency and a hand-written check can name the row index, the
+    field and the remedy — which a batch under human review needs.
+  - **A row states what happened, not what follows from it.** No
+    `net_cash_effect` in a batch: the cash effect, the lot relief and the tax
+    are derived through the same services a typed command uses, so an
+    unclassified fee, a sale with no matching lot, a duplicate reference and an
+    unknown instrument are refused for an import exactly as at the keyboard.
+    Committed rows carry `source = 'import'`.
+  - **Version 1 carries trades, cash and income** — the types with a service
+    behind them. Corporate actions and the options lifecycle are refused by
+    name rather than half-supported (`CLAUDE.md` invariant 10): they need
+    position context a typed command gathers, and an importer deriving basis by
+    a second, unreviewed route is the failure that avoids.
+  - Rows are appended in **trade-date order** whatever order the file lists
+    them in — a sale's relief has to see the purchase earlier in the same batch
+    — then the ledger is replayed once (ADR 0016), because a historical batch is
+    back-dated relative to whatever the file already holds.
+  - **`--dry-run` is the real commit, rolled back.** Checking each row against
+    the state before the batch would refuse a batch that commits perfectly well.
+    A first attempt did exactly that and was caught in a smoke test; running it
+    for real inside `scratch_transaction` is the only dry run that answers the
+    question asked.
+  - **Source documents are hash-checked** where they sit next to the batch: a
+    review approves particular rows against a particular export. A file that
+    cannot be found is reported rather than refused, so "verified" and "not
+    checked" stay distinct.
+  - Rows are reported grouped by `(action, rule)`, because a review is per rule
+    and a thousand-row batch read one row at a time is not reviewed.
+  - 38 tests.
+
+### Changed
+
+- **`pt import` is a noun with verbs** (ADR 0012). The export round trip moves
+  from `pt import <file>` to `pt import portfolio <file>`, alongside the new
+  `pt import batch <file>`. A breaking change to a v0.1 command, taken now
+  because the surface ADR 0012 designed needs the noun.
+
+### Added
+
+- **`pt reconcile` compares per account, and compares cash** — the last of the
+  `v0.2` import prerequisites, and the acceptance criterion every other one
+  exists to serve (`docs/broker-import.md` §9).
+  - **Per account.** It previously summed every account into one namespace when
+    `--account` was omitted, so two accounts holding the same fund reconciled as
+    a total: an overstatement in one cancelled an understatement in the other
+    and the line balanced. There is a test for exactly that.
+  - **Cash.** It previously compared quantities only, which passes on a sign
+    error, a dropped row, and a double-counted transfer — every failure that
+    leaves the share counts right and the money wrong. A cash line is now
+    rendered for every account even when the statement is silent, because
+    "they agree" and "nobody checked" must not look the same. A margin loan
+    nets against cash, as a statement presents it.
+  - **Cash equivalents are cash.** A custodian reports its sweep as a position
+    and `portable` holds it as cash, so the statement's sweep lines fold into
+    its cash figure before comparison (ADR 0013). This is the one place that
+    decision has to be undone, and doing it here keeps it out of the ledger.
+  - **Identifiers.** A line may be stated by `symbol`, `cusip` or `isin`. New
+    `InstrumentRepository.find` is `resolve` for a caller whose job is to report
+    what does not match, so one unknown line no longer abandons the comparison;
+    ambiguity still raises, since two instruments answering to one identifier is
+    a question only a person can settle.
+  - **Refusals** rather than guesses: a line that cannot be attributed to an
+    account when several are in scope, a statement naming an account not being
+    reconciled, cash stated both by `--cash` and by a file row, and `--as-of`,
+    which reconcile cannot honour because there is no as-of position query —
+    accepting it would answer a question nobody asked.
+  - The comparison moved to `services/reconciliation.py`; the command parses and
+    renders. 21 tests.
+
+- **Provenance and withholding on every ledger write** — the first three of the
+  `v0.2` import prerequisites (`docs/broker-import.md` §10). No schema change:
+  every column involved already existed and had no way to be set.
+  - `TradeIntent.source`, `record_cash(source=)` and `record_income(source=)`
+    carry where a row came from. The CLI still defaults to `manual`; the point is
+    that an importer can now say `import`, so a figure is traceable to the
+    document that produced it (`PORT-GIPS-J03`).
+  - `--ref` on **all twenty** ledger-writing commands, up from three. Defined
+    once as `RefOpt` in `commands/_shared.py`. Each of those commands writes at
+    most one row per account per invocation, so a single `--ref` stays
+    unambiguous under the `(account_id, external_ref)` uniqueness still to come.
+  - `TradingService.record_income` — new, and the home for the withholding
+    arithmetic that was previously absent and would otherwise have landed in a
+    CLI module. `gross_amount` stays the income the instrument paid and
+    `net_cash_effect` is what actually landed, because a report needs both: the
+    return is earned on the gross and the cash balance moved by the net.
+    Reclaimable and non-reclaimable withholding are stored separately, since
+    reclaimable is accrued while non-reclaimable reduces return
+    (`PORT-GIPS-A06`) and one combined figure cannot answer both.
+  - `--withheld` and `--reclaimable` on `pt income dividend` and `pt income
+    coupon`. Deliberately **not** on `pt income roc`: a return of capital is not
+    income, so withholding against one is a different event needing its own
+    reasoning rather than a shared flag.
+  - `PT-E-WITHHOLDING-INVALID` refuses a split that cannot be true — negative
+    withholding, withholding above the gross (the likeliest real mistake, passing
+    the net as `--amount`), or a reclaimable portion above what was withheld,
+    which would accrue a receivable that does not exist.
+  - `pt trade show` reports `source`, `taxes_withheld` and
+    `withholding_reclaimable`, so the new facts are readable rather than merely
+    stored.
+  - 25 tests: `tests/unit/test_income_and_provenance.py` and
+    `tests/integration/test_provenance_cli.py`.
+
 - Repository scaffolding: `pyproject.toml` (scikit-build-core), pinned
   `requirements*.txt` plus `constraints.txt`, `Makefile`, pre-commit hooks, and
   `scripts/bootstrap.{sh,ps1}` for Linux and Windows.

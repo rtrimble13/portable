@@ -39,7 +39,13 @@ from portable_core.services.lots import LotEngine, parse_lot_selection
 from portable_core.services.positions import PositionEngine
 from portable_core.services.tax import TaxEngine
 from portable_pt import state
-from portable_pt.commands._shared import dispatch, maybe_dry_run, money_arg, resolve_date
+from portable_pt.commands._shared import (
+    RefOpt,
+    dispatch,
+    maybe_dry_run,
+    money_arg,
+    resolve_date,
+)
 
 app = typer.Typer(help="Options lifecycle.", no_args_is_help=True)
 
@@ -59,6 +65,7 @@ def expire(
     symbol: Annotated[str, typer.Argument(help="The option's symbol.")],
     account: Annotated[str, typer.Option("--account", "-a")],
     on: Annotated[str | None, typer.Option("--date", "-d")] = None,
+    ref: RefOpt = None,
 ) -> None:
     """Record an option expiring worthless.
 
@@ -135,6 +142,7 @@ def expire(
                 instrument_id=instrument.instrument_id,
                 quantity=sum((lot.remaining_quantity for lot in lots), Decimal(0)),
                 note="expired worthless",
+                external_ref=ref,
                 source=TransactionSource.DERIVED,
                 created_at=_now(),
             )
@@ -218,6 +226,7 @@ def assign(
     method: Annotated[str | None, typer.Option("--method")] = None,
     fees: Annotated[str, typer.Option("--fees")] = "0",
     fee_class: Annotated[str | None, typer.Option("--fee-class")] = None,
+    ref: RefOpt = None,
 ) -> None:
     """Record assignment of a written option.
 
@@ -340,6 +349,7 @@ def assign(
                     fees=quantize_money(money_arg(fees, what="--fees")),
                     fee_class=FeeClass(fee_class) if fee_class else None,
                     note=(f"assigned on {option.symbol}; {premium} premium into proceeds"),
+                    external_ref=ref,
                     source=TransactionSource.DERIVED,
                     created_at=_now(),
                 )
@@ -408,6 +418,7 @@ def exercise(
     on: Annotated[str | None, typer.Option("--date", "-d")] = None,
     fees: Annotated[str, typer.Option("--fees")] = "0",
     fee_class: Annotated[str | None, typer.Option("--fee-class")] = None,
+    ref: RefOpt = None,
 ) -> None:
     """Exercise a long option.
 
@@ -486,6 +497,7 @@ def exercise(
                     fees=quantize_money(money_arg(fees, what="--fees")),
                     fee_class=FeeClass(fee_class) if fee_class else None,
                     note=(f"exercised {option.symbol}; {premium} premium into stock basis"),
+                    external_ref=ref,
                     source=TransactionSource.DERIVED,
                     created_at=_now(),
                 )

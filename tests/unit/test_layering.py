@@ -56,6 +56,19 @@ ALLOWED: dict[str, frozenset[str]] = {
             "portable_core.decimals",
         }
     ),
+    # A custodian adapter reads files and emits the canonical records of
+    # `domain`. It depends on nothing else in `portable_core`: an adapter that
+    # could reach a repository or a service would be able to write, and the
+    # whole point of the three-stage pipeline (ADR 0012) is that extraction
+    # cannot.
+    "portable_core.importers": frozenset(
+        {
+            "portable_core.importers",
+            "portable_core.domain",
+            "portable_core.errors",
+            "portable_core.decimals",
+        }
+    ),
     "portable_core.services": frozenset(
         {
             "portable_core.services",

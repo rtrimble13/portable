@@ -44,24 +44,45 @@ fixtures has been validated against the easy case. Designed in
    — a back-dated append leaves derived state disagreeing with the ledger, and
    `pt validate` cannot see it because it rebuilds before it compares. This blocks
    everything below it: a historical import is out-of-order by construction.
-1. **Import prerequisites** — `source='import'` on the write path, a synthesized
-   `external_ref` with `UNIQUE (account_id, external_ref)`, `--ref` on every
-   mutating command, a `taxes_withheld` path, and `pt reconcile` extended with
-   per-account scoping and a cash comparison.
-2. **The batch format** — `schemas/import-batch-1.0.json`, and `pt import batch`.
+1. **Import prerequisites** — *done*. `source` on every write path; `--ref` on
+   all twenty ledger-writing commands; a `taxes_withheld` path with the
+   reclaimable split and its refusals; schema **0002**, `UNIQUE (account_id,
+   external_ref)` with `PT-E-DUPLICATE-REF` on every writer and a migration
+   precondition that names the offending rows; and `pt reconcile` comparing per
+   account and including cash, resolving by symbol, CUSIP or ISIN.
+2. **The batch format** — *done*. `schemas/import-batch-1.0.json` published and
+   implemented, `pt import batch` with a dry run that is the real commit rolled
+   back, source-document hash checking, and refusal by name for the transaction
+   types a batch cannot carry in version 1.
 3. **In-kind transfers** ([ADR 0015](adr/0015-in-kind-transfers-and-opening-positions.md))
    — `transfer_in` / `transfer_out`, so a position that predates the ledger enters
    it without inventing the cash flow that would rewrite the track record.
+   **This is now the gating item**, and it is a schema change of a particular
+   kind: adding a `txn_type` value means altering a `CHECK` constraint, and
+   SQLite can only do that by rebuilding the table — the ledger table, the one
+   with the append-only triggers on it and four tables holding foreign keys into
+   it. The documented procedure needs `PRAGMA foreign_keys = OFF` *outside* any
+   transaction, which the current migration runner cannot do because it opens
+   one before executing a migration's statements. So the runner changes first,
+   or migration 0003 does. That decision belongs in an ADR.
 3a. **Cutover reconstruction** ([ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md))
-   — roll the transaction file back from the holdings snapshot to derive the
-   opening position set, and `lot.basis_source` so an approximate basis can never
-   be mistaken for an exact one. Required because no further broker report is
-   obtainable: these three exports are the whole of the evidence.
+   — *the roll-back is done*. `pt import reconstruct` derives the opening
+   position set and each block's basis provenance from the canonical records,
+   reports the findings the roll-back proves about the history, and enumerates
+   the dispositions whose holding-period character rests on a seeded date. It
+   writes nothing. **Still to do:** `lot.basis_source NOT NULL` and the seeding
+   itself, which needs item 3's transaction types — see the note under item 3.
+   Required because no further broker report is obtainable: these three exports
+   are the whole of the evidence.
 4. **The generic tabular adapter** ([ADR 0018](adr/0018-minimum-broker-dataset.md))
-   — two required documents (a holdings snapshot with cash, and a transaction
-   history), everything beyond them a declared capability whose absence is a
-   named refusal rather than a quiet degradation. A custodian with plain tabular
-   exports is then two TOML mapping files and a fixture, no Python.
+   — *done*. Two required documents (a holdings snapshot with cash, and a
+   transaction history), everything beyond them a declared capability whose
+   absence is a named refusal rather than a quiet degradation. A custodian with
+   plain tabular exports is two TOML mapping files and a fixture, no Python;
+   `pt import inspect` reads them and reports the capability set with what each
+   absence costs. Six named checks earn a capability, and a capability that
+   fails its check does not merely go unreported — the data behind it is not
+   read.
 5. **The first custodian**, as an instance of that adapter, accepted on
    reconciliation rather than on parser tests. **A second custodian is the only
    real test of item 4** — the first one always fits.

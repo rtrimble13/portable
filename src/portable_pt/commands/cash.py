@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Annotated
 
 import typer
@@ -13,7 +14,13 @@ from portable_core.formatters import CommandResult
 from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.services.trading import TradingService
 from portable_pt import state
-from portable_pt.commands._shared import dispatch, maybe_dry_run, money_arg, resolve_date
+from portable_pt.commands._shared import (
+    RefOpt,
+    dispatch,
+    maybe_dry_run,
+    money_arg,
+    resolve_date,
+)
 
 #: Said whenever a back-dated entry causes a rebuild, so that a figure changing
 #: underneath an already-reported number is visible rather than silent (ADR 0016).
@@ -21,6 +28,24 @@ _BACKDATED = (
     "this entry is back-dated, so derived state was rebuilt from the ledger. "
     "Figures that depend on lot relief may have changed."
 )
+
+WithheldOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--withheld",
+        help="Tax withheld from the gross. Not a fee -- --amount stays the gross.",
+    ),
+]
+ReclaimableOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--reclaimable",
+        help=(
+            "The reclaimable portion of --withheld. Accrued rather than deducted "
+            "from return (PORT-GIPS-A06)."
+        ),
+    ),
+]
 
 app = typer.Typer(help="Cash movements.", no_args_is_help=True)
 income_app = typer.Typer(
@@ -100,7 +125,7 @@ def deposit(
     amount: Annotated[str, typer.Option("--amount", help="Always positive.")],
     date_text: Annotated[str | None, typer.Option("--date", "-d")] = None,
     note: Annotated[str | None, typer.Option("--note")] = None,
-    ref: Annotated[str | None, typer.Option("--ref")] = None,
+    ref: RefOpt = None,
 ) -> None:
     """Record capital entering the portfolio. An external cash flow at both levels."""
     _record(TransactionType.DEPOSIT, account, amount, date_text, note=note, ref=ref)
@@ -112,7 +137,7 @@ def withdraw(
     amount: Annotated[str, typer.Option("--amount", help="Always positive.")],
     date_text: Annotated[str | None, typer.Option("--date", "-d")] = None,
     note: Annotated[str | None, typer.Option("--note")] = None,
-    ref: Annotated[str | None, typer.Option("--ref")] = None,
+    ref: RefOpt = None,
     allow_overdraft: Annotated[bool, typer.Option("--allow-overdraft")] = False,
 ) -> None:
     """Record capital leaving the portfolio."""
@@ -134,6 +159,7 @@ def transfer(
     amount: Annotated[str, typer.Option("--amount", help="Always positive.")],
     date_text: Annotated[str | None, typer.Option("--date", "-d")] = None,
     note: Annotated[str | None, typer.Option("--note")] = None,
+    ref: RefOpt = None,
 ) -> None:
     """Move cash between two accounts in this portfolio.
 
@@ -147,7 +173,9 @@ def transfer(
     external flows at portfolio level -- a true statement about what was
     recorded and a false one about what happened.
     """
-    _record(TransactionType.TRANSFER, account, amount, date_text, counter=to, note=note)
+    _record(
+        TransactionType.TRANSFER, account, amount, date_text, counter=to, note=note, ref=ref
+    )
 
 
 @app.command()
@@ -156,9 +184,10 @@ def interest(
     amount: Annotated[str, typer.Option("--amount")],
     date_text: Annotated[str | None, typer.Option("--date", "-d")] = None,
     note: Annotated[str | None, typer.Option("--note")] = None,
+    ref: RefOpt = None,
 ) -> None:
     """Record interest received. Income -- never an external cash flow."""
-    _record(TransactionType.INTEREST, account, amount, date_text, note=note)
+    _record(TransactionType.INTEREST, account, amount, date_text, note=note, ref=ref)
 
 
 @app.command()
@@ -178,6 +207,7 @@ def fee(
     ],
     date_text: Annotated[str | None, typer.Option("--date", "-d")] = None,
     note: Annotated[str | None, typer.Option("--note")] = None,
+    ref: RefOpt = None,
 ) -> None:
     """Record a fee.
 
@@ -186,7 +216,15 @@ def fee(
     reduces net-of-fees returns only, and is **not** a transaction cost in
     either regime.
     """
-    _record(TransactionType.FEE, account, amount, date_text, fee_class=fee_class, note=note)
+    _record(
+        TransactionType.FEE,
+        account,
+        amount,
+        date_text,
+        fee_class=fee_class,
+        note=note,
+        ref=ref,
+    )
 
 
 @app.command(name="margin-interest")
@@ -194,6 +232,7 @@ def margin_interest(
     account: Annotated[str, typer.Option("--account", "-a")],
     amount: Annotated[str, typer.Option("--amount")],
     date_text: Annotated[str | None, typer.Option("--date", "-d")] = None,
+    ref: RefOpt = None,
 ) -> None:
     """Record margin interest.
 
@@ -206,6 +245,7 @@ def margin_interest(
         amount,
         date_text,
         fee_class="internal_mgmt_cost",
+        ref=ref,
     )
 
 
@@ -222,12 +262,11 @@ def _income(
     pay_date: str | None,
     qualified: bool | None,
     note: str | None,
+    ref: str | None = None,
+    withheld: str | None = None,
+    reclaimable: str | None = None,
 ) -> None:
     def action() -> CommandResult:
-        from datetime import UTC, datetime
-
-        from portable_core.domain.models import Transaction
-
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
         found = repos.accounts.resolve(account)
@@ -236,34 +275,26 @@ def _income(
         gross = money_arg(amount, what="--amount")
         instrument = repos.instruments.resolve(symbol, on=ex)
 
-        if ex > pay:
-            raise ValidationError(
-                f"ex-date {ex.isoformat()} is after pay-date {pay.isoformat()}",
-                remedy=(
-                    "Entitlement is fixed on the ex-date and cash arrives on the "
-                    "pay-date, so the ex-date comes first."
-                ),
-            )
-
-        # Recognition is on the pay date; the ex-date drives the accrual that
-        # ValuationEngine picks up between the two (PORT-GIPS-A06).
-        txn = Transaction(
-            txn_id=0,
-            account_id=found.account_id,
-            trade_date=pay,
-            seq=repos.transactions.next_seq(pay),
-            txn_type=txn_type,
-            net_cash_effect=quantize_money(gross),
-            instrument_id=instrument.instrument_id,
-            gross_amount=quantize_money(gross),
+        service = TradingService(repos)
+        txn = service.record_income(
+            found,
+            instrument,
+            txn_type,
+            gross,
+            pay,
             ex_date=ex,
-            pay_date=pay,
+            taxes_withheld=(
+                money_arg(withheld, what="--withheld") if withheld else Decimal("0.00")
+            ),
+            withholding_reclaimable=(
+                money_arg(reclaimable, what="--reclaimable") if reclaimable else None
+            ),
             is_qualified=qualified,
             note=note,
-            created_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            external_ref=ref,
         )
 
-        payload = {
+        payload: dict[str, object] = {
             "symbol": instrument.symbol,
             "account": found.name,
             "type": str(txn_type),
@@ -272,6 +303,13 @@ def _income(
             "pay_date": pay.isoformat(),
             "qualified": qualified,
         }
+        if txn.taxes_withheld:
+            # Both figures, because they answer different questions: the return
+            # is earned on the gross and the cash balance moved by the net.
+            payload["taxes_withheld"] = txn.taxes_withheld
+            payload["net_cash_effect"] = txn.net_cash_effect
+            if txn.withholding_reclaimable is not None:
+                payload["withholding_reclaimable"] = txn.withholding_reclaimable
         if ctx.dry_run:
             return maybe_dry_run(CommandResult(command=f"income {txn_type}", data=payload))
 
@@ -279,7 +317,7 @@ def _income(
             txn_id = repos.transactions.append(txn)
             from dataclasses import replace
 
-            rebuilt = TradingService(repos).replay.apply_or_rebuild(replace(txn, txn_id=txn_id))
+            rebuilt = service.replay.apply_or_rebuild(replace(txn, txn_id=txn_id))
 
         return CommandResult(
             command=f"income {txn_type}",
@@ -307,6 +345,9 @@ def dividend(
         bool, typer.Option("--qualified/--non-qualified", help="Tax character.")
     ] = True,
     note: Annotated[str | None, typer.Option("--note")] = None,
+    ref: RefOpt = None,
+    withheld: WithheldOpt = None,
+    reclaimable: ReclaimableOpt = None,
 ) -> None:
     """Record a cash dividend.
 
@@ -324,6 +365,9 @@ def dividend(
         pay_date=pay_date,
         qualified=qualified,
         note=note,
+        ref=ref,
+        withheld=withheld,
+        reclaimable=reclaimable,
     )
 
 
@@ -334,6 +378,9 @@ def coupon(
     amount: Annotated[str, typer.Option("--amount")],
     pay_date: Annotated[str | None, typer.Option("--pay-date")] = None,
     note: Annotated[str | None, typer.Option("--note")] = None,
+    ref: RefOpt = None,
+    withheld: WithheldOpt = None,
+    reclaimable: ReclaimableOpt = None,
 ) -> None:
     """Record a bond coupon. Income -- never an external cash flow."""
     _income(
@@ -345,6 +392,9 @@ def coupon(
         pay_date=pay_date,
         qualified=None,
         note=note,
+        ref=ref,
+        withheld=withheld,
+        reclaimable=reclaimable,
     )
 
 
@@ -355,6 +405,7 @@ def roc(
     amount: Annotated[str, typer.Option("--amount")],
     pay_date: Annotated[str | None, typer.Option("--pay-date")] = None,
     note: Annotated[str | None, typer.Option("--note")] = None,
+    ref: RefOpt = None,
 ) -> None:
     """Record a return of capital.
 
@@ -372,4 +423,5 @@ def roc(
         pay_date=pay_date,
         qualified=None,
         note=note,
+        ref=ref,
     )

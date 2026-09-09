@@ -42,6 +42,7 @@ from portable_core.domain.models import (
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import (
     E_ACCOUNT_NOT_FOUND,
+    E_DUPLICATE_REF,
     E_INSTRUMENT_AMBIGUOUS,
     E_INSTRUMENT_NOT_FOUND,
 )
@@ -374,6 +375,19 @@ class InstrumentRepository(_Repository):
         ).fetchone()
         return mappers.to_instrument(row, option_row, bond_row)
 
+    def find(self, symbol: str, *, on: date | None = None) -> Instrument | None:
+        """:meth:`resolve`, but absence is an answer rather than an error.
+
+        For a caller whose job is to *report* what does not match -- `pt
+        reconcile` names an identifier it cannot place rather than abandoning
+        the whole comparison over one line.
+
+        Ambiguity still raises: two instruments answering to one identifier is
+        a question only a person can settle, and picking either would put a
+        quantity against the wrong security.
+        """
+        return self._resolve(symbol, on=on, required=False)
+
     def resolve(self, symbol: str, *, on: date | None = None) -> Instrument:
         """Resolve a symbol to an instrument, as of a date.
 
@@ -382,6 +396,11 @@ class InstrumentRepository(_Repository):
         date**. Resolving by today's symbol would silently rewrite history
         whenever a ticker has been reassigned.
         """
+        found = self._resolve(symbol, on=on, required=True)
+        assert found is not None
+        return found
+
+    def _resolve(self, symbol: str, *, on: date | None, required: bool) -> Instrument | None:
         candidates = self.con.execute(
             "SELECT * FROM instrument WHERE symbol = ? ORDER BY instrument_id",
             (symbol,),
@@ -409,6 +428,8 @@ class InstrumentRepository(_Repository):
                     break
 
         if not candidates:
+            if not required:
+                return None
             raise ValidationError(
                 f"no instrument known as {symbol!r}" + (f" on {on.isoformat()}" if on else ""),
                 code=E_INSTRUMENT_NOT_FOUND,
@@ -632,8 +653,65 @@ class TransactionRepository(_Repository):
         ).fetchone()
         return int(row["n"])
 
+    def with_external_ref(self, account_id: int, external_ref: str) -> Transaction | None:
+        """The row in *account_id* already carrying *external_ref*, if any.
+
+        The unique index added in migration 0002 is the backstop that binds
+        every writer; this is what lets a caller refuse with the colliding
+        transaction named, rather than with ``UNIQUE constraint failed``.
+        """
+        row = self.con.execute(
+            'SELECT * FROM "transaction" WHERE account_id = ? AND external_ref = ?',
+            (account_id, external_ref),
+        ).fetchone()
+        return None if row is None else mappers.to_transaction(row)
+
+    def refuse_if_ref_taken(
+        self,
+        account_id: int,
+        external_ref: str | None,
+        *,
+        account_name: str | None = None,
+    ) -> None:
+        """Refuse a reference already recorded in this account.
+
+        The unique index from migration 0002 binds regardless; this exists so
+        the refusal names the transaction the caller already has rather than a
+        constraint. Re-recording a source row is an ordinary thing to do by
+        accident, and "which row is this a duplicate of" is the question it
+        raises.
+
+        Reported and refused, never skipped: a silent skip cannot be told apart
+        from a writer that failed to produce the row at all.
+        """
+        if external_ref is None:
+            return
+        existing = self.with_external_ref(account_id, external_ref)
+        if existing is None:
+            return
+        where = account_name or f"account {account_id}"
+        raise ValidationError(
+            f"{where} already has transaction {existing.txn_id} carrying external "
+            f"reference {external_ref!r}",
+            code=E_DUPLICATE_REF,
+            remedy=(
+                "Each source row is recorded once. If this is genuinely a second "
+                "event, give it its own reference; if it is the same event, it is "
+                "already in the ledger."
+            ),
+            external_ref=external_ref,
+            existing_txn_id=existing.txn_id,
+            existing_date=existing.trade_date.isoformat(),
+        )
+
     def append(self, txn: Transaction) -> int:
-        """Append one ledger row. There is no update and no delete."""
+        """Append one ledger row. There is no update and no delete.
+
+        Every writer passes through here, so the duplicate-reference refusal
+        does too -- including the corporate-action and options commands, which
+        build their rows directly rather than through a service.
+        """
+        self.refuse_if_ref_taken(txn.account_id, txn.external_ref)
         cursor = self.con.execute(
             'INSERT INTO "transaction" (account_id, trade_date, settlement_date, seq, '
             "txn_type, instrument_id, quantity, price, gross_amount, fees, commissions, "
@@ -1519,7 +1597,16 @@ class Repositories:
         The ledger's append-only triggers reject UPDATE and DELETE but not
         INSERT, so a ledger imports normally -- which is the right behaviour:
         importing is appending history, not editing it.
+
+        Raises:
+            ValidationError: when the payload's ledger carries two rows in one
+                account with the same ``external_ref``. Checked before the first
+                insert so the target file is left empty rather than half
+                written -- the same collision the unique index enforces, caught
+                where the message can name the rows.
         """
+        self._refuse_duplicate_refs(payload.get("transaction") or [])
+
         counts: dict[str, int] = {}
         for table in self.EXPORTABLE_TABLES:
             rows = payload.get(table) or []
@@ -1534,6 +1621,40 @@ class Repositories:
                 self.con.execute(statement, [row.get(c) for c in columns])
             counts[table] = len(rows)
         return counts
+
+    @staticmethod
+    def _refuse_duplicate_refs(rows: list[dict[str, Any]]) -> None:
+        """Refuse an export whose ledger could not be re-inserted.
+
+        `pt import` builds a fresh file at the current schema, so the unique
+        index exists from the first row. Without this the failure arrives
+        part-way through the inserts, against a file that already exists on
+        disk and is missing most of its history.
+        """
+        seen: dict[tuple[Any, Any], list[Any]] = {}
+        for row in rows:
+            ref = row.get("external_ref")
+            if ref is None:
+                continue
+            seen.setdefault((row.get("account_id"), ref), []).append(row.get("txn_id"))
+
+        collisions = {key: ids for key, ids in seen.items() if len(ids) > 1}
+        if not collisions:
+            return
+        raise ValidationError(
+            f"the export's ledger carries {len(collisions)} duplicated external "
+            "reference(s); it cannot be imported",
+            code=E_DUPLICATE_REF,
+            remedy=(
+                "Two rows in one account cannot claim the same external reference. "
+                "Correct them in the source portfolio and export again."
+            ),
+            duplicates=[
+                f"account {account} reference {ref!r}: transactions "
+                f"{', '.join(str(i) for i in ids)}"
+                for (account, ref), ids in sorted(collisions.items(), key=lambda kv: str(kv[0]))
+            ],
+        )
 
     def clear_derived(self) -> None:
         """Drop every derived table. The first half of `pt rebuild` (ADR 0010).

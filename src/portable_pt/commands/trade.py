@@ -21,7 +21,13 @@ from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.services.replay import ReplayEngine
 from portable_core.services.trading import TradeIntent, TradePlan, TradingService
 from portable_pt import state
-from portable_pt.commands._shared import dispatch, maybe_dry_run, money_arg, resolve_date
+from portable_pt.commands._shared import (
+    RefOpt,
+    dispatch,
+    maybe_dry_run,
+    money_arg,
+    resolve_date,
+)
 
 app = typer.Typer(help="Trade listing, reversal, and correction.", no_args_is_help=True)
 
@@ -216,7 +222,7 @@ def make_trade_command(txn_type: TransactionType, help_text: str) -> Callable[..
         position: Annotated[int | None, typer.Option("--position")] = None,
         new_position: Annotated[bool, typer.Option("--new-position")] = False,
         note: Annotated[str | None, typer.Option("--note")] = None,
-        ref: Annotated[str | None, typer.Option("--ref")] = None,
+        ref: RefOpt = None,
         settlement: Annotated[str | None, typer.Option("--settlement")] = None,
     ) -> None:
         _trade(
@@ -306,6 +312,7 @@ def reverse(
     txn_id: Annotated[int, typer.Argument(help="The transaction to reverse.")],
     note: Annotated[str | None, typer.Option("--note", help="Why.")] = None,
     on: Annotated[str | None, typer.Option("--date", "-d")] = None,
+    ref: RefOpt = None,
 ) -> None:
     """Reverse a transaction with a new, opposite ledger entry.
 
@@ -350,6 +357,7 @@ def reverse(
             ),
             reverses_txn_id=txn_id,
             note=note or f"reverses txn {txn_id}",
+            external_ref=ref,
             source=TransactionSource.DERIVED,
             created_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
@@ -438,7 +446,15 @@ def show(txn_id: Annotated[int, typer.Argument()]) -> None:
                 "commissions": txn.commissions,
                 "fee_class": str(txn.fee_class) if txn.fee_class else None,
                 "net_cash_effect": txn.net_cash_effect,
+                # Withholding is tax, not a fee, so it is reported beside the
+                # gross rather than inside `fees`: the return is earned on the
+                # gross and the cash balance moved by the net (PORT-GIPS-A06).
+                "taxes_withheld": txn.taxes_withheld,
+                "withholding_reclaimable": txn.withholding_reclaimable,
                 "external_ref": txn.external_ref,
+                # Where the row came from, so a figure can be traced to the
+                # document that produced it (PORT-GIPS-J03).
+                "source": str(txn.source),
                 "reverses_txn_id": txn.reverses_txn_id,
                 "note": txn.note,
                 "created_at": txn.created_at,

@@ -113,6 +113,7 @@ adapter — not just the code paths somebody remembered to guard.
 | `benchmark.return_type` is `NOT NULL` with **no default** | `PORT-GIPS-G01` |
 | A transfer must carry a `counter_account_id`, and nothing else may | ADR 0007 |
 | A reversal must name what it reverses | `CLAUDE.md` invariant 2 |
+| `UNIQUE (account_id, external_ref)` where a reference is present | ADR 0012 — one source row, one ledger row |
 | `price.valuation_level` confined to 1–5 | `PORT-GIPS-A02` |
 | Large and significant flow thresholds are separate fields | `PORT-GIPS-E09` |
 
@@ -133,6 +134,12 @@ and recorded in `schema_migration` with a **checksum**.
   longer describes the database in front of you.
 - **Idempotent** — every statement uses `IF NOT EXISTS`, so a half-applied
   migration can be re-run.
+- **Preconditions are checked first.** A migration is pure SQL and cannot
+  branch, so a constraint added over existing data either applies or fails with
+  whatever SQLite says — and `_apply`'s remedy, restore the backup, would
+  reproduce the same data and the same failure. `migrations.py` carries a
+  precondition per version where one is needed; it runs before the transaction
+  opens and reports the rows at fault. Migration 0002 is the first to use one.
 - **`pt migrate` takes an automatic backup**, checkpointing the WAL first. A
   migration is the one operation that can lose a ledger.
 
@@ -155,7 +162,7 @@ trigger is incomplete until its `END;`.
 
 ```bash
 pt --port p.port export -o dump.json
-pt import dump.json --into new.port
+pt import portfolio dump.json --into new.port
 ```
 
 Human-readable, diffable JSON of every **non-derived** table, ordered by primary
@@ -166,6 +173,9 @@ including it would double the file size, and a round-trip that carried it could
 *hide* a replay bug rather than expose one. `pt import` rebuilds derived state
 from the imported ledger, so the round trip exercises replay rather than
 bypassing it.
+
+`import` is a noun with verbs: `portfolio` for this round trip, `batch` for a
+reviewed custodian batch (ADR 0012).
 
 **export → import → export produces identical bytes.** There is an integration
 test asserting exactly that, and it also checks the tax figures agree on both

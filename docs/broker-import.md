@@ -4,7 +4,11 @@ How a custodian's exports become ledger rows: what `portable` requires of any
 custodian, what it does with more when more is available, and what it refuses to
 guess.
 
-**Status:** designed, not built. The decisions are ADRs
+**Status:** partly built. The prerequisites, the batch format and its commit
+stage, and the generic tabular adapter with its capability model are
+implemented; the extract stage that turns canonical records into a batch, and
+the cutover reconstruction it depends on, are not. §1 says which command is
+which. The decisions are ADRs
 [0012](adr/0012-broker-import-pipeline.md) (the pipeline),
 [0013](adr/0013-cash-sweep-is-cash.md) (sweep vehicles),
 [0014](adr/0014-advisory-fees-paid-across-accounts.md) (adviser fees),
@@ -28,12 +32,23 @@ custodian export ──[extract]──▶ batch file ──[review]──▶ ─
 ```
 
 ```bash
-pt import broker holdings.xlsx activity.xlsx --broker <name> -o batch.json
+pt import inspect adapters/<name>/       # what this custodian can support
+pt import reconstruct adapters/<name>/   # what was held before the history begins
+pt import broker adapters/<name>/ -o batch.json
 $EDITOR batch.json                       # the review is the point
 pt import batch batch.json --dry-run
 pt import batch batch.json
-pt reconcile --account <acct> --against holdings.xlsx --as-of <date>
+pt reconcile --account <acct> --against holdings.csv --as-of <date>
 ```
+
+**Implemented so far:** `pt import inspect` (the adapter and the capability
+report), `pt import reconstruct` (the roll-back of §7, reported and not
+written), and `pt import batch` (validate and commit). `pt import broker` — the
+step that turns canonical records and a reconstruction into a batch — needs the
+`transfer_in` / `transfer_out` transaction types of ADR 0015 and the
+`lot.basis_source` column of ADR 0017, both of which are schema changes; until
+those land, `inspect` and `reconstruct` read and report and nothing writes a
+batch.
 
 Three commands rather than one, deliberately. The ledger is append-only: a wrong
 row is corrected with a reversing entry that stays visible for the life of the
@@ -91,9 +106,11 @@ settlement-date column full of impossible dates has not supplied settlement
 dates — and saying so in the import report is better than silence, because the
 user learns their export is broken rather than assuming the field is unavailable.
 
-`pt import` prints the declared set before doing anything, and `pt info` carries
-it forward. A portfolio built without `COST_BASIS` is permanently different from
-one built with it, and a reader months later needs to know which they have.
+`pt import inspect` prints the declared set before doing anything — it is the
+first command to run against a new custodian and the one to read before trusting
+any number that comes out later — and `pt info` carries it forward. A portfolio
+built without `COST_BASIS` is permanently different from one built with it, and a
+reader months later needs to know which they have.
 
 ---
 
@@ -101,7 +118,11 @@ one built with it, and a reader months later needs to know which they have.
 
 Adapters emit two record types and everything downstream sees only these — the
 reconstruction, the batch builder, the reconciler, and every refusal have no
-knowledge of spreadsheets, custodians, or column names.
+knowledge of spreadsheets, custodians, or column names. They live in
+`portable_core.domain.import_records`, not in `importers`: a service reaching
+into an adapter package for its input type would put the dependency the wrong
+way round and make the adapter, rather than the record, the thing everything
+depends on. A layering test enforces it.
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -133,11 +154,23 @@ class TransactionRecord:
 `activity` stays the custodian's raw string. Mapping it is the activity map's
 job, done once, where it can be reviewed.
 
+Two conventions are fixed at this boundary rather than left to each adapter,
+because leaving them open is how a sign error gets in. `amount` is the **cash
+effect on the account** — positive in, negative out — and `quantity` is the
+**signed change in units**, `None` where the event has none. Note what `amount`
+is not: it is what the statement says the cash did, not what `portable`
+concludes follows from the event. Deriving the consequences stays with the
+services (ADR 0012).
+
 ---
 
 ## 5. The batch format
 
-`schemas/import-batch-1.0.json`. One object per prospective ledger row:
+`schemas/import-batch-1.0.json` — **published and implemented**. Unlike every
+other schema in that directory it describes an *input*, so it does not extend
+the output envelope. `pt import batch` reads it.
+
+One object per prospective ledger row:
 
 ```json
 {
@@ -182,6 +215,45 @@ what the rows mean depends on it.
 The format is the interface: a future OFX adapter, or a batch hand-written for a
 handful of corrections, is a first-class input on the same footing.
 
+**A row states what happened, not what follows from it.** There is no
+`net_cash_effect` in a batch: `portable` derives the cash effect, the lot relief
+and the tax through the same services a typed command uses, so every refusal
+that guards hand entry guards an import too rather than an importer growing a
+second, laxer path into the ledger.
+
+**Format version 1 carries trades, cash and income** — the types with a service
+behind them. Corporate actions and the options lifecycle are refused by name
+rather than half-supported: they need position context a typed command gathers
+interactively, and an importer deriving basis by a second, unreviewed route is
+the failure that avoids. ADR 0018 puts them in a per-custodian post-pass.
+
+**`--dry-run` is the real commit, rolled back.** Validating each row against the
+state *before* the batch would refuse a batch that commits perfectly well, since
+a sale's lot relief has to see the purchase earlier in the same batch. Running
+it for real and discarding the result is the only dry run that answers the
+question asked — the same pattern ADR 0016 established for `pt validate`.
+
+**The source documents are hash-checked** where they can be found next to the
+batch: a review approves particular rows against a particular export, and if the
+export has since been re-downloaded the review no longer covers what is about to
+be committed. A file that cannot be found is *reported* rather than refused,
+because a batch is often reviewed elsewhere — but reported, so that "verified"
+and "not checked" stay distinct.
+
+The published schema is validated in CI, and a test asserts that anything the
+runtime loader accepts also validates against it. The loader checks by hand
+because `jsonschema` is a development dependency and a hand-written check can
+name the row index, the field, and the remedy — which a batch under human review
+needs.
+
+**Re-importing an overlapping period** is ordinary, not an error: you pull
+Jan–Jun, then Apr–Dec. That is resolved at **extract**, where rows already in
+the ledger are written to the batch as `action: "skip"` with the reason, so the
+overlap is visible in the artifact you review. It is deliberately *not* a
+`--skip-duplicates` flag at commit: a commit-time skip makes the decision
+invisible, and cannot be told apart from an adapter that failed to emit the row.
+A duplicate reaching commit is therefore unexpected, and refuses.
+
 **Identity.** Where the custodian supplies `TRANSACTION_ID`, that is the
 `external_ref`. Where it does not, `external_ref` is `sha256` over the source
 row's raw text plus an ordinal distinguishing otherwise-identical rows in the
@@ -194,7 +266,14 @@ a silent skip.
 
 ## 6. Writing an adapter
 
-Two data files under `src/portable_core/importers/<name>/`, reviewed as data:
+**Implemented.** `portable_core.importers.TabularAdapter` reads the two files
+below and emits the canonical records of §4; `pt import inspect <directory>`
+runs it and reports. A worked example lives in
+`examples/importers/example-brokerage/` — copy the directory, change the
+mappings, run `pt import inspect` against your own export.
+
+Two data files, reviewed as data (a built-in custodian lives under
+`src/portable_core/importers/<name>/`; your own can live anywhere):
 
 **`source.toml`** — which file is which, the column map per document, date and
 number formats, the account's cash-equivalent identifier set (ADR 0013), and the
@@ -216,6 +295,65 @@ per-custodian post-pass and each is a documented deviation, not the norm.
 A crosswalk file (`instruments.toml`) is additionally required where
 `INSTRUMENT_SYMBOL` is absent.
 
+### The checks a capability can name
+
+A capability names one of six checks, which run over the parsed rows. The list
+is deliberately short and each entry is deliberately dumb: a check clever enough
+to be interesting is a check nobody can review, and reviewing these is the
+entire safeguard.
+
+| Check | Passes when | Typically earns |
+|---|---|---|
+| `populated` | the field carries a value in at least `min_ratio` of rows (default: all) | `cost_basis`, `acquisition_date`, `lot_detail` |
+| `unique` | the field is populated everywhere and never repeats | `transaction_id` |
+| `matches` | every value matches a declared regex — how a symbol column is told from a column of descriptions | `instrument_symbol` |
+| `not_before_trade_date` | no row's date precedes its own trade date | `settlement_date` |
+| `history_since` | the earliest row is on or before a stated inception date | `history_to_inception` |
+| `activity_covers` | the activity map names a rule producing each listed transaction type | `corporate_actions`, `external_flows` |
+
+**A withheld capability's data is not read.** If `settlement_date` fails its
+check the records carry no settlement dates — not the dates that failed. A
+capability that merely labels data which flows through anyway is a comment, not
+a safeguard.
+
+### Sign conventions
+
+Custodians are not consistent even with themselves: some sign the amount column,
+some state a magnitude and put the direction in the activity string, some use
+accounting parentheses on one report and a minus on another. `activity_map.toml`
+declares which, per activity, and the adapter normalises to the canonical
+convention — positive is in, negative is out.
+
+| Convention | Means |
+|---|---|
+| `as_stated` | the column's own sign is authoritative; use only where it was checked |
+| `positive` | a magnitude that always means an increase for this activity |
+| `negative` | a magnitude that always means a decrease for this activity |
+| `none` | this activity carries no value in that column at all — a stated absence, not a zero |
+
+### What is refused, and when
+
+Everything wrong with a *mapping* is refused when the file loads, because a map
+is reviewed once and used for every row after: an unmapped activity string, two
+rules for one string, a fee with no `fee_class`, a skip with no reason, an
+unknown transaction type or check name, a capability declared twice, a date
+pattern that is invalid *or that carries only part of a date* (`%Y-%m` parses
+happily and silently returns the first of the month).
+
+Everything wrong with the *data* is refused with the row quoted: a mapped column
+the file does not have (the error lists the headers it does have), a cell that is
+not a number in the declared format, a date matching no declared pattern, a blank
+where the map expects a value, a snapshot carrying two as-of dates, and a
+snapshot stating no cash for an account — which is refusable rather than
+tolerable because cash reconciliation is the only check that catches a sign
+error or a dropped row. An account whose custodian genuinely reports no cash
+line is listed in `allow_missing_cash`, so the exception is on the record.
+
+Spreadsheets are refused by name with the remedy. `portable`'s runtime
+dependencies are Typer and Rich; adding a workbook parser for a file the
+custodian will also emit as CSV is a large dependency for no capability
+(`CLAUDE.md` invariant 10).
+
 ---
 
 ## 7. The cutover, and the reconstruction
@@ -225,9 +363,18 @@ default to a two-year window — the portfolio's reporting inception is the
 transaction history's first date, not the date the accounts opened
 ([ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md)).
 
+**Implemented as `pt import reconstruct`**, which reports and writes nothing.
+Seeding the ledger from it is a separate step, and keeping the two apart is what
+makes the reconstruction re-runnable — the correct response to finding a mapping
+error is to re-derive the cutover state and rebuild, never to patch lots.
+
 **The opening position set is derived, not read.** Apply the transaction history
 **in reverse** to the holdings snapshot to obtain the holding of every instrument
 on the day before the ledger begins. Each becomes a `transfer_in` (ADR 0015).
+
+Cash rolls back the same way and is reported per account, because it is the
+reconciliation anchor's other half: quantities that reconcile and cash that does
+not is the signature of a sign error or a dropped row.
 
 The roll-back is also the completeness check. A position that rolls back to a
 negative holding proves the history is missing something — most often a corporate
@@ -242,6 +389,12 @@ to take on trust.
 | Block partly survives: solved backwards under the account's assumed relief method | `estimated` |
 | Nothing of the block survives — sold out, or fully consumed | `unavailable` |
 | Read from a lot-detail report, where `LOT_DETAIL` is present | `custodian_asserted` |
+
+One formula serves the first two rows. The custodian's present basis is
+`surviving_block * unit_cost + cost of every surviving addition`, so the block's
+unit cost is what is left when the additions are taken out, divided by what
+survives. With no disposals the whole block survives and it degenerates to
+"today's basis less what was added since".
 
 The third row is the one to understand. The solve anchors to the custodian's
 stated *present* basis, so a block that contributes nothing to the present
@@ -280,15 +433,22 @@ Per invariant 9, the import stops and explains rather than guessing, on:
 
 An import is accepted when it reconciles, not when it parses.
 
-1. **Per period, per account:** ending cash and every position quantity match the
-   custodian. A break exits **6**.
+1. **Per period, per account:** ending cash and every position quantity match
+   the custodian. `pt reconcile --against <statement.csv>`; a break exits **6**.
+   The statement needs `quantity` plus one of `symbol`, `cusip` or `isin`, an
+   `account` column once more than one account is in scope, and a `cash` column
+   marking the cash line and any sweep vehicle.
 2. **Per closed tax year:** realized gains tie to the custodian's tax reporting,
    excluding dispositions marked `unavailable`.
 3. `pt validate` passes — which, after ADR 0016, means stored derived state
    actually equals replayed state.
 4. `pt export` → `pt import` → `pt export` is byte-identical.
 
-Check 1 carries extra weight. The reconstruction works backwards from the
+Check 1 carries extra weight, and cash carries most of that. A sign error, a
+dropped row, and a double-counted transfer all leave every share count correct
+and the money wrong, so a quantity-only comparison passes on all three.
+
+The reconstruction also works backwards from the
 custodian's stated present position, so agreement there is not a coincidence —
 it is the arithmetic closing. What the check proves is that the transaction
 history is complete enough to bridge the two ends, and that is the whole of the
@@ -299,20 +459,44 @@ at the end.
 
 ## 10. Gaps in `portable` this depends on
 
-- **`taxes_withheld` has no write path.** The column and the domain field exist;
-  no service or CLI sets them. Any withholding — foreign dividend, retirement
-  distribution — needs it.
+**Closed.**
+
+- ~~`taxes_withheld` has no write path.~~ `TradingService.record_income` sets it,
+  with `--withheld` and `--reclaimable` on `pt income dividend` and `coupon`.
+  `gross_amount` stays the income and `net_cash_effect` is what landed, because
+  a report needs both; the reclaimable portion is stored separately, since
+  reclaimable is accrued and non-reclaimable reduces return (`PORT-GIPS-A06`).
+  A split that cannot be true is refused with `PT-E-WITHHOLDING-INVALID`.
+- ~~`--ref` is exposed on trades, deposit, and withdraw only.~~ All twenty
+  ledger-writing commands take one, defined once as `RefOpt` in
+  `commands/_shared.py`. Each writes at most one row per account per
+  invocation, so one `--ref` stays unambiguous under the uniqueness constraint
+  below.
+- ~~`TradingService` hardcodes `source = MANUAL`.~~ `TradeIntent.source`,
+  `record_cash(source=)` and `record_income(source=)` carry it; the CLI still
+  defaults to `manual`, and `pt trade show` reports it (`PORT-GIPS-J03`).
+- ~~`pt reconcile` compares quantities only.~~ It now compares **per account**
+  and includes **cash**, resolves an identifier by symbol, CUSIP or ISIN, and
+  folds the custodian's sweep positions into its cash line (ADR 0013). The
+  comparison lives in `services/reconciliation.py`; the command parses and
+  renders. It refuses rather than guessing when a statement line cannot be
+  attributed to an account, when a statement names an account not being
+  reconciled, and when cash is stated both by `--cash` and by a line in the
+  file.
+
+- ~~No uniqueness constraint on `external_ref`.~~ Migration 0002 adds
+  `UNIQUE (account_id, external_ref)` where a reference is present. Scoped per
+  account because `pt ca split --ref X` legitimately writes one row per holding
+  account under one reference; partial because a row with no reference is the
+  ordinary hand-entered case. `TransactionRepository.append` refuses a duplicate
+  with `PT-E-DUPLICATE-REF` naming the colliding transaction, so every writer is
+  covered including the corporate-action and options commands that build rows
+  directly. `pt import` scans an export's ledger before its first insert.
+
+**Open.**
+
 - **Fund capital-gain distributions have no transaction type.** Income for flow
   purposes, taxed by character.
-- **`--ref` is exposed on trades, deposit, and withdraw only.** Every other
-  mutating command takes no external reference, so imported rows of those types
-  cannot be deduplicated.
-- **`TradingService` hardcodes `source = MANUAL`.** There is no way to write
-  `source = 'import'` (`PORT-GIPS-J03`).
-- **`pt reconcile` compares quantities only** — no cash comparison, keyed on
-  symbol rather than CUSIP, and merges accounts into one namespace when
-  `--account` is omitted. Per-account scoping and cash are prerequisites, not
-  follow-ons.
 - **Wash sales are not detected** until `v0.2`; `pt tax` says so on its face.
 
 ---
