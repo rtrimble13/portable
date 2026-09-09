@@ -34,6 +34,7 @@ from portable_core.errors.kinds import (
     E_CASH_INSUFFICIENT,
     E_FEE_CLASS_MISSING,
     E_FRACTIONAL_SHARE,
+    E_WITHHOLDING_INVALID,
 )
 from portable_core.persistence.repositories import Repositories
 from portable_core.services.lots import LotEngine, ReliefPlan, parse_lot_selection
@@ -66,6 +67,10 @@ class TradeIntent:
     position_id: int | None = None
     note: str | None = None
     external_ref: str | None = None
+    #: Where this row came from. `manual` unless an importer says otherwise --
+    #: an imported row that claims to be hand-entered is untraceable back to the
+    #: document that produced it (`PORT-GIPS-J03`).
+    source: TransactionSource = TransactionSource.MANUAL
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,7 +172,7 @@ class TradingService:
             relief_method=intent.relief_method,
             note=intent.note,
             external_ref=intent.external_ref,
-            source=TransactionSource.MANUAL,
+            source=intent.source,
             created_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
 
@@ -304,6 +309,7 @@ class TradingService:
         fee_class: FeeClass | None = None,
         note: str | None = None,
         external_ref: str | None = None,
+        source: TransactionSource = TransactionSource.MANUAL,
         allow_overdraft: bool = False,
     ) -> Transaction:
         """Build a cash transaction. The caller commits it.
@@ -374,6 +380,137 @@ class TradingService:
             ),
             note=note,
             external_ref=external_ref,
-            source=TransactionSource.MANUAL,
+            source=source,
             created_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
+
+    # ── income ───────────────────────────────────────────────────────────────
+
+    def record_income(
+        self,
+        account: Account,
+        instrument: Instrument,
+        txn_type: TransactionType,
+        gross: Decimal,
+        pay_date: date,
+        *,
+        ex_date: date | None = None,
+        taxes_withheld: Decimal = ZERO,
+        withholding_reclaimable: Decimal | None = None,
+        is_qualified: bool | None = None,
+        note: str | None = None,
+        external_ref: str | None = None,
+        source: TransactionSource = TransactionSource.MANUAL,
+    ) -> Transaction:
+        """Build an income transaction. The caller commits it.
+
+        Recognition is on the pay date; the ex-date drives the accrual
+        `ValuationEngine` picks up between the two (`PORT-GIPS-A06`).
+
+        **Withholding is tax, not a fee.** `gross_amount` stays the income the
+        instrument paid and `net_cash_effect` is what actually landed, because
+        those are two different facts and a report needs both: the return is
+        earned on the gross, and the cash balance moved by the net. Netting them
+        at entry would make the withholding unrecoverable from the ledger.
+
+        Reclaimable and non-reclaimable withholding are stored separately
+        because they behave differently -- reclaimable is accrued, and
+        non-reclaimable reduces return (`PORT-GIPS-A06`). One combined figure
+        cannot answer both, which is why the schema carries two columns.
+        """
+        if gross <= 0:
+            raise ValidationError(
+                f"income amount must be positive, got {gross}",
+                remedy="Direction comes from the command, not from the sign.",
+                amount=str(gross),
+            )
+
+        ex = ex_date if ex_date is not None else pay_date
+        if ex > pay_date:
+            raise ValidationError(
+                f"ex-date {ex.isoformat()} is after pay-date {pay_date.isoformat()}",
+                remedy=(
+                    "Entitlement is fixed on the ex-date and cash arrives on the "
+                    "pay-date, so the ex-date comes first."
+                ),
+            )
+
+        self._check_withholding(gross, taxes_withheld, withholding_reclaimable)
+
+        with money_context():
+            net = quantize_money(gross - taxes_withheld)
+
+        return Transaction(
+            txn_id=0,
+            account_id=account.account_id,
+            trade_date=pay_date,
+            seq=self.repos.transactions.next_seq(pay_date),
+            txn_type=txn_type,
+            net_cash_effect=net,
+            instrument_id=instrument.instrument_id,
+            gross_amount=quantize_money(gross),
+            taxes_withheld=quantize_money(taxes_withheld),
+            withholding_reclaimable=(
+                None
+                if withholding_reclaimable is None
+                else quantize_money(withholding_reclaimable)
+            ),
+            ex_date=ex,
+            pay_date=pay_date,
+            is_qualified=is_qualified,
+            note=note,
+            external_ref=external_ref,
+            source=source,
+            created_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+
+    @staticmethod
+    def _check_withholding(
+        gross: Decimal, withheld: Decimal, reclaimable: Decimal | None
+    ) -> None:
+        """Refuse a withholding split that cannot be true.
+
+        Each of these would otherwise produce a plausible number: withholding
+        larger than the payment inverts the cash effect, and a reclaimable
+        portion larger than what was withheld accrues a receivable that does not
+        exist.
+        """
+        if withheld < 0:
+            raise ValidationError(
+                f"taxes withheld cannot be negative, got {withheld}",
+                code=E_WITHHOLDING_INVALID,
+                remedy="Withholding is stated as a positive amount deducted from the gross.",
+                withheld=str(withheld),
+            )
+        if withheld > gross:
+            raise ValidationError(
+                f"withholding {withheld} exceeds the gross payment {gross}",
+                code=E_WITHHOLDING_INVALID,
+                remedy=(
+                    "Check which figure is the gross. `--amount` is the payment before "
+                    "withholding, not the cash that arrived."
+                ),
+                withheld=str(withheld),
+                gross=str(gross),
+            )
+        if reclaimable is None:
+            return
+        if reclaimable < 0:
+            raise ValidationError(
+                f"reclaimable withholding cannot be negative, got {reclaimable}",
+                code=E_WITHHOLDING_INVALID,
+                remedy="State the reclaimable portion as a positive amount.",
+                reclaimable=str(reclaimable),
+            )
+        if reclaimable > withheld:
+            raise ValidationError(
+                f"reclaimable withholding {reclaimable} exceeds the {withheld} withheld",
+                code=E_WITHHOLDING_INVALID,
+                remedy=(
+                    "The reclaimable portion is part of the withholding, not additional "
+                    "to it. Reclaimable is accrued and non-reclaimable reduces return "
+                    "(PORT-GIPS-A06), so the split has to sit inside the total."
+                ),
+                reclaimable=str(reclaimable),
+                withheld=str(withheld),
+            )

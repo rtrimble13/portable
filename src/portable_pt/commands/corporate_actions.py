@@ -44,7 +44,7 @@ from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.providers import as_corporate_action_provider
 from portable_core.services.corporate_actions import CorporateActionEngine
 from portable_pt import state
-from portable_pt.commands._shared import dispatch, maybe_dry_run, resolve_date
+from portable_pt.commands._shared import RefOpt, dispatch, maybe_dry_run, resolve_date
 
 app = typer.Typer(help="Corporate actions.", no_args_is_help=True)
 
@@ -69,6 +69,7 @@ def split(
     ],
     ex_date: Annotated[str | None, typer.Option("--ex-date", "-d")] = None,
     account: Annotated[str | None, typer.Option("--account", "-a")] = None,
+    ref: RefOpt = None,
 ) -> None:
     """Apply a forward or reverse split.
 
@@ -149,6 +150,7 @@ def split(
                         quantity=result.lots[0].remaining_quantity if result.lots else None,
                         ex_date=on,
                         note=f"{ratio} split",
+                        external_ref=ref,
                         source=TransactionSource.DERIVED,
                         created_at=_now(),
                     )
@@ -226,6 +228,7 @@ def spinoff(
     ],
     ex_date: Annotated[str | None, typer.Option("--ex-date", "-d")] = None,
     account: Annotated[str | None, typer.Option("--account", "-a")] = None,
+    ref: RefOpt = None,
 ) -> None:
     """Apply a spinoff, allocating basis by relative fair market value.
 
@@ -365,6 +368,7 @@ def spinoff(
                                 f"spinoff of {child.symbol} at {ratio} per share; "
                                 f"basis allocated by FMV {parent_fmv}/{spun_fmv}"
                             ),
+                            external_ref=ref,
                             source=TransactionSource.DERIVED,
                             created_at=_now(),
                         )
@@ -430,6 +434,7 @@ def symbol_change(
     symbol: Annotated[str, typer.Argument(help="The current symbol.")],
     to: Annotated[str, typer.Option("--to", help="The new symbol.")],
     effective: Annotated[str | None, typer.Option("--date", "-d")] = None,
+    ref: RefOpt = None,
 ) -> None:
     """Rename an instrument, keeping the old symbol resolvable.
 
@@ -465,6 +470,7 @@ def symbol_change(
                     net_cash_effect=ZERO,
                     instrument_id=instrument.instrument_id,
                     note=f"{instrument.symbol} -> {to.upper()}",
+                    external_ref=ref,
                     source=TransactionSource.DERIVED,
                     created_at=_now(),
                 )

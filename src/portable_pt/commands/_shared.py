@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import date
 from decimal import Decimal
+from typing import Annotated
 
 import typer
 
@@ -19,7 +20,18 @@ from portable_core.errors import UsageError
 from portable_core.formatters import CommandResult
 from portable_pt import state
 
-__all__ = ["dispatch", "money_arg", "resolve_date"]
+__all__ = ["RefOpt", "dispatch", "money_arg", "resolve_date"]
+
+#: Every command that writes a ledger row takes one of these.
+#:
+#: An importer needs a stable handle on the source row to recognise a duplicate
+#: on re-import, and a row recorded without one cannot be traced to the document
+#: it came from (ADR 0012, `PORT-GIPS-J03`). Defined once here so the help text
+#: cannot drift between the fourteen commands that offer it.
+RefOpt = Annotated[
+    str | None,
+    typer.Option("--ref", help="External reference: a confirm id, or an importer's key."),
+]
 
 
 def dispatch(action: Callable[[], CommandResult]) -> None:

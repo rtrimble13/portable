@@ -299,20 +299,36 @@ at the end.
 
 ## 10. Gaps in `portable` this depends on
 
-- **`taxes_withheld` has no write path.** The column and the domain field exist;
-  no service or CLI sets them. Any withholding — foreign dividend, retirement
-  distribution — needs it.
+**Closed.**
+
+- ~~`taxes_withheld` has no write path.~~ `TradingService.record_income` sets it,
+  with `--withheld` and `--reclaimable` on `pt income dividend` and `coupon`.
+  `gross_amount` stays the income and `net_cash_effect` is what landed, because
+  a report needs both; the reclaimable portion is stored separately, since
+  reclaimable is accrued and non-reclaimable reduces return (`PORT-GIPS-A06`).
+  A split that cannot be true is refused with `PT-E-WITHHOLDING-INVALID`.
+- ~~`--ref` is exposed on trades, deposit, and withdraw only.~~ All twenty
+  ledger-writing commands take one, defined once as `RefOpt` in
+  `commands/_shared.py`. Each writes at most one row per account per
+  invocation, so one `--ref` stays unambiguous under the uniqueness constraint
+  below.
+- ~~`TradingService` hardcodes `source = MANUAL`.~~ `TradeIntent.source`,
+  `record_cash(source=)` and `record_income(source=)` carry it; the CLI still
+  defaults to `manual`, and `pt trade show` reports it (`PORT-GIPS-J03`).
+
+**Open.**
+
+- **No uniqueness constraint on `external_ref`.** The column is now populated
+  from every command, and nothing yet refuses a duplicate. `UNIQUE (account_id,
+  external_ref)` plus a pre-commit duplicate report is a **schema change** —
+  migration, `schema_version` bump, `CHANGELOG.md` entry.
 - **Fund capital-gain distributions have no transaction type.** Income for flow
   purposes, taxed by character.
-- **`--ref` is exposed on trades, deposit, and withdraw only.** Every other
-  mutating command takes no external reference, so imported rows of those types
-  cannot be deduplicated.
-- **`TradingService` hardcodes `source = MANUAL`.** There is no way to write
-  `source = 'import'` (`PORT-GIPS-J03`).
 - **`pt reconcile` compares quantities only** — no cash comparison, keyed on
   symbol rather than CUSIP, and merges accounts into one namespace when
   `--account` is omitted. Per-account scoping and cash are prerequisites, not
-  follow-ons.
+  follow-ons: cash reconciliation is the only check that catches a sign error or
+  a double-counted transfer.
 - **Wash sales are not detected** until `v0.2`; `pt tax` says so on its face.
 
 ---

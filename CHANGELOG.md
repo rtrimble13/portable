@@ -16,6 +16,39 @@ Two rules specific to this repository:
 
 ### Added
 
+- **Provenance and withholding on every ledger write** — the first three of the
+  `v0.2` import prerequisites (`docs/broker-import.md` §10). No schema change:
+  every column involved already existed and had no way to be set.
+  - `TradeIntent.source`, `record_cash(source=)` and `record_income(source=)`
+    carry where a row came from. The CLI still defaults to `manual`; the point is
+    that an importer can now say `import`, so a figure is traceable to the
+    document that produced it (`PORT-GIPS-J03`).
+  - `--ref` on **all twenty** ledger-writing commands, up from three. Defined
+    once as `RefOpt` in `commands/_shared.py`. Each of those commands writes at
+    most one row per account per invocation, so a single `--ref` stays
+    unambiguous under the `(account_id, external_ref)` uniqueness still to come.
+  - `TradingService.record_income` — new, and the home for the withholding
+    arithmetic that was previously absent and would otherwise have landed in a
+    CLI module. `gross_amount` stays the income the instrument paid and
+    `net_cash_effect` is what actually landed, because a report needs both: the
+    return is earned on the gross and the cash balance moved by the net.
+    Reclaimable and non-reclaimable withholding are stored separately, since
+    reclaimable is accrued while non-reclaimable reduces return
+    (`PORT-GIPS-A06`) and one combined figure cannot answer both.
+  - `--withheld` and `--reclaimable` on `pt income dividend` and `pt income
+    coupon`. Deliberately **not** on `pt income roc`: a return of capital is not
+    income, so withholding against one is a different event needing its own
+    reasoning rather than a shared flag.
+  - `PT-E-WITHHOLDING-INVALID` refuses a split that cannot be true — negative
+    withholding, withholding above the gross (the likeliest real mistake, passing
+    the net as `--amount`), or a reclaimable portion above what was withheld,
+    which would accrue a receivable that does not exist.
+  - `pt trade show` reports `source`, `taxes_withheld` and
+    `withholding_reclaimable`, so the new facts are readable rather than merely
+    stored.
+  - 25 tests: `tests/unit/test_income_and_provenance.py` and
+    `tests/integration/test_provenance_cli.py`.
+
 - Repository scaffolding: `pyproject.toml` (scikit-build-core), pinned
   `requirements*.txt` plus `constraints.txt`, `Makefile`, pre-commit hooks, and
   `scripts/bootstrap.{sh,ps1}` for Linux and Windows.
