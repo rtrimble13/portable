@@ -80,6 +80,14 @@ class ReplayResult:
     #: Digest of the resulting derived state. Two rebuilds of the same ledger
     #: must produce the same digest; that is the invariant in one value.
     digest: str
+    #: Ledger rows the replay could not apply, one message each.
+    #:
+    #: Two audiences, deliberately: `pt rebuild` renders these as warnings,
+    #: because the rebuild did happen and reporting every problem in one pass is
+    #: more useful than stopping at the first. `pt validate` renders the same
+    #: facts as **problems** and exits non-zero, because a ledger row that
+    #: produces no derived state means derived state is not a function of the
+    #: whole ledger.
     warnings: tuple[str, ...] = ()
 
 

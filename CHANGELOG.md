@@ -121,6 +121,20 @@ Two rules specific to this repository:
   A command that repaired what it was asked to inspect would report a break and
   then, on a second run, a clean file, with nothing to show which was true.
 
+- **`pt validate` discarded the ledger rows a replay could not apply.**
+  `ReplayEngine.rebuild` collects one message per such row and keeps going, so
+  that a single pass surfaces every problem; its docstring has always said
+  `pt validate` is what turns those into a non-zero exit, and `validate` threw
+  them away. A row that produces no derived state is a real invariant break —
+  derived state is then not a function of the *whole* ledger — and cash
+  conservation does not reliably catch it, because `apply_transaction` moves
+  cash before it does the position work.
+
+  `validate` now reports each as a problem under `unreplayable` and exits 4.
+  `pt rebuild` still renders the same facts as warnings and still succeeds: it
+  rebuilds and reports, `validate` judges. `ReplayResult.warnings` documents
+  both audiences at the point it is defined.
+
 - **The derived-state digest was blind to relationships.** It excluded every
   column whose name ended in `_id`, which dropped the surrogate keys a rebuild
   legitimately reassigns and also `account_id` and `instrument_id` — so a lot's
@@ -142,9 +156,10 @@ Two rules specific to this repository:
 - `services.trading.CommitResult` — `TradingService.commit` now returns the
   stored transaction *and* whether committing it rebuilt.
 - `tests/unit/test_replay_ordering.py` and
-  `tests/integration/test_validate_replay.py` — 15 tests, each of which fails
-  without the corresponding half of the fix, including the ADR's reproduction
-  asserted as the realized gain a person would read.
+  `tests/integration/test_validate_replay.py` — 18 tests, each of which fails
+  without the corresponding part of the fix, including the ADR's reproduction
+  asserted as the realized gain a person would read, and the split between
+  `pt rebuild` reporting an unreplayable row and `pt validate` failing on it.
 
 ### Changed
 

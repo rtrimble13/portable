@@ -322,10 +322,22 @@ def validate(
         stored_digests = derived_state_digests(repos)
         engine = ReplayEngine(repos)
         with scratch_transaction(repos.con):
-            engine.rebuild()
+            replayed = engine.rebuild()
             replayed_digests = derived_state_digests(repos)
             engine.rebuild()
             idempotent = derived_state_digests(repos) == replayed_digests
+
+        # A ledger row replay cannot apply is an invariant break, not a note.
+        # `ReplayEngine.rebuild` collects these and keeps going so that one pass
+        # surfaces every problem, and its docstring has always said `pt validate`
+        # is what turns them into a non-zero exit -- which this discarded.
+        #
+        # It is a real break because derived state is then not a function of the
+        # whole ledger: an entry exists that nothing accounts for. Cash
+        # conservation does not necessarily catch it, since `apply_transaction`
+        # moves cash before it does the position work.
+        for unreplayable in replayed.warnings:
+            problems.append(("unreplayable", unreplayable))
 
         differing = sorted(
             table
