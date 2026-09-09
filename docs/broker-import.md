@@ -288,15 +288,22 @@ Per invariant 9, the import stops and explains rather than guessing, on:
 
 An import is accepted when it reconciles, not when it parses.
 
-1. **Per period, per account:** ending cash and every position quantity match the
-   custodian. A break exits **6**.
+1. **Per period, per account:** ending cash and every position quantity match
+   the custodian. `pt reconcile --against <statement.csv>`; a break exits **6**.
+   The statement needs `quantity` plus one of `symbol`, `cusip` or `isin`, an
+   `account` column once more than one account is in scope, and a `cash` column
+   marking the cash line and any sweep vehicle.
 2. **Per closed tax year:** realized gains tie to the custodian's tax reporting,
    excluding dispositions marked `unavailable`.
 3. `pt validate` passes — which, after ADR 0016, means stored derived state
    actually equals replayed state.
 4. `pt export` → `pt import` → `pt export` is byte-identical.
 
-Check 1 carries extra weight. The reconstruction works backwards from the
+Check 1 carries extra weight, and cash carries most of that. A sign error, a
+dropped row, and a double-counted transfer all leave every share count correct
+and the money wrong, so a quantity-only comparison passes on all three.
+
+The reconstruction also works backwards from the
 custodian's stated present position, so agreement there is not a coincidence —
 it is the arithmetic closing. What the check proves is that the transaction
 history is complete enough to bridge the two ends, and that is the whole of the
@@ -323,6 +330,14 @@ at the end.
 - ~~`TradingService` hardcodes `source = MANUAL`.~~ `TradeIntent.source`,
   `record_cash(source=)` and `record_income(source=)` carry it; the CLI still
   defaults to `manual`, and `pt trade show` reports it (`PORT-GIPS-J03`).
+- ~~`pt reconcile` compares quantities only.~~ It now compares **per account**
+  and includes **cash**, resolves an identifier by symbol, CUSIP or ISIN, and
+  folds the custodian's sweep positions into its cash line (ADR 0013). The
+  comparison lives in `services/reconciliation.py`; the command parses and
+  renders. It refuses rather than guessing when a statement line cannot be
+  attributed to an account, when a statement names an account not being
+  reconciled, and when cash is stated both by `--cash` and by a line in the
+  file.
 
 - ~~No uniqueness constraint on `external_ref`.~~ Migration 0002 adds
   `UNIQUE (account_id, external_ref)` where a reference is present. Scoped per
@@ -337,11 +352,6 @@ at the end.
 
 - **Fund capital-gain distributions have no transaction type.** Income for flow
   purposes, taxed by character.
-- **`pt reconcile` compares quantities only** — no cash comparison, keyed on
-  symbol rather than CUSIP, and merges accounts into one namespace when
-  `--account` is omitted. Per-account scoping and cash are prerequisites, not
-  follow-ons: cash reconciliation is the only check that catches a sign error or
-  a double-counted transfer.
 - **Wash sales are not detected** until `v0.2`; `pt tax` says so on its face.
 
 ---

@@ -58,6 +58,36 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`pt reconcile` compares per account, and compares cash** — the last of the
+  `v0.2` import prerequisites, and the acceptance criterion every other one
+  exists to serve (`docs/broker-import.md` §9).
+  - **Per account.** It previously summed every account into one namespace when
+    `--account` was omitted, so two accounts holding the same fund reconciled as
+    a total: an overstatement in one cancelled an understatement in the other
+    and the line balanced. There is a test for exactly that.
+  - **Cash.** It previously compared quantities only, which passes on a sign
+    error, a dropped row, and a double-counted transfer — every failure that
+    leaves the share counts right and the money wrong. A cash line is now
+    rendered for every account even when the statement is silent, because
+    "they agree" and "nobody checked" must not look the same. A margin loan
+    nets against cash, as a statement presents it.
+  - **Cash equivalents are cash.** A custodian reports its sweep as a position
+    and `portable` holds it as cash, so the statement's sweep lines fold into
+    its cash figure before comparison (ADR 0013). This is the one place that
+    decision has to be undone, and doing it here keeps it out of the ledger.
+  - **Identifiers.** A line may be stated by `symbol`, `cusip` or `isin`. New
+    `InstrumentRepository.find` is `resolve` for a caller whose job is to report
+    what does not match, so one unknown line no longer abandons the comparison;
+    ambiguity still raises, since two instruments answering to one identifier is
+    a question only a person can settle.
+  - **Refusals** rather than guesses: a line that cannot be attributed to an
+    account when several are in scope, a statement naming an account not being
+    reconciled, cash stated both by `--cash` and by a file row, and `--as-of`,
+    which reconcile cannot honour because there is no as-of position query —
+    accepting it would answer a question nobody asked.
+  - The comparison moved to `services/reconciliation.py`; the command parses and
+    renders. 21 tests.
+
 - **Provenance and withholding on every ledger write** — the first three of the
   `v0.2` import prerequisites (`docs/broker-import.md` §10). No schema change:
   every column involved already existed and had no way to be set.

@@ -375,6 +375,19 @@ class InstrumentRepository(_Repository):
         ).fetchone()
         return mappers.to_instrument(row, option_row, bond_row)
 
+    def find(self, symbol: str, *, on: date | None = None) -> Instrument | None:
+        """:meth:`resolve`, but absence is an answer rather than an error.
+
+        For a caller whose job is to *report* what does not match -- `pt
+        reconcile` names an identifier it cannot place rather than abandoning
+        the whole comparison over one line.
+
+        Ambiguity still raises: two instruments answering to one identifier is
+        a question only a person can settle, and picking either would put a
+        quantity against the wrong security.
+        """
+        return self._resolve(symbol, on=on, required=False)
+
     def resolve(self, symbol: str, *, on: date | None = None) -> Instrument:
         """Resolve a symbol to an instrument, as of a date.
 
@@ -383,6 +396,11 @@ class InstrumentRepository(_Repository):
         date**. Resolving by today's symbol would silently rewrite history
         whenever a ticker has been reassigned.
         """
+        found = self._resolve(symbol, on=on, required=True)
+        assert found is not None
+        return found
+
+    def _resolve(self, symbol: str, *, on: date | None, required: bool) -> Instrument | None:
         candidates = self.con.execute(
             "SELECT * FROM instrument WHERE symbol = ? ORDER BY instrument_id",
             (symbol,),
@@ -410,6 +428,8 @@ class InstrumentRepository(_Repository):
                     break
 
         if not candidates:
+            if not required:
+                return None
             raise ValidationError(
                 f"no instrument known as {symbol!r}" + (f" on {on.isoformat()}" if on else ""),
                 code=E_INSTRUMENT_NOT_FOUND,
