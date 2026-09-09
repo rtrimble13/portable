@@ -24,6 +24,7 @@ from portable_pt.commands import (
     account,
     cash,
     corporate_actions,
+    importing,
     instrument,
     introspect,
     options,
@@ -120,10 +121,17 @@ app.command("migrate")(portfolio.migrate)
 app.command("validate")(portfolio.validate)
 app.command("rebuild")(portfolio.rebuild)
 app.command("export")(portfolio.export_portfolio)
-app.command("import")(portfolio.import_portfolio)
 app.command("backup")(portfolio.backup)
 
 # ── nouns ────────────────────────────────────────────────────────────────────
+
+# `import` is a noun with verbs (ADR 0012): `portfolio` for the export
+# round-trip, `batch` for a reviewed custodian batch. Wired here rather than in
+# a command module so that app.py stays the single place the surface is
+# described.
+importing.app.command("portfolio")(portfolio.import_portfolio)
+importing.app.command("batch")(importing.import_batch)
+app.add_typer(importing.app, name="import")
 
 app.add_typer(account.app, name="account")
 app.add_typer(instrument.app, name="instrument")

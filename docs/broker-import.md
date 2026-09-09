@@ -137,7 +137,11 @@ job, done once, where it can be reviewed.
 
 ## 5. The batch format
 
-`schemas/import-batch-1.0.json`. One object per prospective ledger row:
+`schemas/import-batch-1.0.json` — **published and implemented**. Unlike every
+other schema in that directory it describes an *input*, so it does not extend
+the output envelope. `pt import batch` reads it.
+
+One object per prospective ledger row:
 
 ```json
 {
@@ -181,6 +185,37 @@ what the rows mean depends on it.
 
 The format is the interface: a future OFX adapter, or a batch hand-written for a
 handful of corrections, is a first-class input on the same footing.
+
+**A row states what happened, not what follows from it.** There is no
+`net_cash_effect` in a batch: `portable` derives the cash effect, the lot relief
+and the tax through the same services a typed command uses, so every refusal
+that guards hand entry guards an import too rather than an importer growing a
+second, laxer path into the ledger.
+
+**Format version 1 carries trades, cash and income** — the types with a service
+behind them. Corporate actions and the options lifecycle are refused by name
+rather than half-supported: they need position context a typed command gathers
+interactively, and an importer deriving basis by a second, unreviewed route is
+the failure that avoids. ADR 0018 puts them in a per-custodian post-pass.
+
+**`--dry-run` is the real commit, rolled back.** Validating each row against the
+state *before* the batch would refuse a batch that commits perfectly well, since
+a sale's lot relief has to see the purchase earlier in the same batch. Running
+it for real and discarding the result is the only dry run that answers the
+question asked — the same pattern ADR 0016 established for `pt validate`.
+
+**The source documents are hash-checked** where they can be found next to the
+batch: a review approves particular rows against a particular export, and if the
+export has since been re-downloaded the review no longer covers what is about to
+be committed. A file that cannot be found is *reported* rather than refused,
+because a batch is often reviewed elsewhere — but reported, so that "verified"
+and "not checked" stay distinct.
+
+The published schema is validated in CI, and a test asserts that anything the
+runtime loader accepts also validates against it. The loader checks by hand
+because `jsonschema` is a development dependency and a hand-written check can
+name the row index, the field, and the remedy — which a batch under human review
+needs.
 
 **Re-importing an overlapping period** is ordinary, not an error: you pull
 Jan–Jun, then Apr–Dec. That is resolved at **extract**, where rows already in

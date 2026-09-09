@@ -58,6 +58,51 @@ Two rules specific to this repository:
 
 ### Added
 
+- **The import batch format, and `pt import batch`** — the reviewable artifact
+  between extracting a custodian's export and committing it (ADR 0012).
+  - `schemas/import-batch-1.0.json`, published and validated in CI. The first
+    schema here that describes an **input**, so it does not extend the output
+    envelope. A test asserts that anything the runtime loader accepts also
+    validates against it; the loader checks by hand because `jsonschema` is a
+    development dependency and a hand-written check can name the row index, the
+    field and the remedy — which a batch under human review needs.
+  - **A row states what happened, not what follows from it.** No
+    `net_cash_effect` in a batch: the cash effect, the lot relief and the tax
+    are derived through the same services a typed command uses, so an
+    unclassified fee, a sale with no matching lot, a duplicate reference and an
+    unknown instrument are refused for an import exactly as at the keyboard.
+    Committed rows carry `source = 'import'`.
+  - **Version 1 carries trades, cash and income** — the types with a service
+    behind them. Corporate actions and the options lifecycle are refused by
+    name rather than half-supported (`CLAUDE.md` invariant 10): they need
+    position context a typed command gathers, and an importer deriving basis by
+    a second, unreviewed route is the failure that avoids.
+  - Rows are appended in **trade-date order** whatever order the file lists
+    them in — a sale's relief has to see the purchase earlier in the same batch
+    — then the ledger is replayed once (ADR 0016), because a historical batch is
+    back-dated relative to whatever the file already holds.
+  - **`--dry-run` is the real commit, rolled back.** Checking each row against
+    the state before the batch would refuse a batch that commits perfectly well.
+    A first attempt did exactly that and was caught in a smoke test; running it
+    for real inside `scratch_transaction` is the only dry run that answers the
+    question asked.
+  - **Source documents are hash-checked** where they sit next to the batch: a
+    review approves particular rows against a particular export. A file that
+    cannot be found is reported rather than refused, so "verified" and "not
+    checked" stay distinct.
+  - Rows are reported grouped by `(action, rule)`, because a review is per rule
+    and a thousand-row batch read one row at a time is not reviewed.
+  - 38 tests.
+
+### Changed
+
+- **`pt import` is a noun with verbs** (ADR 0012). The export round trip moves
+  from `pt import <file>` to `pt import portfolio <file>`, alongside the new
+  `pt import batch <file>`. A breaking change to a v0.1 command, taken now
+  because the surface ADR 0012 designed needs the noun.
+
+### Added
+
 - **`pt reconcile` compares per account, and compares cash** — the last of the
   `v0.2` import prerequisites, and the acceptance criterion every other one
   exists to serve (`docs/broker-import.md` §9).

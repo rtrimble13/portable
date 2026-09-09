@@ -516,7 +516,7 @@ def test_8_export_import_export_is_byte_identical(
     round_trip = tmp_path / "round.port"
 
     run_pt("--port", port, "export", "-o", str(first))
-    run_pt("import", str(first), "--into", str(round_trip))
+    run_pt("import", "portfolio", str(first), "--into", str(round_trip))
     run_pt("--port", str(round_trip), "export", "-o", str(second))
 
     assert first.read_bytes() == second.read_bytes()

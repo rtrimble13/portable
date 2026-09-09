@@ -50,7 +50,10 @@ fixtures has been validated against the easy case. Designed in
    external_ref)` with `PT-E-DUPLICATE-REF` on every writer and a migration
    precondition that names the offending rows; and `pt reconcile` comparing per
    account and including cash, resolving by symbol, CUSIP or ISIN.
-2. **The batch format** — `schemas/import-batch-1.0.json`, and `pt import batch`.
+2. **The batch format** — *done*. `schemas/import-batch-1.0.json` published and
+   implemented, `pt import batch` with a dry run that is the real commit rolled
+   back, source-document hash checking, and refusal by name for the transaction
+   types a batch cannot carry in version 1.
 3. **In-kind transfers** ([ADR 0015](adr/0015-in-kind-transfers-and-opening-positions.md))
    — `transfer_in` / `transfer_out`, so a position that predates the ledger enters
    it without inventing the cash flow that would rewrite the track record.

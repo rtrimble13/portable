@@ -418,7 +418,7 @@ def test_an_export_round_trip_survives_the_constraint(
 
     first = tmp_path / "a.json"
     run_pt("--port", str(held), "export", "-o", str(first)).ok()
-    run_pt("import", str(first), "--into", str(tmp_path / "copy.port")).ok()
+    run_pt("import", "portfolio", str(first), "--into", str(tmp_path / "copy.port")).ok()
     second = tmp_path / "b.json"
     run_pt("--port", str(tmp_path / "copy.port"), "export", "-o", str(second)).ok()
     assert first.read_bytes() == second.read_bytes()

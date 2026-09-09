@@ -162,7 +162,7 @@ trigger is incomplete until its `END;`.
 
 ```bash
 pt --port p.port export -o dump.json
-pt import dump.json --into new.port
+pt import portfolio dump.json --into new.port
 ```
 
 Human-readable, diffable JSON of every **non-derived** table, ordered by primary
@@ -173,6 +173,9 @@ including it would double the file size, and a round-trip that carried it could
 *hide* a replay bug rather than expose one. `pt import` rebuilds derived state
 from the imported ledger, so the round trip exercises replay rather than
 bypassing it.
+
+`import` is a noun with verbs: `portfolio` for this round trip, `batch` for a
+reviewed custodian batch (ADR 0012).
 
 **export → import → export produces identical bytes.** There is an integration
 test asserting exactly that, and it also checks the tax figures agree on both

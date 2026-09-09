@@ -1,6 +1,6 @@
 # ADR 0012 — Broker import is a staged pipeline with a human gate, not a command
 
-- **Status:** Proposed
+- **Status:** Proposed — the batch format and commit stage are implemented; extract is not
 - **Date:** 2026-09-08
 - **Milestone:** v0.2
 - **Governs:** `CLAUDE.md` invariants 2, 9, 10; `PORT-GIPS-D01`, `PORT-GIPS-J03`
