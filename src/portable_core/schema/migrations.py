@@ -19,6 +19,7 @@ import hashlib
 import re
 import shutil
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,6 +28,7 @@ from typing import Final
 from portable_core import __version__
 from portable_core.errors import PortfolioFileError
 from portable_core.errors.kinds import (
+    E_MIGRATION_BLOCKED,
     E_MIGRATION_FAILED,
     E_PORTFOLIO_CORRUPT,
     E_SCHEMA_TOO_NEW,
@@ -38,7 +40,7 @@ _FILENAME = re.compile(r"^(?P<version>\d{4})_(?P<name>[a-z0-9_]+)\.sql$")
 #: The schema version this build of `portable` writes and understands. Bumped
 #: by every migration, in the same commit as the migration and its CHANGELOG
 #: entry.
-CURRENT_SCHEMA_VERSION: Final[int] = 1
+CURRENT_SCHEMA_VERSION: Final[int] = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,12 +149,89 @@ def split_statements(script: str) -> list[str]:
     return statements
 
 
+def _duplicate_external_refs(con: sqlite3.Connection) -> list[str]:
+    """Ledger rows that would collide under 0002's unique index.
+
+    Reported before the migration runs, because the alternative is
+    ``UNIQUE constraint failed: transaction.account_id, transaction.external_ref``
+    from half way through, carrying a remedy -- restore the backup -- that
+    reproduces the same duplicates and the same failure.
+    """
+    rows = con.execute(
+        "SELECT account_id, external_ref, COUNT(*) AS n, "
+        "GROUP_CONCAT(txn_id) AS ids "
+        'FROM "transaction" WHERE external_ref IS NOT NULL '
+        "GROUP BY account_id, external_ref HAVING COUNT(*) > 1 "
+        "ORDER BY account_id, external_ref"
+    ).fetchall()
+    return [
+        f"account {r['account_id']} has {r['n']} rows carrying external_ref "
+        f"{r['external_ref']!r} (transactions {r['ids']})"
+        for r in rows
+    ]
+
+
+#: Data conditions a migration needs before it can apply, by version.
+#:
+#: A migration is pure SQL and cannot branch, so a constraint added over
+#: existing data either applies or fails with whatever SQLite says. That is a
+#: poor answer for the one operation that can lose a ledger, so the condition is
+#: checked first and reported in terms of the rows at fault.
+_PRECONDITIONS: Final[dict[int, Callable[[sqlite3.Connection], list[str]]]] = {
+    2: _duplicate_external_refs,
+}
+
+#: What to do about each, since "the file is unchanged" is not a remedy.
+_PRECONDITION_REMEDY: Final[dict[int, str]] = {
+    2: (
+        "Two ledger rows in one account cannot claim the same external reference. "
+        "Correct the duplicate with a reversing entry (`pt trade reverse`), or "
+        "re-record it without `--ref`. The ledger is append-only, so the reference "
+        "cannot simply be edited off the existing row."
+    ),
+}
+
+
+def check_preconditions(con: sqlite3.Connection, migration: Migration) -> None:
+    """Refuse a migration whose data would make it fail. Reads only.
+
+    Raises:
+        PortfolioFileError: with every offending row named, and a remedy that
+            addresses the data rather than the migration.
+    """
+    check = _PRECONDITIONS.get(migration.version)
+    if check is None:
+        return
+    problems = check(con)
+    if not problems:
+        return
+    raise PortfolioFileError(
+        f"migration {migration.version:04d}_{migration.name} cannot be applied to this "
+        f"file: {len(problems)} precondition failure(s)",
+        code=E_MIGRATION_BLOCKED,
+        remedy=_PRECONDITION_REMEDY.get(migration.version, "Correct the data and retry."),
+        version=migration.version,
+        problems=problems,
+    )
+
+
 def _apply(con: sqlite3.Connection, migration: Migration) -> None:
     """Apply one migration and record it. All or nothing."""
+    # Before the transaction, so a refusal costs nothing and reads as a refusal
+    # rather than as a failed write.
+    check_preconditions(con, migration)
     con.execute("BEGIN IMMEDIATE")
     try:
         for statement in split_statements(migration.sql):
             con.execute(statement)
+        # `meta.schema_version` is a required key that `pt validate` checks and
+        # `pt export` carries. Nothing updated it after a migration, which never
+        # showed because 0001 was the only migration: every upgraded file would
+        # have reported forever the version it was created at.
+        con.execute(
+            "UPDATE meta SET value = ? WHERE key = 'schema_version'",
+            (str(migration.version),),
+        )
         con.execute(
             "INSERT INTO schema_migration (version, name, checksum, applied_at, applied_by) "
             "VALUES (?, ?, ?, ?, ?)",

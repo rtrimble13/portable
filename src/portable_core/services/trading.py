@@ -123,6 +123,7 @@ class TradingService:
         self._check_account(intent)
         self._check_quantity(intent)
         self._check_fee_class(intent)
+        self.check_external_ref(intent.account, intent.external_ref)
 
         with money_context():
             gross = quantize_money(
@@ -352,6 +353,8 @@ class TradingService:
                     amount=str(amount),
                 )
 
+        self.check_external_ref(account, external_ref)
+
         if txn_type is TransactionType.FEE and fee_class is None:
             raise ValidationError(
                 "a fee needs a classification",
@@ -435,6 +438,7 @@ class TradingService:
                 ),
             )
 
+        self.check_external_ref(account, external_ref)
         self._check_withholding(gross, taxes_withheld, withholding_reclaimable)
 
         with money_context():
@@ -462,6 +466,20 @@ class TradingService:
             external_ref=external_ref,
             source=source,
             created_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+
+    def check_external_ref(self, account: Account, external_ref: str | None) -> None:
+        """Refuse a duplicate reference *before* the work, not at the insert.
+
+        `TransactionRepository.append` refuses too, and that is what binds every
+        writer -- including the corporate-action and options commands, which
+        build their rows directly rather than through a service. This runs
+        earlier so `--dry-run` reports the duplicate rather than planning a
+        trade that could never be committed, and so the message can name the
+        account rather than its id.
+        """
+        self.repos.transactions.refuse_if_ref_taken(
+            account.account_id, external_ref, account_name=account.name
         )
 
     @staticmethod

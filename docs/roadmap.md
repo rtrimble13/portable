@@ -44,10 +44,11 @@ fixtures has been validated against the easy case. Designed in
    — a back-dated append leaves derived state disagreeing with the ledger, and
    `pt validate` cannot see it because it rebuilds before it compares. This blocks
    everything below it: a historical import is out-of-order by construction.
-1. **Import prerequisites.** *Landed:* `source` on every write path,
-   `--ref` on all twenty ledger-writing commands, and a `taxes_withheld` path
-   with the reclaimable split and its refusals. *Remaining:* `UNIQUE
-   (account_id, external_ref)` with a duplicate report — a schema change — and
+1. **Import prerequisites.** *Landed:* `source` on every write path, `--ref`
+   on all twenty ledger-writing commands, a `taxes_withheld` path with the
+   reclaimable split and its refusals, and schema **0002** — `UNIQUE
+   (account_id, external_ref)` with `PT-E-DUPLICATE-REF` on every writer and a
+   migration precondition that names the offending rows. *Remaining:*
    `pt reconcile` extended with per-account scoping and a cash comparison.
 2. **The batch format** — `schemas/import-batch-1.0.json`, and `pt import batch`.
 3. **In-kind transfers** ([ADR 0015](adr/0015-in-kind-transfers-and-opening-positions.md))

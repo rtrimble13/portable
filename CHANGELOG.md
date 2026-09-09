@@ -14,6 +14,48 @@ Two rules specific to this repository:
 
 ## [Unreleased]
 
+### Schema
+
+- **`schema_version` 1 → 2**, migration `0002_external_ref_unique`.
+  `UNIQUE (account_id, external_ref)` on `transaction`, where a reference is
+  present, replacing the non-unique lookup index it supersedes.
+  - **Scoped per account, not globally.** `pt ca split --ref X` with no
+    `--account` writes one ledger row per holding account, all naming one
+    corporate action; global uniqueness would refuse a correct command and force
+    invented suffixes. Imported rows are unaffected either way — ADR 0012's
+    synthesized key already hashes the account in.
+  - **Partial.** A row with no reference is the ordinary hand-entered case and
+    stays unconstrained.
+  - **`source` is deliberately not part of the key.** A hand-entered row and an
+    imported row claiming one reference in one account *should* collide: that is
+    exactly the case where somebody typed in a transaction the importer is about
+    to add again.
+  - `TransactionRepository.append` refuses a duplicate with
+    `PT-E-DUPLICATE-REF`, naming the transaction that already holds it. Being in
+    `append` rather than a service is what covers the corporate-action and
+    options commands, which build their rows directly — before this they
+    surfaced the raw `IntegrityError` as `PT-E-GENERIC: unexpected error … this
+    is a bug`, at exit 1, for what is a user-fixable duplicate.
+    `TradingService.check_external_ref` runs the same check earlier so
+    `--dry-run` refuses rather than planning a trade that could never commit.
+  - `pt import` scans an export's ledger before its first insert, so a payload
+    carrying duplicates leaves no half-written file behind.
+
+### Fixed
+
+- **Migrations can state a data precondition**, checked before the transaction
+  opens. A migration is pure SQL and cannot branch, so a constraint added over
+  existing data either applies or fails with whatever SQLite says — and
+  `_apply`'s remedy, *restore the backup*, would reproduce the same data and the
+  same failure. For the one operation that can lose a ledger that is not good
+  enough. 0002's precondition names every offending `(account, reference,
+  transaction ids)` group and a remedy that works.
+- **`meta.schema_version` is updated by a migration.** It is a required key that
+  `pt validate` checks and `pt export` carries, and nothing had ever updated it —
+  which never showed, because 0001 was the only migration there had ever been.
+  Every upgraded file would otherwise have reported forever the version it was
+  created at.
+
 ### Added
 
 - **Provenance and withholding on every ledger write** — the first three of the

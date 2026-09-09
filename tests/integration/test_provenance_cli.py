@@ -228,3 +228,197 @@ def test_a_corporate_action_carries_its_ref_too(run_pt: CliRunner, held: Path) -
     assert len(splits) == 1
     shown = run_pt("--port", str(held), "trade", "show", str(splits[0]["txn_id"])).ok()
     assert shown.data["external_ref"] == "wb:split-1"
+
+
+# ── duplicate references, through the CLI ────────────────────────────────────
+
+
+def test_a_duplicate_ref_is_refused_with_the_row_it_collides_with(
+    run_pt: CliRunner, held: Path
+) -> None:
+    run_pt(
+        "--port",
+        str(held),
+        "cash",
+        "interest",
+        "-a",
+        "B",
+        "--amount",
+        "10.00",
+        "--date",
+        "2024-02-01",
+        "--ref",
+        "wb:int-1",
+    ).ok()
+    result = run_pt(
+        "--port",
+        str(held),
+        "cash",
+        "interest",
+        "-a",
+        "B",
+        "--amount",
+        "10.00",
+        "--date",
+        "2024-03-01",
+        "--ref",
+        "wb:int-1",
+        expect=4,
+    )
+    error = result.json()["error"]
+    assert error["code"] == "PT-E-DUPLICATE-REF"
+    assert "already has transaction" in error["message"]
+
+
+def test_a_command_that_bypasses_the_service_refuses_the_same_way(
+    run_pt: CliRunner, held: Path
+) -> None:
+    """The corporate-action path builds its row directly, not through a service.
+
+    Before the refusal moved into `TransactionRepository.append` this surfaced
+    as `PT-E-GENERIC: unexpected error: IntegrityError` at exit 1 — a bare
+    exception, reported as a bug in `portable` when it is a duplicate the user
+    can fix.
+    """
+    run_pt(
+        "--port",
+        str(held),
+        "ca",
+        "split",
+        "AAPL",
+        "--ratio",
+        "2:1",
+        "--ex-date",
+        "2024-06-03",
+        "--ref",
+        "wb:ca-1",
+    ).ok()
+    result = run_pt(
+        "--port",
+        str(held),
+        "ca",
+        "split",
+        "AAPL",
+        "--ratio",
+        "2:1",
+        "--ex-date",
+        "2024-07-03",
+        "--ref",
+        "wb:ca-1",
+        expect=4,
+    )
+    assert result.json()["error"]["code"] == "PT-E-DUPLICATE-REF"
+
+
+def test_dry_run_refuses_rather_than_planning_an_uncommittable_trade(
+    run_pt: CliRunner, held: Path
+) -> None:
+    """A dry run that reports success on a trade that cannot commit is a lie."""
+    run_pt(
+        "--port",
+        str(held),
+        "cash",
+        "interest",
+        "-a",
+        "B",
+        "--amount",
+        "10.00",
+        "--date",
+        "2024-02-01",
+        "--ref",
+        "wb:int-2",
+    ).ok()
+    result = run_pt(
+        "--port",
+        str(held),
+        "--dry-run",
+        "buy",
+        "AAPL",
+        "-a",
+        "B",
+        "--qty",
+        "5",
+        "--price",
+        "190",
+        "--date",
+        "2024-02-05",
+        "--ref",
+        "wb:int-2",
+        expect=4,
+    )
+    assert result.json()["error"]["code"] == "PT-E-DUPLICATE-REF"
+
+
+def test_the_same_ref_in_another_account_is_accepted(run_pt: CliRunner, held: Path) -> None:
+    """One corporate action, one reference, several accounts."""
+    run_pt(
+        "--port",
+        str(held),
+        "account",
+        "add",
+        "--name",
+        "IRA",
+        "--type",
+        "tax_deferred",
+        "--opened",
+        "2024-01-02",
+    ).ok()
+    run_pt(
+        "--port",
+        str(held),
+        "cash",
+        "deposit",
+        "-a",
+        "B",
+        "--amount",
+        "500.00",
+        "--date",
+        "2024-02-01",
+        "--ref",
+        "shared",
+    ).ok()
+    run_pt(
+        "--port",
+        str(held),
+        "cash",
+        "deposit",
+        "-a",
+        "IRA",
+        "--amount",
+        "500.00",
+        "--date",
+        "2024-02-01",
+        "--ref",
+        "shared",
+    ).ok()
+
+
+def test_an_export_round_trip_survives_the_constraint(
+    run_pt: CliRunner, held: Path, tmp_path: Path
+) -> None:
+    """`pt export` → `pt import` still produces identical bytes.
+
+    The new index exists in the fresh file from its first row, so a portfolio
+    carrying references has to import cleanly rather than colliding with it.
+    """
+    run_pt(
+        "--port",
+        str(held),
+        "cash",
+        "interest",
+        "-a",
+        "B",
+        "--amount",
+        "10.00",
+        "--date",
+        "2024-02-01",
+        "--ref",
+        "wb:int-3",
+    ).ok()
+
+    first = tmp_path / "a.json"
+    run_pt("--port", str(held), "export", "-o", str(first)).ok()
+    run_pt("import", str(first), "--into", str(tmp_path / "copy.port")).ok()
+    second = tmp_path / "b.json"
+    run_pt("--port", str(tmp_path / "copy.port"), "export", "-o", str(second)).ok()
+    assert first.read_bytes() == second.read_bytes()

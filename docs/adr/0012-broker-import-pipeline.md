@@ -102,9 +102,19 @@ export, so that two identical dividends on one day do not collide. The
 components are the source row's raw text, not the mapped values, so a change to
 the activity map does not change the identity of a row already committed.
 
-`UNIQUE (account_id, external_ref)` enforces this at the schema. Duplicate
-detection **reports and refuses**; it never silently skips, because a silent skip
-cannot be distinguished from a row the adapter failed to produce.
+`UNIQUE (account_id, external_ref)` enforces this at the schema — added in
+migration 0002, scoped per account so that one corporate action recorded across
+several accounts under one reference is still legal. Duplicate detection
+**reports and refuses**; it never silently skips, because a silent skip cannot be
+distinguished from a row the adapter failed to produce.
+
+That makes one ordinary workflow need a home: re-importing an overlapping
+statement period, which is a thing people do on purpose. It belongs at
+**extract**, not commit. A row already in the ledger is written to the batch as
+`action: "skip"` with the reason, so the overlap appears in the artifact under
+review — consistent with this ADR's rule that a discarded row is a visible
+decision. A duplicate that survives to commit is by definition unexpected, and
+refuses.
 
 ### The maps are versioned repository artifacts, not adapter internals
 

@@ -182,6 +182,14 @@ what the rows mean depends on it.
 The format is the interface: a future OFX adapter, or a batch hand-written for a
 handful of corrections, is a first-class input on the same footing.
 
+**Re-importing an overlapping period** is ordinary, not an error: you pull
+Jan–Jun, then Apr–Dec. That is resolved at **extract**, where rows already in
+the ledger are written to the batch as `action: "skip"` with the reason, so the
+overlap is visible in the artifact you review. It is deliberately *not* a
+`--skip-duplicates` flag at commit: a commit-time skip makes the decision
+invisible, and cannot be told apart from an adapter that failed to emit the row.
+A duplicate reaching commit is therefore unexpected, and refuses.
+
 **Identity.** Where the custodian supplies `TRANSACTION_ID`, that is the
 `external_ref`. Where it does not, `external_ref` is `sha256` over the source
 row's raw text plus an ordinal distinguishing otherwise-identical rows in the
@@ -316,12 +324,17 @@ at the end.
   `record_cash(source=)` and `record_income(source=)` carry it; the CLI still
   defaults to `manual`, and `pt trade show` reports it (`PORT-GIPS-J03`).
 
+- ~~No uniqueness constraint on `external_ref`.~~ Migration 0002 adds
+  `UNIQUE (account_id, external_ref)` where a reference is present. Scoped per
+  account because `pt ca split --ref X` legitimately writes one row per holding
+  account under one reference; partial because a row with no reference is the
+  ordinary hand-entered case. `TransactionRepository.append` refuses a duplicate
+  with `PT-E-DUPLICATE-REF` naming the colliding transaction, so every writer is
+  covered including the corporate-action and options commands that build rows
+  directly. `pt import` scans an export's ledger before its first insert.
+
 **Open.**
 
-- **No uniqueness constraint on `external_ref`.** The column is now populated
-  from every command, and nothing yet refuses a duplicate. `UNIQUE (account_id,
-  external_ref)` plus a pre-commit duplicate report is a **schema change** —
-  migration, `schema_version` bump, `CHANGELOG.md` entry.
 - **Fund capital-gain distributions have no transaction type.** Income for flow
   purposes, taxed by character.
 - **`pt reconcile` compares quantities only** — no cash comparison, keyed on
