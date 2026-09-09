@@ -149,6 +149,17 @@ def machine(value: object) -> object:
     """
     if isinstance(value, Decimal):
         return to_text(value)
+    # Recursive, because `data` legitimately carries nested structures -- a list
+    # of per-rung provenance rows, a list of excluded dispositions -- and a
+    # `Decimal` two levels down is exactly as unserializable as one at the top.
+    # Handling it here rather than at the call site is the placement rule in
+    # `CLAUDE.md`: presentation lives in `formatters/`, once. Call sites that
+    # stringify by hand get `str(Decimal("1E+2")) == "1E+2"` into the output,
+    # where `to_text` gives "100".
+    if isinstance(value, dict):
+        return {str(k): machine(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [machine(v) for v in value]
     if isinstance(value, ReturnValue):
         return {
             "value": to_text(value.value),

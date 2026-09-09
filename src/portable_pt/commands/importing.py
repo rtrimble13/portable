@@ -315,18 +315,10 @@ def import_reconstruct(
                 "broker": report.broker,
                 "cutover": result.cutover.isoformat(),
                 "as_of": result.as_of.isoformat(),
-                "positions": [
-                    {
-                        **row,
-                        "quantity": str(row["quantity"]),
-                        "added_after": str(row["added_after"]),
-                        "disposed_after": str(row["disposed_after"]),
-                        "cost_basis": (
-                            None if row["cost_basis"] is None else str(row["cost_basis"])
-                        ),
-                    }
-                    for row in rows
-                ],
+                # Decimals stay Decimals: the formatter renders them in the
+                # canonical form, where `str()` here would emit "1E+2" for a
+                # quantity that canonically writes as "100" (ADR 0005).
+                "positions": list(rows),
                 # The qualification is an envelope field, not a rendered string,
                 # for the same reason the performance disclaimer is: a consumer
                 # must not be able to drop it without noticing.
@@ -334,14 +326,12 @@ def import_reconstruct(
                 "by_source": {
                     source.value: count for source, count in result.by_source().items()
                 },
-                "exact_basis_share": (
-                    None if result.exact_basis_share is None else str(result.exact_basis_share)
-                ),
+                "exact_basis_share": (result.exact_basis_share),
                 "cash": [
                     {
                         "account": entry.account,
-                        "amount": str(entry.amount),
-                        "moved_after": str(entry.moved_after),
+                        "amount": entry.amount,
+                        "moved_after": entry.moved_after,
                     }
                     for entry in result.cash
                 ],
@@ -363,7 +353,7 @@ def import_reconstruct(
                         "account": item.account,
                         "identifier": item.identifier,
                         "trade_date": item.trade_date.isoformat(),
-                        "quantity": str(item.quantity),
+                        "quantity": item.quantity,
                         "days_after_cutover": item.days_after_cutover,
                     }
                     for item in result.uncertain_dispositions

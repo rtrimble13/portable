@@ -66,16 +66,17 @@ fixtures has been validated against the easy case. Designed in
    cannot alter a `CHECK` constraint, so a new `txn_type` value means
    rebuilding the ledger table.
 3a. **Cutover reconstruction** ([ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md))
-   — *the roll-back and the provenance column are done*. `pt import
-   reconstruct` derives the opening position set and each block's basis
-   provenance from the canonical records, reports the findings the roll-back
-   proves about the history, and enumerates the dispositions whose
-   holding-period character rests on a seeded date; `lot.basis_source` is
-   `NOT NULL` with no default, so no writer can create a lot without answering
-   the question. **Still to do:** the seeding step that turns a reconstruction
-   into `transfer_in` rows, and the `pt tax` disclosure of §3 — a realized gain
-   resting on a lot that is not `derived` must be marked, and `unavailable`
-   dispositions excluded from every total rather than printed.
+   — *the roll-back, the provenance column and the disclosure are done*.
+   `pt import reconstruct` derives the opening position set and each block's
+   basis provenance; `lot.basis_source` is `NOT NULL` with no default;
+   `pt tax` and `pt pnl` mark every reported figure with the rung it rests on,
+   state the share of reported basis that is not this portfolio's own
+   arithmetic, and **exclude an `unavailable` disposition from every total**,
+   listing it separately with proceeds only and marking the year incomplete.
+   **Still to do:** the seeding step that turns a reconstruction into
+   `transfer_in` rows — every piece it needs now exists — and the
+   `report_issue` row of §2b, which waits on report issuance
+   (`PORT-GIPS-J01`/`J02`) being built at all.
 4. **The generic tabular adapter** ([ADR 0018](adr/0018-minimum-broker-dataset.md))
    — *done*. Two required documents (a holdings snapshot with cash, and a
    transaction history), everything beyond them a declared capability whose

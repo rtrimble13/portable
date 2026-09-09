@@ -12,8 +12,8 @@ import typer
 
 from portable_core.decimals import from_text, money_context, quantize_money
 from portable_core.disclaimer import TAX_DISCLAIMER
-from portable_core.domain.enums import FlowLevel, TransactionType
-from portable_core.domain.models import ReturnPolicy
+from portable_core.domain.enums import BasisSource, FlowLevel, TransactionType
+from portable_core.domain.models import RealizedGain, ReturnPolicy
 from portable_core.errors import GipsRefusalError, ReconciliationBreakError, ValidationError
 from portable_core.errors.kinds import E_GIPS_NO_FLOW_POLICY, E_RECONCILE_BREAK
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
@@ -23,7 +23,7 @@ from portable_core.services.reconciliation import (
     ExternalHolding,
     ReconciliationService,
 )
-from portable_core.services.tax import TaxEngine
+from portable_core.services.tax import TaxEngine, TaxSummary
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, maybe_dry_run, money_arg, resolve_date
 
@@ -289,13 +289,23 @@ def pnl(
         gains = repos.lots.realized_gains(tax_year=year, account_id=account_id)
 
         rows: list[dict[str, object]] = []
+        # ADR 0017 §2b, the same rule `pt tax` applies: a disposition whose lot
+        # carries no derivable basis contributes no realized gain here either.
+        # Its stored figure is the change since an arbitrary date, and summing
+        # it into a P&L total is the same wrong number under a different
+        # heading.
+        unreportable_pnl = [g for g in gains if g.basis_source is BasisSource.UNAVAILABLE]
+        reportable = [g for g in gains if g.basis_source is not BasisSource.UNAVAILABLE]
+        approximate_basis = ZERO
         with money_context():
             realized = ZERO
             estimated_tax = ZERO
-            for gain in gains:
+            for gain in reportable:
                 instrument = repos.instruments.get(gain.instrument_id)
                 realized += gain.gain
                 estimated_tax += gain.estimated_tax or ZERO
+                if gain.basis_source is not BasisSource.DERIVED:
+                    approximate_basis += gain.cost_basis
                 rows.append(
                     {
                         "date": gain.disposition_date.isoformat(),
@@ -304,6 +314,7 @@ def pnl(
                         "proceeds": gain.proceeds,
                         "cost_basis": gain.cost_basis,
                         "gain": gain.gain,
+                        "basis_from": str(gain.basis_source),
                         "estimated_tax": gain.estimated_tax,
                         "net_of_tax": TaxEngine.net_of_tax(gain.gain, gain.estimated_tax),
                     }
@@ -342,11 +353,21 @@ def pnl(
                     Column("proceeds", "Proceeds", ColumnKind.MONEY),
                     Column("cost_basis", "Basis", ColumnKind.MONEY),
                     Column("gain", "Realized", ColumnKind.MONEY),
+                    Column("basis_from", "Basis from"),
                     Column("estimated_tax", "Est. Tax", ColumnKind.MONEY),
                     Column("net_of_tax", "Net of Tax", ColumnKind.MONEY),
                 ),
                 rows=tuple(rows),
                 title="Realized gains",
+                footnotes=(
+                    (
+                        "Only 'derived' basis is this portfolio's own arithmetic; "
+                        "the other rungs came from a custodian or a reconstruction "
+                        "(ADR 0017).",
+                    )
+                    if any(r["basis_from"] != "derived" for r in rows)
+                    else ()
+                ),
             ),
             data={
                 "realized": quantize_money(realized),
@@ -356,14 +377,32 @@ def pnl(
                     quantize_money(realized - estimated_tax) if net_of_tax else None
                 ),
                 "unpriced_instruments": sorted(set(unpriced)),
+                # ADR 0017 §3, carried as envelope fields for the same reason
+                # `pt tax` carries them: a consumer must not be able to take the
+                # totals without the qualification attached.
+                "is_complete": not unreportable_pnl,
+                "approximate_basis": quantize_money(approximate_basis),
+                "excluded_dispositions": len(unreportable_pnl),
             },
             warnings=(
-                (
-                    f"{len(set(unpriced))} instrument(s) could not be priced; "
-                    "unrealized P&L excludes them rather than treating them as zero.",
-                )
-                if unpriced
-                else ()
+                *(
+                    (
+                        f"{len(set(unpriced))} instrument(s) could not be priced; "
+                        "unrealized P&L excludes them rather than treating them as zero.",
+                    )
+                    if unpriced
+                    else ()
+                ),
+                *(
+                    (
+                        f"{len(unreportable_pnl)} disposition(s) are excluded from "
+                        "realized P&L: no cost basis for them can be derived from the "
+                        "available evidence, so the difference between proceeds and "
+                        "the seeded value is not a gain (ADR 0017).",
+                    )
+                    if unreportable_pnl
+                    else ()
+                ),
             ),
             as_of=ctx.as_of,
             portfolio=ctx.portfolio_name(),
@@ -398,19 +437,31 @@ def tax(
         sheltered = tuple(a.name for a in repos.accounts.all() if not a.is_taxable)
         summary = engine.summarise(gains, tax_year, non_taxable_accounts=sheltered)
 
-        rows: list[dict[str, object]] = []
-        for gain in gains:
+        excluded_ids = {d.disposition_id for d in summary.unreportable}
+
+        def _name(gain: RealizedGain) -> tuple[str | None, str | None]:
             instrument = repos.instruments.get(gain.instrument_id)
             target = repos.accounts.get(gain.account_id)
+            return (target.name if target else None, instrument.symbol if instrument else None)
+
+        rows: list[dict[str, object]] = []
+        for gain in gains:
+            if gain.disposition_id in excluded_ids:
+                # Reported below, in its own table, without a gain. Including it
+                # here would put the number on the page next to figures that
+                # were summed, and a number on a page gets read (ADR 0017 §2b).
+                continue
+            account_name, symbol = _name(gain)
             rows.append(
                 {
                     "date": gain.disposition_date.isoformat(),
-                    "account": target.name if target else None,
-                    "symbol": instrument.symbol if instrument else None,
+                    "account": account_name,
+                    "symbol": symbol,
                     "holding_period": str(gain.holding_period),
                     "proceeds": gain.proceeds,
                     "cost_basis": gain.cost_basis,
                     "gain": gain.gain,
+                    "basis_from": str(gain.basis_source),
                     "federal_rate": gain.federal_rate,
                     "state_rate": gain.state_rate,
                     "niit_rate": gain.niit_rate,
@@ -418,6 +469,22 @@ def tax(
                     "taxable": gain.is_taxable,
                 }
             )
+
+        by_disposition = {g.disposition_id: g for g in gains}
+        unreportable_rows = [
+            {
+                "date": item.disposition_date.isoformat(),
+                "account": _name(by_disposition[item.disposition_id])[0],
+                "symbol": _name(by_disposition[item.disposition_id])[1],
+                "holding_period": str(item.holding_period),
+                "proceeds": item.proceeds,
+                # Explicitly absent. A zero here would be read as a figure, and
+                # the whole point is that no figure is supportable.
+                "cost_basis": None,
+                "gain": None,
+            }
+            for item in summary.unreportable
+        ]
 
         return CommandResult(
             command="tax",
@@ -430,6 +497,7 @@ def tax(
                     Column("proceeds", "Proceeds", ColumnKind.MONEY),
                     Column("cost_basis", "Basis", ColumnKind.MONEY),
                     Column("gain", "Gain/Loss", ColumnKind.MONEY),
+                    Column("basis_from", "Basis from"),
                     Column("federal_rate", "Fed", ColumnKind.RATE),
                     Column("state_rate", "State", ColumnKind.RATE),
                     Column("niit_rate", "NIIT", ColumnKind.RATE),
@@ -437,12 +505,7 @@ def tax(
                 ),
                 rows=tuple(rows),
                 title=f"Realized gains, {tax_year}",
-                footnotes=(
-                    "Rate components are shown separately so the effective rate is "
-                    "explainable rather than a magic number.",
-                    "A blank estimated tax means the account is sheltered -- "
-                    "inapplicable, not zero.",
-                ),
+                footnotes=_tax_notes(summary),
             ),
             data={
                 "tax_year": tax_year,
@@ -457,6 +520,23 @@ def tax(
                 "dispositions": summary.disposition_count,
                 "sheltered_accounts": list(summary.non_taxable_accounts),
                 "excludes_wash_sales": summary.excludes_wash_sales,
+                # ADR 0017 §3. Envelope fields, not rendered strings: a
+                # consumer reading --format json must not be able to take the
+                # totals without the qualification attached to them.
+                "is_complete": summary.is_complete,
+                "approximate_basis": summary.approximate_basis,
+                "approximate_basis_share": summary.approximate_basis_share,
+                "basis_provenance": [
+                    {
+                        "basis_source": str(p.basis_source),
+                        "dispositions": p.disposition_count,
+                        "proceeds": p.proceeds,
+                        "cost_basis": p.cost_basis,
+                        "gain": p.gain,
+                    }
+                    for p in summary.basis_provenance
+                ],
+                "unreportable": unreportable_rows,
             },
             disclaimer=TAX_DISCLAIMER,
             as_of=ctx.as_of,
@@ -1001,3 +1081,34 @@ def show_policy() -> None:
         )
 
     dispatch(action)
+
+
+def _tax_notes(summary: TaxSummary) -> tuple[str, ...]:
+    """What the reader has to know before using any figure above.
+
+    ADR 0017 §3. A report in which every basis is exact and one in which a
+    sixth of it is reconstructed must not look identical, because the reader's
+    next action differs.
+    """
+    notes = [
+        "Rate components are shown separately so the effective rate is "
+        "explainable rather than a magic number.",
+        "A blank estimated tax means the account is sheltered -- inapplicable, not zero.",
+    ]
+    share = summary.approximate_basis_share
+    if share:
+        notes.append(
+            f"{share:.1%} of the reported cost basis did not come from this "
+            f"portfolio's own ledger. The 'Basis from' column says which rung "
+            f"each disposition rests on; only 'derived' is portable's own "
+            f"arithmetic."
+        )
+    if summary.unreportable:
+        notes.append(
+            f"INCOMPLETE: {len(summary.unreportable)} disposition(s) are excluded "
+            f"from every total above, because no cost basis for them can be "
+            f"derived from the available evidence. They are listed separately "
+            f"with proceeds only — a gain measured from an arbitrary date is not "
+            f"a gain. For those years the custodian's 1099-B is the authority."
+        )
+    return tuple(notes)

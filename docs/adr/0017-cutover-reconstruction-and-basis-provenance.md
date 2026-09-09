@@ -1,6 +1,6 @@
 # ADR 0017 — Reconstructing the cutover state by roll-back, and recording where each basis came from
 
-- **Status:** Proposed — the roll-back, the basis ladder and `lot.basis_source` are implemented (`pt import reconstruct`, schema 0003); the seeding step and the `pt tax` disclosure of §3 are not
+- **Status:** Proposed — the roll-back, the basis ladder, `lot.basis_source` and the §3 disclosure in `pt tax` / `pt pnl` are implemented; the seeding step that turns a reconstruction into `transfer_in` rows is not, and neither is the `report_issue` row of §2b (report issuance is its own feature, `PORT-GIPS-J01`/`J02`, and nothing writes that table yet)
 - **Date:** 2026-09-09
 - **Milestone:** v0.2
 - **Governs:** `CLAUDE.md` invariants 9, 10; `PORT-GIPS-J03`
