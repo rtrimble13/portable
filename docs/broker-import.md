@@ -7,7 +7,10 @@ guess, and what a real onboarding actually requires.
 [0012](adr/0012-broker-import-pipeline.md) (the pipeline),
 [0013](adr/0013-cash-sweep-is-cash.md) (sweep vehicles),
 [0014](adr/0014-advisory-fees-paid-across-accounts.md) (adviser fees), and
-[0015](adr/0015-in-kind-transfers-and-opening-positions.md) (in-kind transfers).
+[0015](adr/0015-in-kind-transfers-and-opening-positions.md) (in-kind transfers),
+and [0017](adr/0017-cutover-reconstruction-and-basis-provenance.md) (how the
+opening position set is reconstructed, and how an approximate basis is kept
+distinguishable from an exact one).
 [ADR 0016](adr/0016-out-of-order-appends-and-validation.md) fixes a replay defect
 that blocks all of it. Nothing here is implemented yet; the milestone is `v0.2`.
 
@@ -108,44 +111,93 @@ Each is authoritative for something different, and none is sufficient alone.
 | Export | Shape | Authoritative for |
 |---|---|---|
 | **Transactions By Date** | one row per event; `Date, Type, Account, Quantity, Description, Price, Net amount, Notes, Settlement date, Amount, Commissions` | trades, income, fees, corporate actions |
-| **Capital Flows Transactions** | `Date, Account, Activity, Description, Quantity, Amount` | external contributions and withdrawals, and the in-kind funding events — **it reaches back to account inception, which the transaction export does not** |
-| **holdingsManaged** | one row per position with `Open date, Shares, Unit cost, Cost basis, Market value` | the reconciliation target |
+| **Capital Flows Transactions** | `Date, Account, Activity, Description, Quantity, Amount` | the pre-cutover record: when the accounts were funded and how. Its four post-cutover rows duplicate the transaction export exactly, so it contributes **no ledger rows** — see §4 |
+| **holdingsManaged** | one row per position with `Open date, Shares, Unit cost, Cost basis, Market value` | the reconciliation target, and the anchor the cutover reconstruction rolls back from |
 
-Two properties of that table drive everything below. The capital-flows export
-covers a longer period than the transaction export, so the two must be
-cross-checked where they overlap and the older one trusted where they do not.
-And the holdings export is **position-level, not lot-level** — one row per
-account and symbol, with a blended `Unit cost` — so it can confirm a quantity and
-cannot seed a lot.
+Two properties of that table drive everything below. The holdings export is
+**position-level, not lot-level** — one row per account and symbol, with a blended
+`Unit cost` — so it states a position exactly and cannot describe the lots inside
+it. And the capital-flows export reaches back further than the transaction
+export, which turns out to document a period that cannot be reconstructed rather
+than to extend the one that can.
 
 ---
 
-## 4. What these exports cannot supply
+## 4. The cutover, and what it costs
 
-In the sample export set, the transaction history began roughly 28 months after
-the accounts were funded. Measured against the holdings snapshot, **44 of 75
-current security positions, holding the majority of the portfolio's cost basis,
-were opened before the transaction file's first row.** One lot predates the
-adviser relationship entirely: it arrived by in-kind transfer from a previous
-custodian carrying its original acquisition date, and no transaction the adviser
-can produce will ever describe its purchase.
+**These three exports are the whole of the evidence, permanently.** No further
+report is available — not the transaction export re-run from inception, not a
+lot-level cost basis report. Everything below follows from that.
 
-There is no way to close that gap from these three files, and no amount of
-adapter work substitutes for the missing rows. Two requests do close most of it:
+The transaction history begins roughly 28 months after the accounts were funded.
+The accounts turned over completely in that gap, with no record of what was held
+or traded, so no valuation series can exist for it and no return can be computed
+across it. **The portfolio's reporting inception is therefore the transaction
+file's first date, not the date the accounts opened** ([ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md)).
 
-1. **The transaction export re-run from the account opening date.** The sample
-   looks like a defaulted window rather than a retention limit.
-2. **A lot-level cost basis report** — usually "Realized/Unrealized Gain & Loss"
-   or "Tax Lot Detail". This is the only source of per-lot acquisition dates and
-   basis, and the only possible source for lots that arrived in kind.
+### Reconstructing the opening position set
 
-Whatever the first request yields, the second is required: transferred-in lots
-carry basis established at a prior custodian that no adviser record contains.
+The opening state is not taken from any single document. It is derived by
+applying the transaction file **in reverse** to the dated holdings snapshot,
+which yields the holding of every instrument on the day before the ledger begins.
+Run against the sample exports, over 106 account-and-instrument pairs:
 
-Until both are in hand the portfolio can be built to a **cutover** — lots seeded
-by `transfer_in` (ADR 0015) at an agreed date, full activity after it — which
-gives exact tax lots and a track record that honestly begins at the cutover
-rather than at inception. What it must not do is average. See §6.
+| | |
+|---|---|
+| positions held at cutover | 70 |
+| positions opened after it | 33 |
+| discrepancies | 3, all explained |
+
+The three are one symbol-change modelling artifact (§5) and two sub-share
+differences between a two-decimal transaction quantity and a three-decimal
+holdings quantity. Nothing rolled back to an impossible negative holding, which
+is the check that would have failed had the transaction export been incomplete.
+
+### Basis at the cutover
+
+Where a position saw no disposal and no share-class transformation after the
+cutover, its cutover basis is today's basis less the cost of every subsequent
+addition — exact arithmetic on two exact numbers. That covers **38 of the 70
+positions and about 83% of the pre-cutover cost basis**, with no negative or
+implausible unit cost anywhere in the result.
+
+The other 32 positions — about 17% of pre-cutover basis — were partly sold after
+the cutover, and which lots the custodian relieved is recorded nowhere available.
+Their cutover basis is solved backwards under a stated relief-method assumption.
+
+Every seeded lot therefore carries a `basis_source` of `reconstructed` or
+`estimated`, and `pt tax` and `pt pnl` disclose any figure that rests on one. The
+rule is not that approximation is forbidden; it is that an approximate number
+must never be mistakable for an exact one.
+
+### What this costs, precisely
+
+- **A pre-cutover block is one lot.** Specific identification within it is not
+  available, whatever the account's default relief method. The custodian's
+  records support spec-ID; this reconstruction of them does not.
+- **Holding-period character is certain for any disposition more than a year
+  after the cutover** — every seeded lot was acquired on or before the cutover, so
+  even the latest possible true acquisition date is more than a year prior. 28 of
+  the 42 dispositions in the file fall in that window.
+- **The other 14 depend on the seeded acquisition date.** The reconstruction
+  enumerates them for individual review rather than reporting a count. All are in
+  the taxable account and in tax years already filed from the 1099-B, so the
+  exposure is to `portable`'s reporting of past gains rather than to a filing.
+- **Nothing else is degraded.** Current holdings and current basis are exact,
+  because the reconstruction is anchored to the custodian's stated present
+  position — and that is the basis every future tax-aware decision runs on. Cash,
+  income, fees, and external flows after the cutover come from the transaction
+  file directly.
+
+### The capital-flows export contributes no ledger rows
+
+Its four post-cutover rows duplicate the transaction export exactly, so it adds
+nothing importable and is instead a **cross-check** on those four. Its
+pre-cutover rows describe flows into a period with no valuations on either side;
+loading them would produce a division that looks like a return. They become
+`portfolio_event` rows, which exist to help a reader interpret a report and are
+the right home for "these accounts were funded in kind two years before this
+record begins".
 
 ---
 
@@ -192,12 +244,14 @@ rather than the new total. The ratio is parsed from `Notes` and cross-checked:
 `held × (ratio − 1)` must equal the stated quantity, or the row is refused.
 
 **The capital-flows export contains rows that are not capital flows.** Of 46
-sample rows, 13 are genuine external flows. The rest are in-kind funding events
-at inception and mutual-fund share-class conversions — a `Transfer of Securities`
-out of one share class paired with a `Receipt of Securities` into another, on the
-same day, for the same money. Treating those as external flows writes phantom
-contributions and withdrawals into the track record, which is the
-`PORT-GIPS-B02` failure that ADR 0007 exists to prevent.
+sample rows, only 13 are genuine external flows. The rest are in-kind funding
+events at inception and mutual-fund share-class conversions — a
+`Transfer of Securities` out of one share class paired with a
+`Receipt of Securities` into another, on the same day, for the same money.
+Treating those as external flows writes phantom contributions and withdrawals
+into the track record, which is the `PORT-GIPS-B02` failure ADR 0007 exists to
+prevent. §4 is why the file is not imported at all; this is why it would have
+been dangerous to import naively even if it were.
 
 ---
 
@@ -208,19 +262,26 @@ and sells. `allows_fractional` must be set on any account holding funds or the
 import refuses every one of them (which is the correct behaviour, and the remedy
 is an account setting, not a rounding).
 
-**Position-level average cost is never accepted as a lot.** Where only the
-holdings export is available, a position built from several purchases appears as
-one row with a blended unit cost. Seeding a lot from it silently imposes
-average-cost relief on an account whose method is spec-ID or FIFO, changing both
-the gain and its holding-period character on every subsequent sale. The import
-refuses and asks for the lot detail report. ADR 0015 §"Seeding a position"
-records why an explicit override, if ever added, is neither a default nor a
-fallback.
+**A seeded block is one lot, and it says so.** No lot-detail report exists for
+these accounts, so a pre-cutover position built from several purchases enters the
+ledger as a single block with an aggregate basis. What is refused is not the
+approximation but its concealment: every lot carries a `basis_source`
+(`derived` · `reconstructed` · `estimated` · `custodian_asserted`) that is
+`NOT NULL` with no default, and `pt tax` and `pt pnl` disclose any figure
+resting on a lot that is not `derived`. [ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md)
+sets out the ladder and what each rung costs.
 
-**Basis asserted by a delivering custodian is marked as such** on the lot, so a
-tax report can distinguish a basis `portable` derived from one it was told.
-Covered versus non-covered status is the broker's to state and `portable`'s to
-carry.
+Consequently **specific identification is unavailable within a pre-cutover
+block**. `pt sell --lots` can name the block; it cannot name shares inside it.
+For an account whose default is spec-ID that is a real reduction in capability,
+and the honest description is that the custodian's records support spec-ID and
+this reconstruction of them does not.
+
+**A zero basis is sometimes correct.** One sample position is a contra/CVR
+security from an acquisition, with a genuine basis of zero.
+`BasisAdjustmentReason.FORCED_ZERO_BASIS` already exists for it, and that zero is
+`derived`, not `estimated`. Covered versus non-covered status is the broker's to
+state and `portable`'s to carry.
 
 ---
 
@@ -325,6 +386,13 @@ An import is accepted when it reconciles, not when it parses.
 Parser tests establish that the adapter does what it claims. Only reconciliation
 establishes that what it claims is right.
 
+Check 1 carries extra weight here. The cutover reconstruction (§4) works backwards
+from the custodian's stated present position, so agreement with that position is
+not a coincidence — it is the arithmetic closing. What the check actually proves
+is that the transaction file is complete enough to bridge the two ends, and that
+is the whole of the evidence the reconstruction rests on. Run it per account and
+per period, not once at the end.
+
 ---
 
 ## 10. Onboarding runbook
@@ -333,9 +401,12 @@ establishes that what it claims is right.
    `--type`, relief method, and `--allows-fractional` where funds are held.
 2. Set tax rate schedules on taxable accounts (`pt tax` refuses without them) and
    a `return_policy` (`pert` refuses without one, `PORT-GIPS-B03`).
-3. Import the **capital-flows** export first. It is short, it reaches inception,
-   and it establishes the external-flow spine every later number hangs from.
-4. Seed pre-ledger lots from the lot detail report as `transfer_in` (ADR 0015).
+3. Record the pre-cutover funding events from the capital-flows export as
+   `portfolio_event` rows — documentation, not ledger rows (§4).
+4. Run the cutover reconstruction: roll the transaction file back from the
+   holdings snapshot, review the enumerated exceptions and the dispositions
+   falling within a year of the cutover, then seed each opening position as a
+   `transfer_in` with its `basis_source` (ADRs 0015 and 0017).
 5. Import the transaction history, oldest period first, one account at a time.
 6. `pt reconcile` against the holdings export. Do not proceed past a break.
 7. Backfill prices, then `pt value` across the period. Watch for snapshots marked
@@ -354,10 +425,24 @@ in a way that reconciles at the position level and is wrong at the lot level.
 
 ## 11. Open questions
 
-- Whether the transaction export can be re-run from inception (§4). This decides
-  full reconstruction versus a cutover, and nothing else can be settled first.
-- Which accounts the two out-of-portfolio fee payments belong to (ADR 0014), and
-  whether they should instead be modelled by bringing those accounts into the
-  portfolio.
-- Whether the pre-2022 in-kind lots have covered or non-covered status, and
-  whether the delivering custodian's basis is available at lot granularity.
+The question that gated everything — whether more history could be obtained — is
+**closed: it cannot.** §4 is the consequence and the design now assumes these
+three exports are final. What remains open is smaller.
+
+- **The relief-method assumption** used to solve backwards for the 32 positions
+  whose cutover basis is not exactly recoverable. FIFO is the natural default and
+  the custodian's own convention is not stated anywhere in the exports. Whatever
+  is chosen is recorded on the lot and disclosed; it is a stated assumption, not
+  a discovered fact.
+- **The cutover date itself.** The transaction file's first row is the obvious
+  choice and the one §4 assumes. A later cutover would shrink the reconstructed
+  portion at the cost of discarding exact history, which is the wrong trade — but
+  it is the owner's trade to make.
+- **The two out-of-portfolio fee payments** (ADR 0014): which accounts they belong
+  to, and whether those accounts should instead be brought into the portfolio,
+  which would turn a `withdrawal` into a `transfer` and change portfolio-level
+  flows.
+- **Covered versus non-covered status** on the seeded lots. The exports do not
+  state it. It does not affect what `portable` computes; it affects what the
+  custodian is obliged to report, and is worth carrying if it can be established
+  from a 1099-B.

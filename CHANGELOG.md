@@ -63,6 +63,15 @@ Two rules specific to this repository:
   - **0016** — a back-dated append forces a full rebuild in the same transaction,
     and `pt validate` digests stored derived state *before* rebuilding so that it
     compares stored against replayed rather than one rebuild against another.
+  - **0017** — the opening position set is reconstructed by rolling the
+    transaction export backwards from the dated holdings snapshot, and every lot
+    carries a `basis_source` (`derived` · `reconstructed` · `estimated` ·
+    `custodian_asserted`), `NOT NULL` with no default, which `pt tax` and
+    `pt pnl` disclose. Written after it was established that no further broker
+    report is obtainable: it **amends ADR 0015**, whose flat refusal on averaged
+    basis would, on that evidence, have declined to build the portfolio at all
+    rather than declining to guess. The rule is now that approximation is
+    permitted and concealment is not.
 
 ### Changed
 
@@ -72,6 +81,13 @@ Two rules specific to this repository:
 - `docs/roadmap.md` — broker import pulled forward from v1.0 to the head of v0.2,
   ahead of the return engine, because there is nothing to compute a return on
   until the real portfolio is loaded.
+- `docs/broker-import.md` — reworked once it was established that no further
+  broker report is available. Reporting inception becomes the transaction
+  export's first date rather than the date the accounts were funded; the
+  capital-flows export contributes no ledger rows and becomes `portfolio_event`
+  documentation plus a cross-check; §4 records what the reconstruction recovers
+  exactly (position quantities, and about 83% of pre-cutover cost basis) and what
+  it can only estimate.
 
 ### Found, not yet fixed
 

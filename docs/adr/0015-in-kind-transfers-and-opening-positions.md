@@ -4,6 +4,8 @@
 - **Date:** 2026-09-08
 - **Milestone:** v0.2
 - **Governs:** `PORT-GIPS-B02`, `PORT-GIPS-C02`; `CLAUDE.md` invariants 2, 3, 5
+- **Amended by:** [ADR 0017](0017-cutover-reconstruction-and-basis-provenance.md) —
+  the refusal on averaged basis, below, is replaced by a recorded provenance ladder
 
 ## Context
 
@@ -98,12 +100,17 @@ report. This is the *same* mechanism as a real transfer, because it is the same
 event: shares that exist, whose history began elsewhere.
 
 Where the broker supplies only a position-level average cost rather than lot
-detail, the import **refuses**. A single averaged lot standing in for several
-real ones silently imposes average-cost relief on an account whose method is
-spec-ID or FIFO, changing both the gain and its holding-period character on every
-subsequent sale. `--force-average-basis` may be added later as an explicit,
-documented, per-position acknowledgement; it is not a default and not a
-fallback.
+detail, a single averaged lot standing in for several real ones imposes
+average-cost relief on an account whose method is spec-ID or FIFO, changing both
+the gain and its holding-period character on every subsequent sale.
+
+This ADR originally refused such a seed outright. **[ADR 0017](0017-cutover-reconstruction-and-basis-provenance.md)
+supersedes that**, on evidence that no lot-detail report will be available for
+these accounts and that refusing therefore declines to build the portfolio at all
+rather than declining to guess. The rule is now that an averaged block may be
+seeded, and that its basis carries a `basis_source` recording how it was arrived
+at, which every report that consumes it must disclose. What remains refused is a
+seed that cannot be told apart from an exact one.
 
 ## Consequences
 
@@ -119,11 +126,11 @@ fallback.
   same path a `buy` uses.
 - A new `pt transfer in` / `pt transfer out` command pair, and the batch format
   gains the two fields.
-- `pt tax` gains a real obligation: a lot whose basis came from a delivering
-  custodian rather than from a `portable` transaction should be marked as such
-  in the lot record, so a tax report can say which basis figures rest on an
-  external assertion. Covered vs. non-covered status is the broker's to state and
-  `portable`'s to carry, not to infer.
+- `pt tax` gains a real obligation: a lot whose basis came from anywhere other
+  than `portable`'s own ledger is marked as such in the lot record, so a tax
+  report can say which figures rest on an external assertion or a reconstruction.
+  ADR 0017 specifies the column and the disclosure. Covered vs. non-covered status
+  is the broker's to state and `portable`'s to carry, not to infer.
 
 ## Alternatives considered
 

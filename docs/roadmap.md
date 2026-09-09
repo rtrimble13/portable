@@ -52,6 +52,11 @@ fixtures has been validated against the easy case. Designed in
 3. **In-kind transfers** ([ADR 0015](adr/0015-in-kind-transfers-and-opening-positions.md))
    — `transfer_in` / `transfer_out`, so a position that predates the ledger enters
    it without inventing the cash flow that would rewrite the track record.
+3a. **Cutover reconstruction** ([ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md))
+   — roll the transaction file back from the holdings snapshot to derive the
+   opening position set, and `lot.basis_source` so an approximate basis can never
+   be mistaken for an exact one. Required because no further broker report is
+   obtainable: these three exports are the whole of the evidence.
 4. **The first adapter**, with its activity map and instrument crosswalk as
    reviewed data files, accepted on reconciliation rather than on parser tests.
 
