@@ -4,6 +4,9 @@
 - **Date:** 2026-09-08
 - **Milestone:** v0.2
 - **Governs:** `PORT-GIPS-B02`, `PORT-GIPS-D01`; ADR 0007
+- **Scope:** a **custodian-specific** arrangement. [ADR 0018](0018-minimum-broker-dataset.md)
+  places it in an optional per-custodian post-pass, expressed as a declarative pairing
+  rule; most custodians will not need it. The fee *classification* below is general.
 
 ## Context
 

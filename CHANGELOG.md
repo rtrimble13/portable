@@ -78,6 +78,20 @@ Two rules specific to this repository:
     `basis_source = 'unavailable'`. Those are excluded from every `pt tax` total
     and reported separately with the year marked incomplete, rather than shown as
     a gain measured from an arbitrary date.
+  - **0018** — the generalisation. Any import requires exactly two documents: a
+    holdings snapshot carrying cash, and a transaction history. Everything else —
+    cost basis, acquisition dates, lot detail, transaction identifiers, symbols,
+    settlement dates, a flows report, history reaching inception — is an
+    `ImportCapability` the adapter declares, mirroring `providers.Capability`, and
+    its absence is a refusal that names the missing input rather than a quiet
+    degradation. A capability is declared only on **validated** data: a column is
+    not a capability, and a custodian emitting a settlement-date column full of
+    impossible dates has not supplied settlement dates. Adapters are two TOML
+    mapping files plus a fixture, with Python reserved for data that needs logic a
+    mapping cannot express; ADRs 0013 and 0014 are re-scoped accordingly, and
+    `account.sweep_instrument_id` becomes a declared *set* of cash-equivalent
+    identifiers, since one nullable column does not survive an account that sweeps
+    to two vehicles.
 
 ### Changed
 
@@ -93,7 +107,11 @@ Two rules specific to this repository:
   capital-flows export contributes no ledger rows and becomes `portfolio_event`
   documentation plus a cross-check; §4 records what the reconstruction recovers
   exactly (position quantities, and about 83% of pre-cutover cost basis) and what
-  it can only estimate.
+  it can only estimate. Then restructured to lead with the custodian-neutral
+  contract — required documents, capabilities, canonical records, the adapter
+  contract, the reconstruction, refusals, acceptance — with the reference
+  custodian moved into a worked example that declares four of the nine
+  capabilities and notes, per trap, which ones generalise.
 
 ### Found, not yet fixed
 

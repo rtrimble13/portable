@@ -57,8 +57,14 @@ fixtures has been validated against the easy case. Designed in
    opening position set, and `lot.basis_source` so an approximate basis can never
    be mistaken for an exact one. Required because no further broker report is
    obtainable: these three exports are the whole of the evidence.
-4. **The first adapter**, with its activity map and instrument crosswalk as
-   reviewed data files, accepted on reconciliation rather than on parser tests.
+4. **The generic tabular adapter** ([ADR 0018](adr/0018-minimum-broker-dataset.md))
+   — two required documents (a holdings snapshot with cash, and a transaction
+   history), everything beyond them a declared capability whose absence is a
+   named refusal rather than a quiet degradation. A custodian with plain tabular
+   exports is then two TOML mapping files and a fixture, no Python.
+5. **The first custodian**, as an instance of that adapter, accepted on
+   reconciliation rather than on parser tests. **A second custodian is the only
+   real test of item 4** — the first one always fits.
 
 Then:
 

@@ -4,6 +4,8 @@
 - **Date:** 2026-09-08
 - **Milestone:** v0.2
 - **Governs:** `PORT-GIPS-A07`; `CLAUDE.md` invariant 4
+- **Refined by:** [ADR 0018](0018-minimum-broker-dataset.md) — the vehicle is a
+  declared *set* per account, not a single instrument
 
 ## Context
 
@@ -43,11 +45,18 @@ Concretely:
    additional fund shares. The broker reports it as a reinvestment producing
    fractional shares; those shares are a representation of cash and buying them
    is not an investment decision.
-3. **`account.sweep_instrument_id` is dropped from the schema** in the migration
-   that lands this, rather than left as a column no code reads. Invariant 10's
-   reasoning applies to schema as much as to functions: a field that looks
-   load-bearing and is not is a landmine.
-4. **Reconciliation adds the broker's sweep positions to the broker's cash line**
+3. **`account.sweep_instrument_id` is replaced**, in the migration that lands
+   this, by a declared **set** of cash-equivalent identifiers per account. A
+   single nullable column does not survive contact with reality — the reference
+   custodian sweeps to two vehicles in every account — and leaving it in place as
+   a column no code reads is the landmine invariant 10 describes, applied to
+   schema.
+
+   The set lives on the account rather than in an adapter's configuration,
+   because `pt reconcile` needs it outside any import: folding the custodian's
+   sweep positions into its cash line is a standing property of the account, not
+   a fact about how its history was loaded.
+4. **Reconciliation adds the custodian's sweep positions to its cash line**
    before comparing against `cash_balance`. This is the one place the decision
    has to be undone, and it is one line in the reconciler rather than a thousand
    rows in the ledger.

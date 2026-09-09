@@ -1,34 +1,38 @@
 # Broker import
 
-How transactions from a custodian become ledger rows, what `portable` refuses to
-guess, and what a real onboarding actually requires.
+How a custodian's exports become ledger rows: what `portable` requires of any
+custodian, what it does with more when more is available, and what it refuses to
+guess.
 
 **Status:** designed, not built. The decisions are ADRs
 [0012](adr/0012-broker-import-pipeline.md) (the pipeline),
 [0013](adr/0013-cash-sweep-is-cash.md) (sweep vehicles),
-[0014](adr/0014-advisory-fees-paid-across-accounts.md) (adviser fees), and
+[0014](adr/0014-advisory-fees-paid-across-accounts.md) (adviser fees),
 [0015](adr/0015-in-kind-transfers-and-opening-positions.md) (in-kind transfers),
-and [0017](adr/0017-cutover-reconstruction-and-basis-provenance.md) (how the
-opening position set is reconstructed, and how an approximate basis is kept
-distinguishable from an exact one).
-[ADR 0016](adr/0016-out-of-order-appends-and-validation.md) fixes a replay defect
-that blocks all of it. Nothing here is implemented yet; the milestone is `v0.2`.
+[0017](adr/0017-cutover-reconstruction-and-basis-provenance.md) (reconstructing
+the opening state, and basis provenance), and
+[0018](adr/0018-minimum-broker-dataset.md) (the required dataset and the
+capability model). [ADR 0016](adr/0016-out-of-order-appends-and-validation.md)
+fixes a replay defect that blocks all of it. Milestone `v0.2`.
+
+**This document is custodian-neutral.** §12 works one real custodian through it
+end to end; everything before §12 holds for any of them.
 
 ---
 
 ## 1. The shape
 
 ```
-broker export ──[extract]──▶ batch file ──[review]──▶ ──[commit]──▶ ledger
-   .xlsx / .csv              .json, diffable          validate      + rebuild
+custodian export ──[extract]──▶ batch file ──[review]──▶ ──[commit]──▶ ledger
+   .xlsx / .csv                 .json, diffable         validate      + rebuild
 ```
 
 ```bash
-pt import broker statement.xlsx --broker wb --account Brokerage -o batch.json
+pt import broker holdings.xlsx activity.xlsx --broker <name> -o batch.json
 $EDITOR batch.json                       # the review is the point
 pt import batch batch.json --dry-run
 pt import batch batch.json
-pt reconcile --account Brokerage --against holdings.csv --cash 12345.67
+pt reconcile --account <acct> --against holdings.xlsx --as-of <date>
 ```
 
 Three commands rather than one, deliberately. The ledger is append-only: a wrong
@@ -36,14 +40,102 @@ row is corrected with a reversing entry that stays visible for the life of the
 portfolio, so the cheap place to catch a mistake is the batch file, where fixing
 one costs a text edit.
 
-The batch file carries every row the adapter produced **and** every row it
-deliberately discarded, each with the source row verbatim and the rule that
+The batch carries every row the adapter produced **and** every row it
+deliberately discarded, each with its source row verbatim and the rule that
 handled it. A silently dropped row and a deliberately dropped row are the same
 absence in the ledger and completely different claims about the import.
 
 ---
 
-## 2. The canonical batch format
+## 2. What every import requires
+
+Two documents. Nothing else is mandatory ([ADR 0018](adr/0018-minimum-broker-dataset.md)).
+
+| Required | Fields |
+|---|---|
+| **Holdings snapshot** | as-of date · account · instrument identifier · quantity · **cash balances** |
+| **Transaction history** | date · account · activity · instrument · quantity · amount |
+
+The holdings snapshot is the reconciliation target and the anchor the cutover
+reconstruction rolls back from (§7). The transaction history is the ledger.
+Cash is required rather than optional because cash reconciliation is the only
+check that catches a sign error, a dropped row, or a double-counted transfer —
+the errors that leave every quantity right and the money wrong.
+
+Any custodian can produce both. If yours cannot, the problem is upstream of
+`portable`.
+
+---
+
+## 3. What more buys you
+
+Everything beyond §2 is optional and **declared** by the adapter. The pipeline
+computes what the resulting portfolio can claim, and refuses anything beyond it
+by naming the missing input rather than degrading quietly.
+
+| Capability | Absent means |
+|---|---|
+| `COST_BASIS` | Every seeded lot is `basis_source = 'unavailable'`. The portfolio builds and performance is unaffected; `pt tax` cannot report a realized gain on a pre-cutover lot. |
+| `ACQUISITION_DATE` | Seeded lots are dated at the cutover, so holding-period character is conservative by construction — everything seeded reads short-term until a year past it. |
+| `LOT_DETAIL` | No specific identification inside a seeded block. `pt sell --lots` names the block, not shares within it. |
+| `TRANSACTION_ID` | `external_ref` is synthesized from row content (§5). Re-import is safe only while the export is stable row-for-row. |
+| `INSTRUMENT_SYMBOL` | A name-to-symbol crosswalk is required; an unmapped name is a refusal. |
+| `SETTLEMENT_DATE` | Settlement is not recorded. No effect on recognition — `portable` is trade-date accounting. |
+| `CORPORATE_ACTIONS` | Splits and reorganisations are missing from the history, so rolled-back quantities will not reconcile. Detected, not assumed: §7's check fails and names the instrument. |
+| `EXTERNAL_FLOWS` | Contributions and withdrawals rest on the activity map alone, with no second document to cross-check. A misclassified deposit rewrites the track record silently (`PORT-GIPS-B02`). |
+| `HISTORY_TO_INCEPTION` | A cutover is required and §7 applies in full. |
+
+**A column is not a capability.** An adapter declares one only after validating
+the data behind it, and the check is part of its tests. A custodian that emits a
+settlement-date column full of impossible dates has not supplied settlement
+dates — and saying so in the import report is better than silence, because the
+user learns their export is broken rather than assuming the field is unavailable.
+
+`pt import` prints the declared set before doing anything, and `pt info` carries
+it forward. A portfolio built without `COST_BASIS` is permanently different from
+one built with it, and a reader months later needs to know which they have.
+
+---
+
+## 4. Canonical records
+
+Adapters emit two record types and everything downstream sees only these — the
+reconstruction, the batch builder, the reconciler, and every refusal have no
+knowledge of spreadsheets, custodians, or column names.
+
+```python
+@dataclass(frozen=True, slots=True)
+class HoldingRecord:
+    as_of: date
+    account: str
+    identifier: str          # symbol, CUSIP, ISIN, or a name to be crosswalked
+    quantity: Decimal
+    is_cash_equivalent: bool
+    market_value: Decimal | None = None
+    cost_basis: Decimal | None = None      # COST_BASIS
+    acquired: date | None = None           # ACQUISITION_DATE
+    lot_id: str | None = None              # LOT_DETAIL
+
+@dataclass(frozen=True, slots=True)
+class TransactionRecord:
+    trade_date: date
+    account: str
+    activity: str            # the custodian's own string, unmapped
+    identifier: str | None
+    quantity: Decimal | None
+    amount: Decimal
+    source_row: Mapping[str, str]          # verbatim, for the batch file
+    external_id: str | None = None         # TRANSACTION_ID
+    settlement_date: date | None = None    # SETTLEMENT_DATE
+    note: str | None = None
+```
+
+`activity` stays the custodian's raw string. Mapping it is the activity map's
+job, done once, where it can be reviewed.
+
+---
+
+## 5. The batch format
 
 `schemas/import-batch-1.0.json`. One object per prospective ledger row:
 
@@ -52,16 +144,15 @@ absence in the ledger and completely different claims about the import.
   "format": "portable-import-batch",
   "format_version": 1,
   "source": {
-    "broker": "wb",
-    "file": "Transactions_By_Date.xlsx",
-    "sha256": "…",
-    "extracted_at": "2026-09-08T00:00:00Z",
+    "broker": "example",
+    "capabilities": ["COST_BASIS", "ACQUISITION_DATE", "CORPORATE_ACTIONS"],
+    "files": [{"name": "activity.xlsx", "sha256": "…"}],
     "period": {"from": "2024-09-25", "to": "2026-08-25"}
   },
   "rows": [
     {
       "action": "append",
-      "external_ref": "wb:9f2c1a04d3e88b71",
+      "external_ref": "example:9f2c1a04d3e88b71",
       "account": "Brokerage",
       "txn_type": "sell",
       "trade_date": "2026-01-15",
@@ -77,25 +168,23 @@ absence in the ledger and completely different claims about the import.
     {
       "action": "drop",
       "rule": "sweep:cash-equivalent-transfer (ADR 0013)",
-      "source_row": {"Type": "MoneyTransfer", "Notes": "BANK DEPOSIT SWEEP …"}
+      "source_row": {"Type": "MoneyTransfer", "…": "…"}
     }
   ]
 }
 ```
 
-Rows are ordered by `(trade_date, source ordinal)` so that re-extracting after an
-adapter change produces a clean diff. Money and quantities are strings, never
-JSON numbers — `docs/output-formats.md` and ADR 0005.
+Rows are ordered by `(trade_date, source ordinal)` so re-extracting after a map
+change produces a clean diff. Money and quantities are strings, never JSON
+numbers (ADR 0005). The declared capability set travels with the batch, because
+what the rows mean depends on it.
 
-The format is the interface. A future OFX adapter, or a batch written by hand for
-a handful of corrections, is a first-class input on the same footing as any
-shipped adapter.
+The format is the interface: a future OFX adapter, or a batch hand-written for a
+handful of corrections, is a first-class input on the same footing.
 
-### Identity, since these exports carry none
-
-The exports have no confirm number, so `external_ref` is synthesized:
-`sha256` over the source row's raw text — account, date, activity, description,
-quantity, amount — plus an ordinal distinguishing otherwise-identical rows in the
+**Identity.** Where the custodian supplies `TRANSACTION_ID`, that is the
+`external_ref`. Where it does not, `external_ref` is `sha256` over the source
+row's raw text plus an ordinal distinguishing otherwise-identical rows in the
 same export. Components are the *source* text, not mapped values, so revising the
 activity map never changes the identity of a row already committed.
 `UNIQUE (account_id, external_ref)` enforces it; a collision is a refusal, never
@@ -103,67 +192,185 @@ a silent skip.
 
 ---
 
-## 3. Source documents
+## 6. Writing an adapter
 
-The reference adapter targets the three exports the owner's adviser produces.
-Each is authoritative for something different, and none is sufficient alone.
+Two data files under `src/portable_core/importers/<name>/`, reviewed as data:
 
-| Export | Shape | Authoritative for |
-|---|---|---|
-| **Transactions By Date** | one row per event; `Date, Type, Account, Quantity, Description, Price, Net amount, Notes, Settlement date, Amount, Commissions` | trades, income, fees, corporate actions |
-| **Capital Flows Transactions** | `Date, Account, Activity, Description, Quantity, Amount` | the pre-cutover record: when the accounts were funded and how. Its four post-cutover rows duplicate the transaction export exactly, so it contributes **no ledger rows** — see §4 |
-| **holdingsManaged** | one row per position with `Open date, Shares, Unit cost, Cost basis, Market value` | the reconciliation target, and the anchor the cutover reconstruction rolls back from |
+**`source.toml`** — which file is which, the column map per document, date and
+number formats, the account's cash-equivalent identifier set (ADR 0013), and the
+declared capabilities with the checks that justify each.
 
-Two properties of that table drive everything below. The holdings export is
-**position-level, not lot-level** — one row per account and symbol, with a blended
-`Unit cost` — so it states a position exactly and cannot describe the lots inside
-it. And the capital-flows export reaches back further than the transaction
-export, which turns out to document a period that cannot be reconstructed rather
-than to extend the one that can.
+**`activity_map.toml`** — every activity string the custodian emits, with its
+`TransactionType`, its effect on quantity and cash, its `fee_class` where it is a
+fee, and whether the amount's sign is authoritative or derived. No default arm:
+an unmapped string stops the import and names the row.
+
+A custodian whose exports are plain tabular files needs **no Python** — two
+mapping files and a fixture. That is the common case and the point of the design.
+
+Python is written only where the data needs logic a mapping cannot express: a
+split ratio embedded in prose, a reorganisation whose outgoing side is missing
+from the file, a fee settled from a different account. Those live in a
+per-custodian post-pass and each is a documented deviation, not the norm.
+
+A crosswalk file (`instruments.toml`) is additionally required where
+`INSTRUMENT_SYMBOL` is absent.
 
 ---
 
-## 4. The cutover, and what it costs
+## 7. The cutover, and the reconstruction
 
-**These three exports are the whole of the evidence, permanently.** No further
-report is available — not the transaction export re-run from inception, not a
-lot-level cost basis report. Everything below follows from that.
+Where `HISTORY_TO_INCEPTION` is absent — the common case, since most custodians
+default to a two-year window — the portfolio's reporting inception is the
+transaction history's first date, not the date the accounts opened
+([ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md)).
 
-The transaction history begins roughly 28 months after the accounts were funded.
-The accounts turned over completely in that gap, with no record of what was held
-or traded, so no valuation series can exist for it and no return can be computed
-across it. **The portfolio's reporting inception is therefore the transaction
-file's first date, not the date the accounts opened** ([ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md)).
+**The opening position set is derived, not read.** Apply the transaction history
+**in reverse** to the holdings snapshot to obtain the holding of every instrument
+on the day before the ledger begins. Each becomes a `transfer_in` (ADR 0015).
 
-### Reconstructing the opening position set
+The roll-back is also the completeness check. A position that rolls back to a
+negative holding proves the history is missing something — most often a corporate
+action, which is what makes `CORPORATE_ACTIONS` detectable rather than something
+to take on trust.
 
-The opening state is not taken from any single document. It is derived by
-applying the transaction file **in reverse** to the dated holdings snapshot,
-which yields the holding of every instrument on the day before the ledger begins.
-Run against the sample exports, over 106 account-and-instrument pairs:
+**Basis at the cutover**, in descending order of what the evidence supports:
 
-| | |
+| | `basis_source` |
 |---|---|
-| positions held at cutover | 70 |
-| positions opened after it | 33 |
-| discrepancies | 3, all explained |
+| Position untouched since the cutover: basis today less every subsequent addition | `reconstructed` |
+| Block partly survives: solved backwards under the account's assumed relief method | `estimated` |
+| Nothing of the block survives — sold out, or fully consumed | `unavailable` |
+| Read from a lot-detail report, where `LOT_DETAIL` is present | `custodian_asserted` |
 
-The three are one symbol-change modelling artifact (§5) and two sub-share
-differences between a two-decimal transaction quantity and a three-decimal
-holdings quantity. Nothing rolled back to an impossible negative holding, which
-is the check that would have failed had the transaction export been incomplete.
+The third row is the one to understand. The solve anchors to the custodian's
+stated *present* basis, so a block that contributes nothing to the present
+holding has no anchor and no equation — under any relief method. Those lots are
+seeded at cutover market value so the arithmetic closes (invariant 4 needs a
+basis to balance against), and **that value is not a basis claim**: `pt tax`
+excludes those dispositions from every total, reports them separately, and marks
+the year incomplete rather than printing a gain measured from an arbitrary date.
 
-### Basis at the cutover
+What survives the reconstruction intact: current holdings and current basis
+(exact, anchored to the custodian), every future tax-aware decision, and all
+cash, income, fees, and flows after the cutover.
 
-Where a position saw no disposal and no share-class transformation after the
-cutover, its cutover basis is today's basis less the cost of every subsequent
-addition — exact arithmetic on two exact numbers. That covers **38 of the 70
-positions and about 83% of the pre-cutover cost basis**, with no negative or
-implausible unit cost anywhere in the result.
+---
 
-The other 32 were sold into after the cutover, and which lots the custodian
-relieved is recorded nowhere available. **FIFO is the assumption** — disposals
-consume the pre-cutover block first — and it reaches only part of them:
+## 8. Refusals
+
+Per invariant 9, the import stops and explains rather than guessing, on:
+
+- either required document missing, or a required field absent from it;
+- an unmapped activity string;
+- an unresolvable or ambiguous instrument identifier;
+- a fee whose `fee_class` the activity map does not determine (`PORT-GIPS-D01`);
+- a duplicate `external_ref`;
+- a settlement date earlier than its trade date;
+- a roll-back that produces a negative holding;
+- a closing quantity exceeding open lots;
+- a fractional quantity in an account without `allows_fractional`;
+- a trade dated before the account's `opened_date`;
+- a batch whose stated file hash does not match the file on disk;
+- a request for an output the declared capabilities do not support.
+
+---
+
+## 9. Acceptance
+
+An import is accepted when it reconciles, not when it parses.
+
+1. **Per period, per account:** ending cash and every position quantity match the
+   custodian. A break exits **6**.
+2. **Per closed tax year:** realized gains tie to the custodian's tax reporting,
+   excluding dispositions marked `unavailable`.
+3. `pt validate` passes — which, after ADR 0016, means stored derived state
+   actually equals replayed state.
+4. `pt export` → `pt import` → `pt export` is byte-identical.
+
+Check 1 carries extra weight. The reconstruction works backwards from the
+custodian's stated present position, so agreement there is not a coincidence —
+it is the arithmetic closing. What the check proves is that the transaction
+history is complete enough to bridge the two ends, and that is the whole of the
+evidence the reconstruction rests on. Run it per account and per period, not once
+at the end.
+
+---
+
+## 10. Gaps in `portable` this depends on
+
+- **`taxes_withheld` has no write path.** The column and the domain field exist;
+  no service or CLI sets them. Any withholding — foreign dividend, retirement
+  distribution — needs it.
+- **Fund capital-gain distributions have no transaction type.** Income for flow
+  purposes, taxed by character.
+- **`--ref` is exposed on trades, deposit, and withdraw only.** Every other
+  mutating command takes no external reference, so imported rows of those types
+  cannot be deduplicated.
+- **`TradingService` hardcodes `source = MANUAL`.** There is no way to write
+  `source = 'import'` (`PORT-GIPS-J03`).
+- **`pt reconcile` compares quantities only** — no cash comparison, keyed on
+  symbol rather than CUSIP, and merges accounts into one namespace when
+  `--account` is omitted. Per-account scoping and cash are prerequisites, not
+  follow-ons.
+- **Wash sales are not detected** until `v0.2`; `pt tax` says so on its face.
+
+---
+
+## 11. Runbook
+
+1. `pt init`; `pt account add` per account with its true `opened_date`, `--type`,
+   relief method, and `--allows-fractional` where funds are held.
+2. Tax rate schedules on taxable accounts, and a `return_policy`
+   (`PORT-GIPS-B03`).
+3. Extract with `--dry-run` first and **read the declared capability set**. It
+   tells you what this portfolio will and will not be able to claim.
+4. Run the cutover reconstruction; review its exceptions and any dispositions
+   falling within a year of the cutover, then seed each opening position as a
+   `transfer_in` with its `basis_source`.
+5. Import the transaction history, oldest period first, one account at a time.
+6. `pt reconcile` per account. Do not proceed past a break.
+7. Backfill prices, then `pt value` across the period. Watch for snapshots marked
+   incomplete: a position that cannot be priced makes the return unanswerable
+   rather than approximate.
+8. `pt validate`, `pt rebuild`, `pt validate` again.
+
+Step 7 stalls most often. A complete daily valuation history needs prices for
+every instrument ever held, including under symbols that no longer exist. Because
+portfolio accounting uses **unadjusted** prices with explicit corporate-action
+rows, split history must be complete or lot quantities go wrong in a way that
+reconciles at the position level and is wrong at the lot level.
+
+---
+
+## 12. Worked example — a wrap-fee adviser account
+
+The reference custodian: an adviser with a taxable brokerage account, a
+traditional IRA, and a Roth. Three exports — a holdings snapshot, a transaction
+history, and a capital-flows report. It declares **four of the nine
+capabilities**, which is what makes it a useful first adapter: an interface
+justified only by a source supporting everything would not have been exercised.
+
+| Capability | | Why |
+|---|---|---|
+| `COST_BASIS` | ✅ | position-level on the snapshot |
+| `ACQUISITION_DATE` | ✅ | `Open date`, the block's earliest |
+| `CORPORATE_ACTIONS` | ✅ | splits and renames appear as rows |
+| `EXTERNAL_FLOWS` | ✅ | the capital-flows report |
+| `LOT_DETAIL` | ❌ | one row per position, blended unit cost |
+| `TRANSACTION_ID` | ❌ | no confirm number anywhere |
+| `INSTRUMENT_SYMBOL` | ❌ | description only on transaction rows |
+| `SETTLEMENT_DATE` | ❌ | **column present, data invalid** — see below |
+| `HISTORY_TO_INCEPTION` | ❌ | history begins ~28 months after funding |
+
+### What the reconstruction recovered
+
+Over 106 account-and-instrument pairs: 70 positions held at the cutover, 33
+opened after it, and three discrepancies — one symbol-change modelling artifact
+and two sub-share differences between a two-decimal transaction quantity and a
+three-decimal holdings quantity. Nothing rolled back negative.
+
+Basis, under the account's FIFO assumption:
 
 | | positions | `basis_source` |
 |---|---|---|
@@ -172,287 +379,81 @@ consume the pre-cutover block first — and it reaches only part of them:
 | Block fully consumed, position still held | 3 | `unavailable` |
 | Position fully liquidated since the cutover | 23 | `unavailable` |
 
-A position contributing nothing to the present holding gives the solve **no
-anchor**: today's basis constrains the block only through what survives of it,
-and where nothing survives there is no equation, under FIFO or any other method.
-No relief-method choice reaches those 26.
+The 26 `unavailable` positions are all closed or fully turned over, so current
+holdings, current basis, and every future decision are untouched. Of 42
+dispositions, 28 fall more than a year past the cutover and their long-term
+character is certain whatever the seeded date; the other 14 depend on it and the
+reconstruction enumerates them for review.
 
-They are all closed or fully turned over, so current holdings, current basis, and
-every future decision are untouched. What they touch is the reported realized
-gain for the periods they were sold in — and there `pt tax` excludes them from
-every total, reports them separately, and marks the year incomplete rather than
-printing a gain measured from an arbitrary date. The custodian's 1099-B is the
-authority for those years and always was.
-[ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md) §2a–2b has
-the reasoning. The rule throughout is not that approximation is forbidden; it is
-that an approximate number must never be mistakable for an exact one.
+### The traps, and which generalise
 
-### What this costs, precisely
+**Sweep echoes — 35% of the file.** Every `MoneyTransfer` row moves money between
+the cash ledger and two cash-equivalent vehicles, in pairs with the event that
+caused it. Recording both halves counts every dividend twice. *Generalises:* the
+drop rule is a **whitelist** of the account's declared cash-equivalent
+identifiers, and a transfer naming anything outside that set is a refusal — the
+one thing that must never happen is a real movement discarded by a rule written
+for bookkeeping noise.
 
-- **A pre-cutover block is one lot.** Specific identification within it is not
-  available, whatever the account's default relief method. The custodian's
-  records support spec-ID; this reconstruction of them does not.
-- **Holding-period character is certain for any disposition more than a year
-  after the cutover** — every seeded lot was acquired on or before the cutover, so
-  even the latest possible true acquisition date is more than a year prior. 28 of
-  the 42 dispositions in the file fall in that window.
-- **The other 14 depend on the seeded acquisition date.** The reconstruction
-  enumerates them for individual review rather than reporting a count. All are in
-  the taxable account and in tax years already filed from the 1099-B, so the
-  exposure is to `portable`'s reporting of past gains rather than to a filing.
-- **Nothing else is degraded.** Current holdings and current basis are exact,
-  because the reconstruction is anchored to the custodian's stated present
-  position — and that is the basis every future tax-aware decision runs on. Cash,
-  income, fees, and external flows after the cutover come from the transaction
-  file directly.
+**Cross-account fee settlement.** The brokerage pays the IRA's and Roth's
+advisory fees; each fee therefore appears twice, once as the funding transfer and
+once as the fee, both under an activity word meaning *Expense*. Two further
+settlements go to accounts outside the portfolio and are **withdrawals**, not
+fees. The amount's sign inverts between paying and receiving accounts while every
+other row in the export is unsigned. *Custodian-specific* — a declarative pairing
+rule most custodians will not need (ADR 0014).
 
-### The capital-flows export contributes no ledger rows
+**Settlement dates corrupted.** 304 of 529 populated cells hold a date earlier
+than their own trade date; the column mixes text and spreadsheet-date cells, so a
+subset was coerced under an ambiguous day/month reading. *Generalises:* read every
+cell as text, never let a spreadsheet library infer a date (invariant 6), and
+validate before declaring the capability.
 
-Its four post-cutover rows duplicate the transaction export exactly, so it adds
-nothing importable and is instead a **cross-check** on those four. Its
-pre-cutover rows describe flows into a period with no valuations on either side;
-loading them would produce a division that looks like a return. They become
-`portfolio_event` rows, which exist to help a reader interpret a report and are
-the right home for "these accounts were funded in kind two years before this
-record begins".
+**One activity word, several events.** `Credit` is a symbol change in three rows
+and a share-class conversion in a fourth, both lot-preserving, both with **no
+matching debit anywhere in the file**, both emitted one row per existing lot.
+*Generalises:* the activity map keys on the activity **and** a note pattern, and
+the adapter matches incoming quantities against open lots, refusing when they do
+not reconcile.
 
----
+**Split ratios in prose.** `… SHARE-RATIO: 1:4.0`, with `Quantity` holding the
+shares *added*. Parsed from the note and cross-checked: `held × (ratio − 1)` must
+equal the stated quantity. *Custodian-specific.*
 
-## 5. Defects in the exports
+**The capital-flows report contains rows that are not capital flows.** Of 46 rows,
+13 are genuine external flows; the rest are in-kind funding at inception and
+share-class conversions — a transfer out of one class paired with a receipt into
+another, same day, same money. Treating those as flows writes phantom
+contributions into the track record (`PORT-GIPS-B02`). *Generalises as a
+warning:* a document labelled "capital flows" is not authority that its rows are
+capital flows.
 
-These are properties of the files, not of the adapter, and each is checked
-rather than assumed.
+For this custodian the report contributes **no ledger rows at all** — its
+post-cutover rows duplicate the transaction history exactly, and its earlier rows
+describe flows into a period with no valuations, which would produce a division
+that looks like a return. They become `portfolio_event` documentation.
 
-**Settlement dates are unusable as written.** In the sample, 304 of 529 populated
-cells hold a date earlier than their own trade date. The column mixes text and
-spreadsheet-date cells, so a subset was coerced under an ambiguous day/month
-reading — a 29 May trade settling "06/01" reads back as 6 January. The adapter
-reads every cell as text and never lets a spreadsheet library infer a date
-(`CLAUDE.md` invariant 6), and **refuses** any settlement date earlier than its
-trade date rather than storing it. `portable` is trade-date accounting
-(invariant 7), so this is recoverable; storing the corrupted value would not be.
+**Fractional shares are routine** — 186 rows, including mutual fund buys and
+sells. `allows_fractional` must be set or every one is refused, correctly, with
+the remedy being an account setting rather than a rounding.
 
-On income rows the same column holds something else — it looks like the ex-date.
-It is worth capturing, because dividend accrual runs from the ex-date
-(`PORT-GIPS-A06`), but it is captured as an ex-date and not as a settlement date.
-
-**There is no symbol column on transaction rows.** Only a `Description` naming
-the issuer and a free-text `Notes`. Of 97 distinct descriptions in the sample, 31
-do not appear in the holdings export at all — they are closed positions. `TICKER:`
-appears in 4 rows of 1,163; an ISIN in 17. Resolution therefore runs through a
-hand-curated crosswalk (§7), not a heuristic.
-
-**Amounts are unsigned except where they are not.** Direction is implied by the
-activity for trades, income, and deposits, but the fee-transfer rows carry a
-genuine sign that inverts between the paying and receiving accounts. The activity
-map records, per activity, whether the sign is authoritative or derived. Cash
-reconciliation is what catches a mistake here; nothing else does.
-
-**One activity word covers several events.** `Credit` is a symbol change in three
-sample rows (`Notes` = `Rename`) and a mutual-fund share-class conversion in a
-fourth (`SHR CLASS CONVERSION`). Both are lot-preserving transformations, both
-appear with **no matching debit anywhere in the file**, and both were emitted
-one row per existing lot. The adapter matches the incoming quantities against
-open lots and refuses when they do not reconcile.
-
-**Split ratios live in prose.** `PROCESSED STOCK SPLIT OF CRWD. TYPE: SPLIT;
-TICKER: CRWD; SHARE-RATIO: 1:4.0`, with `Quantity` holding the shares *added*
-rather than the new total. The ratio is parsed from `Notes` and cross-checked:
-`held × (ratio − 1)` must equal the stated quantity, or the row is refused.
-
-**The capital-flows export contains rows that are not capital flows.** Of 46
-sample rows, only 13 are genuine external flows. The rest are in-kind funding
-events at inception and mutual-fund share-class conversions — a
-`Transfer of Securities` out of one share class paired with a
-`Receipt of Securities` into another, on the same day, for the same money.
-Treating those as external flows writes phantom contributions and withdrawals
-into the track record, which is the `PORT-GIPS-B02` failure ADR 0007 exists to
-prevent. §4 is why the file is not imported at all; this is why it would have
-been dangerous to import naively even if it were.
+**A zero basis is sometimes correct.** One position is a contra/CVR security from
+an acquisition, with a genuine basis of zero.
+`BasisAdjustmentReason.FORCED_ZERO_BASIS` exists for it, and that zero is
+`derived`, not `estimated`.
 
 ---
 
-## 6. Instruments, lots, and basis
+## 13. Open questions
 
-**Fractional shares are routine** — 186 sample rows, including mutual fund buys
-and sells. `allows_fractional` must be set on any account holding funds or the
-import refuses every one of them (which is the correct behaviour, and the remedy
-is an account setting, not a rounding).
-
-**A seeded block is one lot, and it says so.** No lot-detail report exists for
-these accounts, so a pre-cutover position built from several purchases enters the
-ledger as a single block with an aggregate basis. What is refused is not the
-approximation but its concealment: every lot carries a `basis_source`
-(`derived` · `reconstructed` · `estimated` · `custodian_asserted`) that is
-`NOT NULL` with no default, and `pt tax` and `pt pnl` disclose any figure
-resting on a lot that is not `derived`. [ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md)
-sets out the ladder and what each rung costs.
-
-Consequently **specific identification is unavailable within a pre-cutover
-block**. `pt sell --lots` can name the block; it cannot name shares inside it.
-For an account whose default is spec-ID that is a real reduction in capability,
-and the honest description is that the custodian's records support spec-ID and
-this reconstruction of them does not.
-
-**A zero basis is sometimes correct.** One sample position is a contra/CVR
-security from an acquisition, with a genuine basis of zero.
-`BasisAdjustmentReason.FORCED_ZERO_BASIS` already exists for it, and that zero is
-`derived`, not `estimated`. Covered versus non-covered status is the broker's to
-state and `portable`'s to carry.
-
----
-
-## 7. The maps
-
-Two data files per adapter, under `src/portable_core/importers/<broker>/`,
-reviewed as data rather than buried in Python. A test asserts the adapter's
-fixtures are fully covered by both, and any string not in them is a refusal.
-
-### `activity_map.toml`
-
-The reference adapter's vocabulary, as observed. Counts are from the sample
-export and are indicative only — the map is exhaustive over what appears, and an
-unrecognised string stops the import.
-
-| Broker activity | `portable` | Notes |
-|---|---|---|
-| `Buy` | `buy` | |
-| `Sell` | `sell` | relief method from the account default |
-| `Deposit` | `deposit` | genuine external contribution |
-| `Income (Dividend)` | `dividend` | `Settlement date` column read as the ex-date |
-| `Income (Reinvested Dividend)` | `dividend_reinvest`, **or** `dividend` to cash | cash-equivalent instrument ⇒ income to cash (ADR 0013) |
-| `Income (Reinvested Interest)` | `interest` | sweep interest; income to cash |
-| `Income (Long Term Gain)` | fund capital-gain distribution, long | see §8 |
-| `Income (Short Term Gain)` | fund capital-gain distribution, short | see §8 |
-| `Income (Reinvested Long Term Gain)` | distribution + `dividend_reinvest` | two events, one row |
-| `Expense (Management Fee)` | `fee`, `external_mgmt_fee` | ADR 0014 |
-| `Expense (Transfer to Cover Management Fee)` | `transfer` **or** `withdrawal` | paired; ADR 0014 |
-| `Expense (Foreign Tax Paid)` | `taxes_withheld` on the related dividend | **not** a fee |
-| `MoneyTransfer` | dropped | cash ↔ cash-equivalent only; see below |
-| `Split` | `split` | ratio parsed from `Notes` |
-| `Credit` + `Notes: Rename` | `symbol_change` | one row per existing lot |
-| `Credit` + `Notes: … SHR CLASS CONVERSION …` | share-class conversion | lot-preserving |
-| `Receipt` | share-class conversion / remediation | pairs with the capital-flows export |
-
-Two rules in that table carry the most risk and are stated precisely:
-
-**The `MoneyTransfer` drop rule is a whitelist, not a pattern match.** A row is
-dropped only when both endpoints are in the account's declared set of cash and
-cash-equivalent identifiers. In the sample all 404 rows qualify — they move money
-between the cash ledger, a bank deposit sweep, and a government money market
-fund. A `MoneyTransfer` naming anything outside that set is a **refusal**, because
-the one thing that must never happen is a real movement discarded by a rule
-written for bookkeeping noise.
-
-**The reinvestment rows split on the instrument.** In the sample, 139 of 164
-reinvestment rows are on the two sweep vehicles and become plain income to cash;
-the remaining ~25 are genuine fund distributions reinvested into new shares and
-create a lot.
-
-### `instruments.toml`
-
-Description-to-symbol, with `cusip`/`isin` where the export supplies one. Roughly
-97 entries for the sample, of which about 31 name positions no longer held and
-must be researched by hand. It is a maintained artifact: a new holding means a
-new entry, and the import says so rather than guessing.
-
----
-
-## 8. Known gaps this work depends on
-
-Tracked here because the import cannot be honest without them.
-
-- **`taxes_withheld` has no write path.** The column exists on `transaction` and
-  the field exists on the domain model; no service or CLI sets it. Foreign
-  dividend withholding needs it, and so will any retirement-account
-  distribution. Whether withholding is reclaimable is a separate stored fact
-  (`PORT-GIPS-A06`).
-- **Fund capital-gain distributions have no transaction type.** They are income
-  for flow purposes and taxed by character. In the sample they occur only in the
-  retirement accounts, where character does not bite — which stops being true the
-  moment a fund is held in the taxable account.
-- **`--ref` is exposed on trades, deposit, and withdraw only.** Every other
-  mutating command — transfer, interest, fee, margin-interest, dividend, coupon,
-  return of capital, corporate actions — takes no external reference, so imported
-  rows of those types cannot be deduplicated.
-- **`TradingService` hardcodes `source = MANUAL`.** There is no way to write
-  `source = 'import'`, so imported rows would claim to be hand-entered
-  (`PORT-GIPS-J03`).
-- **`pt reconcile` compares quantities only.** It has no cash comparison, keys on
-  symbol rather than CUSIP, and merges every account into one namespace when
-  `--account` is omitted, so two accounts holding the same fund reconcile as a
-  sum. Per-account scoping and a cash comparison are prerequisites, not
-  follow-ons — they are the only check that catches a sign error or a
-  double-counted transfer.
-- **Wash sales are not detected** until `v0.2`. For a taxable account with real
-  activity this matters, and `pt tax` states it on its face.
-
----
-
-## 9. Acceptance
-
-An import is accepted when it reconciles, not when it parses.
-
-1. **Per statement period, per account:** ending cash and every position quantity
-   match the broker. A break exits **6**.
-2. **Per closed tax year:** realized gains tie to the 1099-B.
-3. `pt validate` passes — which, after ADR 0016, means stored derived state
-   actually equals replayed state.
-4. `pt export` → `pt import` → `pt export` is byte-identical.
-
-Parser tests establish that the adapter does what it claims. Only reconciliation
-establishes that what it claims is right.
-
-Check 1 carries extra weight here. The cutover reconstruction (§4) works backwards
-from the custodian's stated present position, so agreement with that position is
-not a coincidence — it is the arithmetic closing. What the check actually proves
-is that the transaction file is complete enough to bridge the two ends, and that
-is the whole of the evidence the reconstruction rests on. Run it per account and
-per period, not once at the end.
-
----
-
-## 10. Onboarding runbook
-
-1. `pt init`, then `pt account add` for each account with its true `opened_date`,
-   `--type`, relief method, and `--allows-fractional` where funds are held.
-2. Set tax rate schedules on taxable accounts (`pt tax` refuses without them) and
-   a `return_policy` (`pert` refuses without one, `PORT-GIPS-B03`).
-3. Record the pre-cutover funding events from the capital-flows export as
-   `portfolio_event` rows — documentation, not ledger rows (§4).
-4. Run the cutover reconstruction: roll the transaction file back from the
-   holdings snapshot, review the enumerated exceptions and the dispositions
-   falling within a year of the cutover, then seed each opening position as a
-   `transfer_in` with its `basis_source` (ADRs 0015 and 0017).
-5. Import the transaction history, oldest period first, one account at a time.
-6. `pt reconcile` against the holdings export. Do not proceed past a break.
-7. Backfill prices, then `pt value` across the period. Watch for snapshots marked
-   incomplete: a position that cannot be priced makes the return unanswerable
-   rather than approximate.
-8. `pt validate`, `pt rebuild`, `pt validate` again.
-
-Step 7 is the one most likely to stall. A complete daily valuation history needs
-prices for every instrument ever held, including funds that no longer exist under
-that symbol — and mutual fund NAV history is the part that quietly is not there.
-Because portfolio accounting uses **unadjusted** prices with explicit
-corporate-action rows, split history must be complete or lot quantities go wrong
-in a way that reconciles at the position level and is wrong at the lot level.
-
----
-
-## 11. Open questions
-
-Three questions are now closed. More history **cannot** be obtained, and §4 is
-the consequence. The relief-method assumption is **FIFO**, recorded on every lot
-it touches. The two fee settlements to accounts outside the portfolio are
-**withdrawals**, and those accounts stay outside — a scope decision rather than a
-bookkeeping one (ADR 0014). What remains open is smaller.
-
-- **The cutover date itself.** The transaction file's first row is the obvious
-  choice and the one §4 assumes. A later cutover would shrink the reconstructed
-  portion at the cost of discarding exact history, which is the wrong trade — but
-  it is the owner's trade to make.
-- **Covered versus non-covered status** on the seeded lots. The exports do not
-  state it. It does not affect what `portable` computes; it affects what the
-  custodian is obliged to report, and is worth carrying if it can be established
-  from a 1099-B.
+- **The cutover date**, where a cutover is needed at all. The transaction
+  history's first row is the obvious choice. A later cutover shrinks the
+  reconstructed portion at the cost of discarding exact history, which is the
+  wrong trade — but it is the owner's to make.
+- **Covered versus non-covered status** on seeded lots. Rarely stated in an
+  export. It does not affect what `portable` computes; it affects what the
+  custodian is obliged to report, and is worth carrying where a 1099-B
+  establishes it.
+- **The second adapter.** Adding a custodian should be a fixture plus two TOML
+  files plus a reconciliation. That is the test of whether §§2–6 worked, and it is
+  untested until a second custodian exists — the first one always fits.

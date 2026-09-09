@@ -367,6 +367,7 @@ test that fails without your change.
   | 0015 | In-kind transfers, and positions that predate the ledger |
   | 0016 | Out-of-order appends force a rebuild; `pt validate` compares stored state |
   | 0017 | Cutover reconstruction by roll-back, and where each basis came from |
+  | 0018 | The minimum broker dataset, and capability-gated import |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager
@@ -378,9 +379,10 @@ test that fails without your change.
   what is estimated vs. exact
 - `docs/port-format.md`, `docs/schema.md` — the `.port` file
 - `docs/market-data.md` — provider interface, fafnir adapter, cache and staleness
-- `docs/broker-import.md` — how custodian exports become ledger rows: the batch
-  format, the activity and instrument maps, the refusals, and the reconciliation
-  that makes an import acceptable
+- `docs/broker-import.md` — how custodian exports become ledger rows: the two
+  documents any import requires, the capabilities anything further unlocks, the
+  batch format, the mapping files, the refusals, and the reconciliation that
+  makes an import acceptable. Custodian-neutral, with one worked example
 - `docs/output-formats.md` — JSON envelope, versioning, agent/MCP integration
 - `docs/roadmap.md` — what is coming and in which milestone
 - Prior art: [fafnir](https://github.com/rtrimble13/fafnir) (market data warehouse,

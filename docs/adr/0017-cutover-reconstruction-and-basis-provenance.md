@@ -5,6 +5,9 @@
 - **Milestone:** v0.2
 - **Governs:** `CLAUDE.md` invariants 9, 10; `PORT-GIPS-J03`
 - **Amends:** ADR 0015 — replaces the flat refusal on averaged basis with a recorded provenance ladder
+- **Generalised by:** [ADR 0018](0018-minimum-broker-dataset.md) — the roll-back needs only
+  the two required documents, so it is a general procedure; the figures below are one
+  custodian's instance of it
 
 ## Context
 
