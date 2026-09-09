@@ -156,6 +156,12 @@ class TransactionType(enum.StrEnum):
     WITHDRAWAL = "withdrawal"
     TRANSFER = "transfer"
     JOURNAL = "journal"
+    # securities crossing the portfolio boundary without being bought or sold
+    # (ADR 0015). Deliberately NOT `TRANSFER`, which means an internal movement
+    # netting to zero at portfolio level: these cross the boundary and do not
+    # net, so one type would put two opposite flow classifications behind it.
+    TRANSFER_IN = "transfer_in"
+    TRANSFER_OUT = "transfer_out"
     INTEREST = "interest"
     FEE = "fee"
     MARGIN_INTEREST = "margin_interest"

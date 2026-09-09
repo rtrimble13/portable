@@ -18,6 +18,7 @@ from portable_core.domain.enums import (
     AccountStatus,
     AccountType,
     BasisAdjustmentReason,
+    BasisSource,
     BenchmarkReturnType,
     CashTreatment,
     DayCount,
@@ -249,6 +250,10 @@ def to_transaction(row: sqlite3.Row) -> Transaction:
         note=row["note"],
         external_ref=row["external_ref"],
         source=TransactionSource(row["source"]),
+        original_basis=to_optional_decimal(row["original_basis"]),
+        original_acquired_date=to_optional_date(row["original_acquired_date"]),
+        basis_source=BasisSource(row["basis_source"]) if row["basis_source"] else None,
+        basis_assumption=row["basis_assumption"],
         created_at=str(row["created_at"]),
     )
 
@@ -301,6 +306,8 @@ def to_lot(row: sqlite3.Row, adjustments: tuple[BasisAdjustment, ...] = ()) -> L
         is_short=to_bool(row["is_short"]),
         status=LotStatus(row["status"]),
         closed_date=to_optional_date(row["closed_date"]),
+        basis_source=BasisSource(row["basis_source"]),
+        basis_assumption=row["basis_assumption"],
         adjustments=adjustments,
     )
 

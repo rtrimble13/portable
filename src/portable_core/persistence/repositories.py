@@ -718,9 +718,10 @@ class TransactionRepository(_Repository):
             "taxes_withheld, withholding_reclaimable, fee_class, net_cash_effect, "
             "position_id, counter_account_id, related_txn_id, reverses_txn_id, "
             "lot_selection, relief_method, ex_date, pay_date, is_qualified, note, "
-            "external_ref, source, created_at) VALUES "
+            "external_ref, source, original_basis, original_acquired_date, "
+            "basis_source, basis_assumption, created_at) VALUES "
             "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "?, ?, ?, ?)",
+            "?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 txn.account_id,
                 txn.trade_date.isoformat(),
@@ -749,6 +750,14 @@ class TransactionRepository(_Repository):
                 txn.note,
                 txn.external_ref,
                 str(txn.source),
+                _text(txn.original_basis),
+                (
+                    txn.original_acquired_date.isoformat()
+                    if txn.original_acquired_date
+                    else None
+                ),
+                str(txn.basis_source) if txn.basis_source else None,
+                txn.basis_assumption,
                 txn.created_at or _now(),
             ),
         )
@@ -947,8 +956,9 @@ class LotRepository(_Repository):
             "INSERT INTO lot (leg_id, position_id, instrument_id, account_id, open_date, "
             "open_txn_id, original_quantity, remaining_quantity, per_unit_price, "
             "allocated_fees, original_cost_basis, adjusted_cost_basis, "
-            "holding_period_start, is_short, status, closed_date) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "holding_period_start, is_short, status, closed_date, "
+            "basis_source, basis_assumption) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 lot.leg_id,
                 lot.position_id,
@@ -966,6 +976,8 @@ class LotRepository(_Repository):
                 int(lot.is_short),
                 str(lot.status),
                 lot.closed_date.isoformat() if lot.closed_date else None,
+                str(lot.basis_source),
+                lot.basis_assumption,
             ),
         )
         return int(cursor.lastrowid or 0)

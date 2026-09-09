@@ -14,6 +14,76 @@ Two rules specific to this repository:
 
 ## [Unreleased]
 
+### Schema
+
+- **`schema_version` 2 → 3**, migration `0003_in_kind_transfers_and_basis_source`.
+  **The first migration that rebuilds a table** ([ADR 0019](docs/adr/0019-migrations-that-rebuild-a-table.md)).
+  - **`transfer_in` / `transfer_out`** on `txn_type`, plus `original_basis`,
+    `original_acquired_date`, `basis_source` and `basis_assumption` on
+    `"transaction"` — bound by `CHECK` to those two types (ADR 0015).
+  - **`lot.basis_source NOT NULL`, no default** (ADR 0017). No writer can add a
+    lot without answering where the basis came from; a default would defeat the
+    column. `lot` is dropped and recreated rather than altered, because it is
+    derived state and SQLite cannot add a `NOT NULL` column with no default
+    anyway. A migrated file has no lots until `pt rebuild` — reported by
+    `pt validate`, not silent.
+  - **Why a rebuild at all, measured rather than asserted.** SQLite cannot
+    alter a `CHECK` constraint, and the obvious statement of the problem is
+    wrong: the tables holding foreign keys into the ledger — `lot`, `position`,
+    `realized_gain` — are all derived, so a migration can clear them first. The
+    actual blocker is the ledger's **self-references**, `related_txn_id` and
+    `reverses_txn_id`, which are ledger data and cannot be cleared. With the
+    rebuild marker removed, 0003's own SQL succeeds on a file with no
+    reversals and fails with `FOREIGN KEY constraint failed` on one with a
+    single reversal. That asymmetry is the worst shape a bug can have — green
+    on the fixture and on every new file, broken on the owner's real portfolio
+    — and there is a test pinning it.
+  - Migrations declare a rebuild with a `-- portable:rebuild` marker inside the
+    checksummed text, so one cannot be quietly promoted after being applied.
+    Rebuild mode sets `PRAGMA foreign_keys = OFF` **outside** the transaction
+    (it is a documented no-op inside one, which is why the runner had to change
+    first) and restores it in a `finally` — connection state left off would
+    make every later write on that connection skip referential integrity.
+  - The enforcement switched off is **reinstated, not skipped**:
+    `PRAGMA foreign_key_check` runs inside the transaction before commit, and
+    the trigger inventory is compared across the rebuild. A file that lost
+    `trg_transaction_no_update` would look entirely fine and no longer be
+    append-only, and no test of the migration's *data* would catch it.
+
+### Added
+
+- **In-kind transfers: `pt transfer in` / `pt transfer out`** (ADR 0015).
+  Securities crossing the portfolio boundary without being bought or sold — an
+  account funded in kind from a previous custodian, a gift of stock, a position
+  that predates every available record.
+  - **Two numbers travel on the row and must not be conflated.** `--value` is
+    the market value on the transfer date: the flow amount (`PORT-GIPS-C02`).
+    `--basis` is what the owner paid at the delivering custodian: the tax
+    number. Swap them and neither error announces itself — value as basis makes
+    every future sale report the gain since the transfer, and basis as value
+    makes the period's return wrong by the entire unrealized gain.
+  - **The holding period is preserved, not restarted.** `--acquired` becomes
+    the lot's open date and holding-period start: a change of custodian is not
+    a disposition, and restarting it would convert long-term gains into
+    short-term ones on the next sale.
+  - **No cash moves.** That is the whole argument for a transaction type rather
+    than a back-dated `buy`, which would invent an outflow and then need an
+    invented deposit to fund it — an external cash flow, which is how a track
+    record gets silently rewritten (ADR 0007).
+  - `classify` gains an arm: **`EXTERNAL` and in-kind at *both* levels**, unlike
+    `transfer`, which is external at account level and no flow at all at
+    portfolio level. ADR 0015's opening-day exception needs the account and the
+    return engine, so it is stated in the code and implemented nowhere rather
+    than half-implemented (invariant 10).
+  - `transfer out` takes `--method` and `--lots`, because which lots leave is
+    the same question a sale asks. Found by a test: the seeded account defaults
+    to spec-ID and the command had no way to answer it.
+  - `BasisSource` refusals with `PT-E-BASIS-SOURCE-INVALID`: a transferred
+    lot's basis can never be `derived`; `unavailable` carries no figure and is
+    refused one; the three approximate rungs must state their assumption; an
+    acquisition date after the transfer is impossible.
+  - 50 tests.
+
 ### Added
 
 - **The cutover reconstruction, and `pt import reconstruct`** — the opening

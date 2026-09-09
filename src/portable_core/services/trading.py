@@ -19,9 +19,10 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from portable_core.decimals import money_context, quantize_money
+from portable_core.decimals import is_whole, money_context, quantize_money
 from portable_core.domain.enums import (
     AccountStatus,
+    BasisSource,
     FeeClass,
     ReliefMethod,
     TransactionSource,
@@ -31,6 +32,7 @@ from portable_core.domain.models import Account, Instrument, Transaction
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import (
     E_ACCOUNT_CLOSED,
+    E_BASIS_SOURCE_INVALID,
     E_CASH_INSUFFICIENT,
     E_FEE_CLASS_MISSING,
     E_FRACTIONAL_SHARE,
@@ -43,6 +45,12 @@ from portable_core.services.replay import ReplayEngine
 __all__ = ["CommitResult", "TradeIntent", "TradePlan", "TradingService"]
 
 ZERO = Decimal("0.00")
+
+#: The rungs of ADR 0017's ladder that rest on an assumption rather than on a
+#: figure somebody stated. Each must say what the assumption was.
+_APPROXIMATE = frozenset(
+    {BasisSource.RECONSTRUCTED, BasisSource.ESTIMATED, BasisSource.UNAVAILABLE}
+)
 
 #: Trade types that open or add. The rest reduce.
 _OPENING = {TransactionType.BUY, TransactionType.SELL_SHORT}
@@ -233,8 +241,6 @@ class TradingService:
                 "not from the sign of the quantity.",
                 quantity=str(intent.quantity),
             )
-        from portable_core.decimals import is_whole
-
         if intent.instrument.is_option and not is_whole(intent.quantity):
             raise ValidationError(
                 f"cannot trade {intent.quantity} option contracts",
@@ -531,4 +537,238 @@ class TradingService:
                 ),
                 reclaimable=str(reclaimable),
                 withheld=str(withheld),
+            )
+
+    # ── In-kind transfers (ADR 0015) ─────────────────────────────────────────
+
+    def record_transfer_in(
+        self,
+        account: Account,
+        instrument: Instrument,
+        quantity: Decimal,
+        on: date,
+        *,
+        value: Decimal,
+        original_basis: Decimal | None,
+        original_acquired_date: date | None,
+        basis_source: BasisSource,
+        basis_assumption: str | None = None,
+        note: str | None = None,
+        external_ref: str | None = None,
+        source: TransactionSource = TransactionSource.MANUAL,
+    ) -> Transaction:
+        """Securities arriving without being bought. The caller commits it.
+
+        Two numbers travel on this row and **must not be conflated** -- the
+        failure mode ADR 0015 exists to prevent:
+
+        - ``value`` is the market value on the transfer date. It is the flow
+          amount (``PORT-GIPS-C02``) and has nothing to do with tax.
+        - ``original_basis`` and ``original_acquired_date`` are what the owner
+          paid and when, at the delivering custodian. They are unrelated to the
+          transfer and are what the tax engine uses forever after.
+
+        Use the value as basis and every future sale reports the gain since the
+        transfer rather than since the purchase. Use the basis as the flow
+        amount and the period's return is wrong by the whole unrealized gain.
+
+        ``net_cash_effect`` is zero. Nothing moved but securities, which is why
+        this is a transaction type and not a back-dated buy plus an invented
+        deposit -- that would fabricate an external cash flow for every seeded
+        position, the one error class ADR 0007 exists to prevent.
+        """
+        self.check_external_ref(account, external_ref)
+        self._check_in_kind(
+            quantity,
+            value,
+            original_basis,
+            original_acquired_date,
+            basis_source,
+            basis_assumption,
+            on,
+        )
+        if not account.allows_fractional and not is_whole(quantity):
+            raise ValidationError(
+                f"{account.name} cannot hold fractional shares, got {quantity}",
+                code=E_FRACTIONAL_SHARE,
+                remedy="Transfer a whole number of shares, or allow fractions on the account.",
+                quantity=str(quantity),
+            )
+        with money_context():
+            gross = quantize_money(value)
+        return Transaction(
+            txn_id=0,
+            account_id=account.account_id,
+            trade_date=on,
+            seq=0,
+            txn_type=TransactionType.TRANSFER_IN,
+            instrument_id=instrument.instrument_id,
+            quantity=quantity,
+            price=(gross / quantity if quantity else ZERO),
+            gross_amount=gross,
+            net_cash_effect=ZERO,
+            original_basis=(None if original_basis is None else quantize_money(original_basis)),
+            original_acquired_date=original_acquired_date,
+            basis_source=basis_source,
+            basis_assumption=basis_assumption,
+            note=note,
+            external_ref=external_ref,
+            source=source,
+        )
+
+    def record_transfer_out(
+        self,
+        account: Account,
+        instrument: Instrument,
+        quantity: Decimal,
+        on: date,
+        *,
+        value: Decimal,
+        relief_method: ReliefMethod | None = None,
+        lot_selection: str | None = None,
+        note: str | None = None,
+        external_ref: str | None = None,
+        source: TransactionSource = TransactionSource.MANUAL,
+    ) -> Transaction:
+        """Securities leaving without being sold. The caller commits it.
+
+        The mirror of :meth:`record_transfer_in`, and simpler: the lots being
+        relieved already carry their own basis and acquisition dates, so
+        nothing external is asserted. ``value`` is the market value on the
+        transfer date, which is the outward flow amount.
+
+        A transfer out is **not a disposition**: no gain is realized, because
+        nothing was sold. The lot relief that follows is a movement of
+        securities out of the portfolio, and `pt tax` must not report it as a
+        sale.
+        """
+        self.check_external_ref(account, external_ref)
+        if quantity <= 0:
+            raise ValidationError(
+                f"quantity must be positive, got {quantity}",
+                remedy="Direction comes from the command, not from the sign.",
+                quantity=str(quantity),
+            )
+        if value < 0:
+            raise ValidationError(
+                f"transfer value cannot be negative, got {value}",
+                remedy="State the market value on the transfer date as a positive amount.",
+                value=str(value),
+            )
+        with money_context():
+            gross = quantize_money(value)
+        return Transaction(
+            txn_id=0,
+            account_id=account.account_id,
+            trade_date=on,
+            seq=0,
+            txn_type=TransactionType.TRANSFER_OUT,
+            instrument_id=instrument.instrument_id,
+            quantity=quantity,
+            price=(gross / quantity if quantity else ZERO),
+            gross_amount=gross,
+            net_cash_effect=ZERO,
+            # Which lots leave is the same question a sale asks, so it gets the
+            # same controls. ADR 0017's consequence applies: a reconstructed
+            # block is one lot, nameable but not divisible.
+            relief_method=relief_method,
+            lot_selection=lot_selection,
+            note=note,
+            external_ref=external_ref,
+            source=source,
+        )
+
+    @staticmethod
+    def _check_in_kind(
+        quantity: Decimal,
+        value: Decimal,
+        original_basis: Decimal | None,
+        original_acquired_date: date | None,
+        basis_source: BasisSource,
+        basis_assumption: str | None,
+        on: date,
+    ) -> None:
+        """Everything about an in-kind transfer that cannot be true."""
+        if quantity <= 0:
+            raise ValidationError(
+                f"quantity must be positive, got {quantity}",
+                remedy="Direction comes from the command -- transfer in, transfer out.",
+                quantity=str(quantity),
+            )
+        if value < 0:
+            raise ValidationError(
+                f"transfer value cannot be negative, got {value}",
+                remedy="State the market value on the transfer date as a positive amount.",
+                value=str(value),
+            )
+        if basis_source is BasisSource.DERIVED:
+            raise ValidationError(
+                "a transferred lot's basis cannot be 'derived'",
+                code=E_BASIS_SOURCE_INVALID,
+                remedy=(
+                    "'derived' means portable computed it from its own ledger, and this "
+                    "basis came from somewhere else. Use 'custodian_asserted' for a "
+                    "lot-detail report, or one of the reconstruction sources (ADR 0017)."
+                ),
+                basis_source=str(basis_source),
+            )
+        if basis_source is BasisSource.UNAVAILABLE:
+            if original_basis is not None:
+                raise ValidationError(
+                    "basis_source 'unavailable' carries no basis, but one was given",
+                    code=E_BASIS_SOURCE_INVALID,
+                    remedy=(
+                        "'unavailable' means no equation constrains this block, so any "
+                        "figure would be invented. If a basis IS known, say where it "
+                        "came from instead."
+                    ),
+                    original_basis=str(original_basis),
+                )
+        elif original_basis is None:
+            raise ValidationError(
+                f"basis_source '{basis_source}' asserts a basis, but none was given",
+                code=E_BASIS_SOURCE_INVALID,
+                remedy=(
+                    "Supply the basis, or use 'unavailable' if the evidence supports no "
+                    "figure. Absent and unavailable are different claims."
+                ),
+                basis_source=str(basis_source),
+            )
+        if original_basis is not None and original_basis < 0:
+            raise ValidationError(
+                f"cost basis cannot be negative, got {original_basis}",
+                code=E_BASIS_SOURCE_INVALID,
+                remedy=(
+                    "A genuine zero basis is legitimate -- a contra or CVR security from "
+                    "an acquisition -- and is recorded as zero, not as a negative."
+                ),
+                original_basis=str(original_basis),
+            )
+        if basis_source in _APPROXIMATE and not (basis_assumption or "").strip():
+            # ADR 0017 §2 asks for the assumption on the three approximate
+            # rungs, not on `custodian_asserted` -- which is a figure somebody
+            # else stated rather than one this code worked out. Enforced by a
+            # CHECK on `lot` as well, but a service refusal is a sentence and an
+            # IntegrityError is not.
+            raise ValidationError(
+                f"basis_source '{basis_source}' needs a stated assumption",
+                code=E_BASIS_SOURCE_INVALID,
+                remedy=(
+                    "Say in a sentence how the basis was arrived at, so it can be "
+                    "re-derived and re-argued later rather than merely trusted. "
+                    "`custodian_asserted` does not need one."
+                ),
+                basis_source=str(basis_source),
+            )
+        if original_acquired_date is not None and original_acquired_date > on:
+            raise ValidationError(
+                f"acquired {original_acquired_date.isoformat()}, after the transfer "
+                f"on {on.isoformat()}",
+                code=E_BASIS_SOURCE_INVALID,
+                remedy=(
+                    "The acquisition date is when the OWNER bought the shares, at the "
+                    "delivering custodian. It precedes the transfer by definition."
+                ),
+                acquired=original_acquired_date.isoformat(),
+                transferred=on.isoformat(),
             )
