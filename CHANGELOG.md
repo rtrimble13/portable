@@ -71,7 +71,13 @@ Two rules specific to this repository:
     report is obtainable: it **amends ADR 0015**, whose flat refusal on averaged
     basis would, on that evidence, have declined to build the portfolio at all
     rather than declining to guess. The rule is now that approximation is
-    permitted and concealment is not.
+    permitted and concealment is not. The relief-method assumption is FIFO, and
+    the ADR records how little any such assumption reaches: of 70 positions held
+    at the sample cutover, 38 are exactly reconstructed, FIFO anchors 6 more, and
+    26 have no surviving remainder to anchor against and so get
+    `basis_source = 'unavailable'`. Those are excluded from every `pt tax` total
+    and reported separately with the year marked incomplete, rather than shown as
+    a gain measured from an arbitrary date.
 
 ### Changed
 

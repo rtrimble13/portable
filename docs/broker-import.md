@@ -161,14 +161,31 @@ addition — exact arithmetic on two exact numbers. That covers **38 of the 70
 positions and about 83% of the pre-cutover cost basis**, with no negative or
 implausible unit cost anywhere in the result.
 
-The other 32 positions — about 17% of pre-cutover basis — were partly sold after
-the cutover, and which lots the custodian relieved is recorded nowhere available.
-Their cutover basis is solved backwards under a stated relief-method assumption.
+The other 32 were sold into after the cutover, and which lots the custodian
+relieved is recorded nowhere available. **FIFO is the assumption** — disposals
+consume the pre-cutover block first — and it reaches only part of them:
 
-Every seeded lot therefore carries a `basis_source` of `reconstructed` or
-`estimated`, and `pt tax` and `pt pnl` disclose any figure that rests on one. The
-rule is not that approximation is forbidden; it is that an approximate number
-must never be mistakable for an exact one.
+| | positions | `basis_source` |
+|---|---|---|
+| No disposal or transformation since cutover | 38 | `reconstructed` |
+| Block partly survives — FIFO anchors the solve | 6 | `estimated` |
+| Block fully consumed, position still held | 3 | `unavailable` |
+| Position fully liquidated since the cutover | 23 | `unavailable` |
+
+A position contributing nothing to the present holding gives the solve **no
+anchor**: today's basis constrains the block only through what survives of it,
+and where nothing survives there is no equation, under FIFO or any other method.
+No relief-method choice reaches those 26.
+
+They are all closed or fully turned over, so current holdings, current basis, and
+every future decision are untouched. What they touch is the reported realized
+gain for the periods they were sold in — and there `pt tax` excludes them from
+every total, reports them separately, and marks the year incomplete rather than
+printing a gain measured from an arbitrary date. The custodian's 1099-B is the
+authority for those years and always was.
+[ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md) §2a–2b has
+the reasoning. The rule throughout is not that approximation is forbidden; it is
+that an approximate number must never be mistakable for an exact one.
 
 ### What this costs, precisely
 
@@ -425,23 +442,16 @@ in a way that reconciles at the position level and is wrong at the lot level.
 
 ## 11. Open questions
 
-The question that gated everything — whether more history could be obtained — is
-**closed: it cannot.** §4 is the consequence and the design now assumes these
-three exports are final. What remains open is smaller.
+Three questions are now closed. More history **cannot** be obtained, and §4 is
+the consequence. The relief-method assumption is **FIFO**, recorded on every lot
+it touches. The two fee settlements to accounts outside the portfolio are
+**withdrawals**, and those accounts stay outside — a scope decision rather than a
+bookkeeping one (ADR 0014). What remains open is smaller.
 
-- **The relief-method assumption** used to solve backwards for the 32 positions
-  whose cutover basis is not exactly recoverable. FIFO is the natural default and
-  the custodian's own convention is not stated anywhere in the exports. Whatever
-  is chosen is recorded on the lot and disclosed; it is a stated assumption, not
-  a discovered fact.
 - **The cutover date itself.** The transaction file's first row is the obvious
   choice and the one §4 assumes. A later cutover would shrink the reconstructed
   portion at the cost of discarding exact history, which is the wrong trade — but
   it is the owner's trade to make.
-- **The two out-of-portfolio fee payments** (ADR 0014): which accounts they belong
-  to, and whether those accounts should instead be brought into the portfolio,
-  which would turn a `withdrawal` into a `transfer` and change portfolio-level
-  flows.
 - **Covered versus non-covered status** on the seeded lots. The exports do not
   state it. It does not affect what `portable` computes; it affects what the
   custodian is obliged to report, and is worth carrying if it can be established

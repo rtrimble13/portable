@@ -76,11 +76,62 @@ a lot without answering the question:
 |---|---|
 | `derived` | Computed by `portable` from its own ledger. Exact. |
 | `reconstructed` | Cutover block, basis obtained by subtracting subsequent additions from the custodian's stated current basis. Exact **as an aggregate**, averaged within the block. |
-| `estimated` | Cutover block where a disposal since the cutover makes the aggregate unrecoverable; solved backwards under a stated relief-method assumption. |
+| `estimated` | Cutover block partly consumed since the cutover; solved backwards under the FIFO assumption below, anchored to the surviving remainder. |
+| `unavailable` | Cutover block with nothing surviving to anchor to. No basis can be derived from the available evidence. |
 | `custodian_asserted` | Taken directly from a custodian lot-detail report. Reserved; nothing supplies it today. |
 
-`reconstructed` and `estimated` lots additionally carry the assumption that
-produced them, so the arithmetic can be re-derived and re-argued later.
+`reconstructed`, `estimated`, and `unavailable` lots additionally carry the
+assumption that produced them, so the arithmetic can be re-derived and re-argued
+later.
+
+### 2a. The relief-method assumption is FIFO — and it reaches less far than it looks
+
+Disposals after the cutover are assumed to have consumed the pre-cutover block
+first. FIFO is the custodian's likely convention, it is the natural reading of an
+adviser-managed account, and nothing in the exports states the actual method — so
+it is an assumption, recorded as one on every lot it touches.
+
+What matters more than the choice is how little of the problem any choice solves.
+Measured over the 70 positions held at the sample cutover:
+
+| | positions | `basis_source` |
+|---|---|---|
+| No disposal or transformation since cutover | 38 | `reconstructed` |
+| Block partly survives — FIFO anchors the solve | 6 | `estimated` |
+| Block fully consumed, position still held | 3 | `unavailable` |
+| Position fully liquidated since the cutover | 23 | `unavailable` |
+
+The last two rows are the finding. A position that contributes nothing to the
+present holding offers **no anchor at all**: today's basis constrains the block
+only through what survives of it, and where nothing survives there is no equation
+to solve, under FIFO or any other method. Twenty-six of seventy positions are in
+that state, and no relief-method assumption reaches them.
+
+### 2b. What `unavailable` means downstream
+
+Those positions are all closed or fully turned over, so they touch nothing that
+matters going forward: current holdings, current basis, and every future
+tax-aware decision are unaffected. What they touch is the **reported realized
+gain for the periods in which they were sold**.
+
+The lot is seeded at its market value on the cutover date, taken from price
+history. That value makes the arithmetic close — cash conservation
+(`CLAUDE.md` invariant 4) needs a basis to balance against, and the position
+engine needs a lot to relieve — and it is **not a basis claim**. A realized-gain
+row is written, because the equation must balance, and it is marked as resting on
+an `unavailable` lot.
+
+`pt tax` then **excludes those dispositions from every total and reports them
+separately**, with the year marked incomplete and a `report_issue` row recording
+why. It does not print a gain for them. This is the treatment
+`valuation_snapshot.is_complete` already gives a snapshot built from a position
+that could not be priced: an incomplete figure is disclosed as incomplete, never
+rendered as though it were whole. `CLAUDE.md`'s rule that blank and zero must
+never mean the same thing is the same rule one level up.
+
+For the affected years the custodian's 1099-B is the authority and always was.
+What `portable` must not do is print a number that looks like a tax figure and is
+the gain since an arbitrary cutover instead.
 
 ### 3. Approximation is disclosed at the point the number is used
 
@@ -128,6 +179,9 @@ from the transaction file directly and are unaffected.
 - Schema change: `lot.basis_source NOT NULL`, no default; a nullable
   `basis_assumption` for the reconstruction argument. Migration,
   `schema_version` bump, `CHANGELOG.md` entry.
+- `realized_gain` gains a flag, or a join, marking a row that consumed a lot
+  whose basis is not a basis. Whichever it is, no aggregate anywhere may sum such
+  rows into a total that is presented as complete.
 - Adding the column with no default means every existing writer and every fixture
   must state a value. That is the intent — it is not a field to be filled in
   later.
@@ -165,3 +219,8 @@ from the transaction file directly and are unaffected.
 - **Reconstruct the pre-cutover period from market history and inference.**
   Rejected: no record of what was held or traded exists for that period, so any
   reconstruction would be invention with a plausible shape.
+- **Treat the cutover market value of an `unavailable` lot as its basis and
+  report the resulting gain.** Rejected: it is arithmetically identical to what
+  this ADR does and differs in the only way that matters — it prints the number.
+  A gain measured from an arbitrary date, presented in a tax report, is the
+  silently-wrong-number failure with a plausible magnitude and the right units.

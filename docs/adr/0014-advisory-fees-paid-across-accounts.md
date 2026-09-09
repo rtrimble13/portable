@@ -75,6 +75,12 @@ contribution, and modelling it as one would corrupt any contribution tracking
 built later. (Nothing here is tax advice; the point is only that the two events
 are different and must not share a representation.)
 
+The two settlements to accounts outside the portfolio are **withdrawals**, and
+those accounts stay outside. Bringing them in would convert each into a
+`transfer` and remove the outflow from portfolio-level results, so this is a
+scope decision, not a bookkeeping one: the portfolio is these three accounts, and
+money paid on behalf of anything else has left it.
+
 ### Why the pairing is matched, not assumed
 
 The importer pairs a transfer-to-cover row in the paying account with the
