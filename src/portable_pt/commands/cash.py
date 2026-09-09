@@ -15,6 +15,13 @@ from portable_core.services.trading import TradingService
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, maybe_dry_run, money_arg, resolve_date
 
+#: Said whenever a back-dated entry causes a rebuild, so that a figure changing
+#: underneath an already-reported number is visible rather than silent (ADR 0016).
+_BACKDATED = (
+    "this entry is back-dated, so derived state was rebuilt from the ledger. "
+    "Figures that depend on lot relief may have changed."
+)
+
 app = typer.Typer(help="Cash movements.", no_args_is_help=True)
 income_app = typer.Typer(
     help="Income: dividends, coupons, return of capital.", no_args_is_help=True
@@ -75,11 +82,12 @@ def _record(
             txn_id = repos.transactions.append(txn)
             from dataclasses import replace
 
-            service.replay.apply_transaction(replace(txn, txn_id=txn_id))
+            rebuilt = service.replay.apply_or_rebuild(replace(txn, txn_id=txn_id))
 
         return CommandResult(
             command=f"cash {txn_type}",
-            data={**payload, "txn_id": txn_id},
+            data={**payload, "txn_id": txn_id, **({"rebuilt": True} if rebuilt else {})},
+            warnings=(_BACKDATED,) if rebuilt else (),
             portfolio=ctx.portfolio_name(),
         )
 
@@ -271,11 +279,12 @@ def _income(
             txn_id = repos.transactions.append(txn)
             from dataclasses import replace
 
-            TradingService(repos).replay.apply_transaction(replace(txn, txn_id=txn_id))
+            rebuilt = TradingService(repos).replay.apply_or_rebuild(replace(txn, txn_id=txn_id))
 
         return CommandResult(
             command=f"income {txn_type}",
-            data={**payload, "txn_id": txn_id},
+            data={**payload, "txn_id": txn_id, **({"rebuilt": True} if rebuilt else {})},
+            warnings=(_BACKDATED,) if rebuilt else (),
             portfolio=ctx.portfolio_name(),
         )
 

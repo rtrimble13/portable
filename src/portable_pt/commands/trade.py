@@ -109,11 +109,26 @@ def _trade(
             return maybe_dry_run(result)
 
         with db_transaction(repos.con):
-            stored = service.commit(plan)
+            committed = service.commit(plan)
 
         from dataclasses import replace
 
-        return replace(result, data={**result.data, "txn_id": stored.txn_id})
+        payload: dict[str, object] = {
+            **result.data,
+            "txn_id": committed.transaction.txn_id,
+        }
+        warnings = result.warnings
+        if committed.rebuilt:
+            # A back-dated entry sorts before rows already applied, so derived
+            # state was replayed from the ledger rather than extended. Worth
+            # saying: it can change a realized gain already reported (ADR 0016).
+            payload["rebuilt"] = True
+            warnings = (
+                *warnings,
+                "this entry is back-dated, so derived state was rebuilt from the "
+                "ledger. Figures that depend on lot relief may have changed.",
+            )
+        return replace(result, data=payload, warnings=warnings)
 
     dispatch(action)
 

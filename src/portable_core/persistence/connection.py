@@ -140,6 +140,25 @@ def transaction(con: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
         con.execute("COMMIT")
 
 
+@contextmanager
+def scratch_transaction(con: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """Run a block in a transaction that is **always** rolled back.
+
+    For a command that can only answer a question by rewriting derived state --
+    ``pt validate`` rebuilding in order to compare a rebuild against what was
+    stored -- while leaving the file byte-identical afterwards.
+
+    Rolling back is not tidiness. A command that repairs what it was asked to
+    inspect reports a break the first time it runs and a clean file the second,
+    with nothing to show which was true (ADR 0016).
+    """
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        yield con
+    finally:
+        con.execute("ROLLBACK")
+
+
 def decimal_or_none(value: Any) -> Decimal | None:
     """Convert a nullable text column to a Decimal.
 

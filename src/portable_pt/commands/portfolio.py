@@ -14,12 +14,20 @@ from portable_core import __version__
 from portable_core.cli.context import build_context, parse_date
 from portable_core.cli.runner import dry_run_note, run_command
 from portable_core.errors import PortfolioFileError, ValidationError
-from portable_core.errors.kinds import E_INVARIANT_BROKEN, E_PORTFOLIO_EXISTS
+from portable_core.errors.kinds import (
+    E_INVARIANT_BROKEN,
+    E_PORTFOLIO_EXISTS,
+    E_REPLAY_MISMATCH,
+)
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
-from portable_core.persistence.connection import open_portfolio, transaction
+from portable_core.persistence.connection import (
+    open_portfolio,
+    scratch_transaction,
+    transaction,
+)
 from portable_core.persistence.repositories import Repositories
 from portable_core.schema import migrations as M
-from portable_core.services.replay import ReplayEngine
+from portable_core.services.replay import ReplayEngine, derived_state_digests
 from portable_pt import state
 
 app = typer.Typer(help="Portfolio-level operations.", no_args_is_help=True)
@@ -302,11 +310,37 @@ def validate(
             problems.append(("integrity", str(integrity)))
 
         # A ledger that replays to different derived state than is stored is
-        # the failure this whole architecture exists to make detectable.
-        stored = ReplayEngine(repos)
-        digest_before = stored.rebuild().digest
-        digest_after = stored.rebuild().digest
-        if digest_before != digest_after:
+        # the failure this whole architecture exists to make detectable -- and
+        # detecting it means digesting what is STORED before anything rebuilds
+        # over it. Until ADR 0016 this rebuilt twice and compared the two, which
+        # measures idempotence and cannot see the divergence at all.
+        #
+        # The rebuild runs inside a transaction that is always rolled back, so
+        # `pt validate` leaves the file byte-identical. A command that repaired
+        # what it was asked to inspect would report a break and then, on a second
+        # run, a clean file -- with nothing to show which was true.
+        stored_digests = derived_state_digests(repos)
+        engine = ReplayEngine(repos)
+        with scratch_transaction(repos.con):
+            engine.rebuild()
+            replayed_digests = derived_state_digests(repos)
+            engine.rebuild()
+            idempotent = derived_state_digests(repos) == replayed_digests
+
+        differing = sorted(
+            table
+            for table in set(stored_digests) | set(replayed_digests)
+            if stored_digests.get(table) != replayed_digests.get(table)
+        )
+        if differing:
+            problems.append(
+                (
+                    "replay",
+                    "stored derived state does not match a replay of the ledger "
+                    f"({', '.join(differing)}); run `pt rebuild`",
+                )
+            )
+        if not idempotent:
             problems.append(("replay", "rebuilding twice produced different state"))
 
         if not repos.policies.all():
@@ -341,7 +375,10 @@ def validate(
             raise ValidationError(
                 f"{len(problems)} invariant problem(s) found"
                 + (f" and {len(warnings)} warning(s)" if strict and warnings else ""),
-                code=E_INVARIANT_BROKEN,
+                # A replay mismatch gets its own code: a script branching on it
+                # needs to distinguish "derived state is stale, rebuild" from
+                # every other invariant break, which has no such remedy.
+                code=E_REPLAY_MISMATCH if differing else E_INVARIANT_BROKEN,
                 remedy="Run `pt rebuild` first; if problems persist, they are real.",
                 problems=[f"{c}: {p}" for c, p in problems],
                 warnings=warnings,

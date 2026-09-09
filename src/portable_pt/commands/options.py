@@ -494,7 +494,7 @@ def exercise(
 
             stored = repos.transactions.get(txn_id)
             assert stored is not None
-            ReplayEngine(repos).apply_transaction(stored)
+            ReplayEngine(repos).apply_or_rebuild(stored)
 
             for lot in option_lots:
                 repos.lots.update_after_disposition(

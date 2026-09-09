@@ -50,7 +50,12 @@ from portable_core.services.lots import LotEngine
 from portable_core.services.positions import PositionEngine, leg_role_for
 from portable_core.services.tax import TaxEngine
 
-__all__ = ["ReplayEngine", "ReplayResult", "derived_state_digest"]
+__all__ = [
+    "ReplayEngine",
+    "ReplayResult",
+    "derived_state_digest",
+    "derived_state_digests",
+]
 
 ZERO = Decimal("0.00")
 
@@ -92,14 +97,31 @@ def derived_state_digest(repos: Repositories) -> str:
     ``persistence/``.
     """
     hasher = hashlib.sha256()
+    for table, digest in sorted(derived_state_digests(repos).items()):
+        hasher.update(table.encode())
+        hasher.update(digest.encode())
+    return hasher.hexdigest()
+
+
+def derived_state_digests(repos: Repositories) -> dict[str, str]:
+    """The same digest, per derived table.
+
+    `pt validate` compares stored derived state against a replay of the ledger
+    and has to say *what* differs when they disagree. One digest over everything
+    answers "something", which is the least useful thing a diagnostic can say
+    about a book somebody files taxes from (ADR 0016).
+    """
+    digests: dict[str, str] = {}
     for table in sorted(Repositories.DERIVED_DIGEST_TABLES):
         columns, rows = repos.derived_rows(table)
         if not columns:
             continue
+        hasher = hashlib.sha256()
         hasher.update(table.encode())
         for row in rows:
             hasher.update(json.dumps(list(row), separators=(",", ":")).encode())
-    return hasher.hexdigest()
+        digests[table] = hasher.hexdigest()
+    return digests
 
 
 class ReplayEngine:
@@ -167,6 +189,35 @@ class ReplayEngine:
             digest=derived_state_digest(self.repos),
             warnings=tuple(warnings),
         )
+
+    # ── the live append path ─────────────────────────────────────────────────
+
+    def apply_or_rebuild(self, txn: Transaction) -> bool:
+        """Derive state for a just-appended *txn*. Returns True if it rebuilt.
+
+        **Every live append goes through this, not through
+        :meth:`apply_transaction` directly.**
+
+        :meth:`apply_transaction` applies a row against derived state *as it
+        currently stands*, which equals replaying the ledger only when the row
+        sorts last in ledger order. A back-dated entry sorts before rows already
+        applied, so incremental derivation consumes the wrong lots -- and the
+        symptom is that a later `pt rebuild` silently changes realized gains and
+        the tax they imply. ADR 0016 has the reproduction.
+
+        Rebuilding is therefore not optional and not behind a flag: leaving the
+        book in a state a rebuild would change is exactly the silently-wrong-
+        number failure this repository is organised against, and "remember to
+        run `pt rebuild`" is not a control.
+
+        The caller is inside a database transaction, so the append and the
+        rebuild land together or not at all.
+        """
+        if self.repos.transactions.count_after(txn.trade_date, txn.seq) == 0:
+            self.apply_transaction(txn)
+            return False
+        self.rebuild()
+        return True
 
     # ── per-transaction application ──────────────────────────────────────────
 

@@ -93,6 +93,59 @@ Two rules specific to this repository:
     identifiers, since one nullable column does not survive an account that sweeps
     to two vehicles.
 
+### Fixed
+
+- **A back-dated ledger append left derived state disagreeing with the ledger**
+  (ADR 0016, now implemented). `ReplayEngine.apply_transaction` derives against
+  state as it currently stands, which equals a replay only when the appended row
+  sorts last; a back-dated entry sorted ahead of rows already applied and so
+  consumed the wrong lots. Reproduced with a three-transaction portfolio whose
+  realized gain — and the tax estimated on it — changed on the next `pt rebuild`.
+
+  Every live append now goes through `ReplayEngine.apply_or_rebuild`, which
+  rebuilds in the same database transaction when the row does not sort last, and
+  says so: `rebuilt` in the result payload and a warning, because a back-dated
+  entry re-deriving the book can change a figure already reported.
+
+- **`pt validate` could not detect that divergence** — the failure `CLAUDE.md`
+  invariant 3 exists to make detectable. It called `rebuild()` twice and compared
+  the two, but `rebuild()` drops derived state before re-deriving it, so the
+  stored state was destroyed before anything could be compared against it. The
+  command measured idempotence, and reported a clean file on a book that was
+  demonstrably wrong.
+
+  It now digests **stored** state first, replays inside a transaction that is
+  always rolled back, and compares — so it detects the divergence, names the
+  tables that differ, exits 4 with `PT-E-REPLAY-MISMATCH`, and leaves the file
+  byte-identical. Idempotence is kept as a separate check with its own message.
+  A command that repaired what it was asked to inspect would report a break and
+  then, on a second run, a clean file, with nothing to show which was true.
+
+- **The derived-state digest was blind to relationships.** It excluded every
+  column whose name ended in `_id`, which dropped the surrogate keys a rebuild
+  legitimately reassigns and also `account_id` and `instrument_id` — so a lot's
+  quantity and basis were hashed and *which instrument it belonged to* was not.
+  Foreign keys are now resolved to their natural keys (account name, instrument
+  symbol) and hashed; surrogate keys stay excluded; `txn_id` is hashed as it
+  stands, since the ledger is never rebuilt.
+
+### Added
+
+- `Repositories.transactions.count_after` — how many ledger rows sort after a
+  given `(trade_date, seq)`. Zero is the only case in which incremental
+  derivation equals a replay.
+- `persistence.connection.scratch_transaction` — a transaction that always rolls
+  back, for a command that must rewrite derived state to answer a question about
+  it and leave the file untouched.
+- `services.replay.derived_state_digests` — the digest per derived table, so a
+  mismatch can name what differs rather than reporting "something".
+- `services.trading.CommitResult` — `TradingService.commit` now returns the
+  stored transaction *and* whether committing it rebuilt.
+- `tests/unit/test_replay_ordering.py` and
+  `tests/integration/test_validate_replay.py` — 15 tests, each of which fails
+  without the corresponding half of the fix, including the ADR's reproduction
+  asserted as the realized gain a person would read.
+
 ### Changed
 
 - `CLAUDE.md` invariant 11 carries `gips-lint: allow` markers on the three lines
@@ -112,15 +165,6 @@ Two rules specific to this repository:
   contract, the reconstruction, refusals, acceptance — with the reference
   custodian moved into a worked example that declares four of the nine
   capabilities and notes, per trap, which ones generalise.
-
-### Found, not yet fixed
-
-- **A back-dated ledger append leaves derived state disagreeing with the ledger**,
-  and `pt validate` reports no problem because it rebuilds before it compares —
-  measuring idempotence rather than the fidelity `CLAUDE.md` invariant 3 requires.
-  Reproduced with a three-transaction portfolio in which the live realized gain and
-  the gain after `pt rebuild` differ. ADR 0016 records the fix; it lands in v0.2
-  ahead of any import work.
 
 ## [0.1.0] — unreleased
 

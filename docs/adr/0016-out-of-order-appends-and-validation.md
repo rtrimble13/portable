@@ -1,6 +1,6 @@
 # ADR 0016 — Out-of-order appends force a rebuild, and `pt validate` compares stored state against replay
 
-- **Status:** Proposed
+- **Status:** Accepted — implemented
 - **Date:** 2026-09-08
 - **Milestone:** v0.2
 - **Governs:** `CLAUDE.md` invariants 3, 6; ADR 0010; `PORT-GIPS-J06`

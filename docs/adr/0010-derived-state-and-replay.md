@@ -4,6 +4,8 @@
 - **Date:** 2026-08-27
 - **Milestone:** v0.1
 - **Governs:** `CLAUDE.md` invariants 2, 3, 6; `PORT-GIPS-J03`, `PORT-GIPS-J06`
+- **Amended by:** [ADR 0016](0016-out-of-order-appends-and-validation.md) — the contract
+  here is unchanged; 0016 adds the operational obligations that make the code uphold it
 
 ## Context
 

@@ -39,7 +39,7 @@ from portable_core.persistence.repositories import Repositories
 from portable_core.services.lots import LotEngine, ReliefPlan, parse_lot_selection
 from portable_core.services.replay import ReplayEngine
 
-__all__ = ["TradeIntent", "TradePlan", "TradingService"]
+__all__ = ["CommitResult", "TradeIntent", "TradePlan", "TradingService"]
 
 ZERO = Decimal("0.00")
 
@@ -82,6 +82,19 @@ class TradePlan:
     @property
     def is_closing(self) -> bool:
         return self.relief_plan is not None
+
+
+@dataclass(frozen=True, slots=True)
+class CommitResult:
+    """What committing a plan did.
+
+    ``rebuilt`` is carried rather than discarded because a back-dated entry
+    re-deriving the whole book is something the user should see -- particularly
+    when it changes a realized gain already reported (ADR 0016).
+    """
+
+    transaction: Transaction
+    rebuilt: bool
 
 
 class TradingService:
@@ -169,7 +182,7 @@ class TradingService:
 
     # ── committing ───────────────────────────────────────────────────────────
 
-    def commit(self, plan: TradePlan) -> Transaction:
+    def commit(self, plan: TradePlan) -> CommitResult:
         """Append the ledger row and derive state from it.
 
         The caller wraps this in a database transaction, so a ledger row whose
@@ -178,9 +191,10 @@ class TradingService:
         """
         txn_id = self.repos.transactions.append(plan.transaction)
         stored = replace(plan.transaction, txn_id=txn_id)
-        # The same method a rebuild uses. See the module docstring.
-        self.replay.apply_transaction(stored)
-        return stored
+        # The same derivation a rebuild uses, and a full rebuild where this row
+        # is back-dated. See the module docstring and ADR 0016.
+        rebuilt = self.replay.apply_or_rebuild(stored)
+        return CommitResult(transaction=stored, rebuilt=rebuilt)
 
     # ── checks ───────────────────────────────────────────────────────────────
 
