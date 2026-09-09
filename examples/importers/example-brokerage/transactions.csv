@@ -1,0 +1,10 @@
+Trade Date,Settle Date,Account,Activity,Symbol,Quantity,Amount,Confirm #
+01/22/2025,01/24/2025,Roth IRA,Contribution,,,"$7,000.00",C-1001
+01/22/2025,01/24/2025,Roth IRA,Bought,VXUS,200,"$11,900.00",C-1002
+02/03/2025,02/05/2025,Brokerage,Bought,VTI,20,"$4,050.00",C-1003
+02/03/2025,02/05/2025,Brokerage,Position Memo,VTI,120,,C-1004
+03/31/2025,03/31/2025,Brokerage,Dividend Received,VTI,,$96.40,C-1005
+03/31/2025,03/31/2025,Brokerage,Advisory Fee,,,$212.75,C-1006
+04/15/2025,04/17/2025,Brokerage,Sold,MSFT,10,"$4,180.00",C-1007
+06/30/2025,06/30/2025,Brokerage,Interest Paid,FDRXX,,$14.88,C-1008
+06/30/2025,07/02/2025,Brokerage,Distribution,,,"$2,500.00",C-1009

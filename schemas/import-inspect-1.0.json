@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rtrimble13/portable/schemas/import-inspect-1.0.json",
+  "title": "pt import inspect",
+  "description": "What a custodian's exports can support, before anything is written. ADR 0018.",
+  "allOf": [{ "$ref": "envelope-1.0.json" }],
+  "type": "object",
+  "properties": {
+    "command": { "const": "import inspect" },
+    "data": {
+      "type": "object",
+      "required": [
+        "adapter",
+        "broker",
+        "name",
+        "accounts",
+        "as_of",
+        "period",
+        "holdings",
+        "transactions",
+        "skipped",
+        "files",
+        "capabilities",
+        "skipped_rows"
+      ],
+      "properties": {
+        "adapter": { "type": "string" },
+        "broker": { "type": "string" },
+        "name": { "type": "string" },
+        "accounts": { "type": "array", "items": { "type": "string" } },
+        "as_of": {
+          "description": "The snapshot's date. Null only when the snapshot has no rows.",
+          "type": ["string", "null"],
+          "format": "date"
+        },
+        "period": {
+          "description": "First and last trade date in the history. Null when it has no rows — never an empty range.",
+          "anyOf": [
+            {
+              "type": "array",
+              "items": { "type": "string", "format": "date" },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            { "type": "null" }
+          ]
+        },
+        "holdings": { "type": "integer", "minimum": 0 },
+        "transactions": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "files": {
+          "description": "Each document read, with its digest, so a batch can name what it was built from.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "sha256"],
+            "properties": {
+              "name": { "type": "string" },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            }
+          }
+        },
+        "capabilities": {
+          "description": "Every capability appears, declared or withheld. A bare list of what is present cannot answer 'why not?', which is the question a refused report actually raises.",
+          "type": "object",
+          "required": ["declared", "withheld"],
+          "properties": {
+            "declared": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/capability" }
+            },
+            "withheld": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["capability", "check", "reason", "absence_means"],
+                "properties": {
+                  "capability": { "$ref": "#/$defs/capability" },
+                  "check": {
+                    "description": "The named check that withheld it. Null when the source declared no check at all — a different fact from a check that ran and failed.",
+                    "type": ["string", "null"]
+                  },
+                  "reason": { "type": ["string", "null"] },
+                  "absence_means": {
+                    "description": "What the resulting portfolio may no longer claim.",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "skipped_rows": {
+          "description": "Rows the activity map deliberately keeps out of the ledger. A skip always carries its reason: a decision has to be distinguishable from an oversight.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["row", "activity", "reason"],
+            "properties": {
+              "row": { "type": "integer", "minimum": 1 },
+              "activity": { "type": "string" },
+              "reason": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "capability": {
+      "type": "string",
+      "enum": [
+        "cost_basis",
+        "acquisition_date",
+        "lot_detail",
+        "transaction_id",
+        "instrument_symbol",
+        "settlement_date",
+        "corporate_actions",
+        "external_flows",
+        "history_to_inception"
+      ]
+    }
+  }
+}

@@ -1,0 +1,102 @@
+# A worked example of a custodian adapter (ADR 0018 §4).
+#
+# This is not a real custodian. It exists so that `pt import inspect` has
+# something to run on, so the tests have a fixture that is also documentation,
+# and so that adding a real custodian is a matter of copying a directory rather
+# than reading a module. Everything here is data: there is no Python in this
+# adapter, and for a custodian with plain tabular exports there never needs to
+# be.
+
+broker = "example-brokerage"
+name = "Example Brokerage & Trust"
+note = "A synthetic custodian. Two accounts, one taxable and one Roth."
+
+[format]
+# Declared, never sniffed. `01/02/2026` read under the wrong pattern is a
+# silently wrong number with a date attached.
+dates = ["%m/%d/%Y"]
+thousands = ","
+decimal_point = "."
+parentheses_negative = true
+strip = ["$"]
+encoding = "utf-8-sig"
+
+# ADR 0013, generalised by ADR 0018: a sweep vehicle is cash, and *which*
+# identifiers are sweep vehicles is a declared set per account. Fold them into
+# the cash balance or every account reconciles short by its sweep.
+[cash_equivalents]
+default = ["FDRXX"]
+"Roth IRA" = ["SPAXX"]
+
+[documents.holdings]
+file = "holdings.csv"
+
+[documents.holdings.columns]
+as_of = "As Of"
+account = "Account"
+identifier = "Symbol"
+quantity = "Quantity"
+market_value = "Market Value"
+cost_basis = "Cost Basis"
+acquired = "Acquired"
+
+[documents.transactions]
+file = "transactions.csv"
+
+[documents.transactions.columns]
+trade_date = "Trade Date"
+settlement_date = "Settle Date"
+account = "Account"
+activity = "Activity"
+identifier = "Symbol"
+quantity = "Quantity"
+amount = "Amount"
+external_id = "Confirm #"
+
+# ── Capabilities ─────────────────────────────────────────────────────────────
+# Each names a check that runs over the parsed rows. A capability is declared on
+# validated data, not on a present column (ADR 0018 §3) -- a column whose
+# contents fail its check is *not read*, and the reason is reported.
+#
+# Three capabilities are deliberately absent here: lot_detail, corporate_actions
+# and history_to_inception. `pt import inspect` reports each with what its
+# absence costs, which is the point of declaring the set at all.
+
+[[capability]]
+name = "cost_basis"
+document = "holdings"
+field = "cost_basis"
+check = "populated"
+
+[[capability]]
+name = "acquisition_date"
+document = "holdings"
+field = "acquired"
+check = "populated"
+
+[[capability]]
+name = "instrument_symbol"
+document = "holdings"
+field = "identifier"
+check = "matches"
+# A ticker at this custodian. Stated, because an identifier column full of
+# security *descriptions* passes `populated` and is useless.
+types = ["[A-Z]{1,5}"]
+
+[[capability]]
+name = "transaction_id"
+document = "transactions"
+field = "external_id"
+check = "unique"
+
+[[capability]]
+name = "settlement_date"
+document = "transactions"
+field = "settlement_date"
+check = "not_before_trade_date"
+
+[[capability]]
+name = "external_flows"
+document = "transactions"
+check = "activity_covers"
+types = ["deposit", "withdrawal"]

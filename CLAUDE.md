@@ -104,6 +104,7 @@ src/portable_core/
   persistence/   # repositories — the only place SQL lives
   schema/        # versioned DDL files + migrations
   providers/     # MarketDataProvider interface + Fafnir/File/Null implementations
+  importers/     # custodian adapters: TOML mapping files in, canonical records out
   formatters/    # table / json / markdown / csv — number presentation rules live here
   config/        # layered configuration resolution
   errors/        # PortableError hierarchy, stable error codes

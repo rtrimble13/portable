@@ -1,0 +1,58 @@
+# Every activity string this custodian emits. No default arm: an unmapped
+# string stops the import and quotes the row (ADR 0018 §4).
+#
+# `quantity` and `cash` declare how to read those columns for this activity:
+#   as_stated  the column's own sign is authoritative
+#   positive   a magnitude that always means an increase
+#   negative   a magnitude that always means a decrease
+#   none       this activity carries no value in that column at all
+
+[[activity]]
+match = "Bought"
+txn_type = "buy"
+quantity = "positive"
+cash = "negative"
+
+[[activity]]
+match = "Sold"
+txn_type = "sell"
+quantity = "negative"
+cash = "positive"
+
+[[activity]]
+match = "Dividend Received"
+txn_type = "dividend"
+quantity = "none"
+cash = "positive"
+
+[[activity]]
+match = "Interest Paid"
+txn_type = "interest"
+quantity = "none"
+cash = "positive"
+
+[[activity]]
+match = "Advisory Fee"
+txn_type = "fee"
+# Required on any fee: the three return bases are derived from it
+# (PORT-GIPS-D01) and it is a stored fact, never inferred at report time.
+fee_class = "external_mgmt_fee"
+quantity = "none"
+cash = "negative"
+
+[[activity]]
+match = "Contribution"
+txn_type = "deposit"
+quantity = "none"
+cash = "positive"
+
+[[activity]]
+match = "Distribution"
+txn_type = "withdrawal"
+quantity = "none"
+cash = "negative"
+
+[[activity]]
+match = "Position Memo"
+skip = true
+reason = "a restatement of the position after the trade above it, not an event"

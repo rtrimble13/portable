@@ -14,6 +14,64 @@ Two rules specific to this repository:
 
 ## [Unreleased]
 
+### Added
+
+- **The generic tabular adapter, and `pt import inspect`** — a custodian whose
+  exports are plain tabular files is now two TOML mapping files and a fixture,
+  with no Python (ADR 0018). `src/portable_core/importers/`.
+  - **Two documents are required and nothing else is** — a holdings snapshot
+    carrying cash, and a transaction history. Everything beyond them is a
+    declared capability. Cash on the snapshot is required rather than optional
+    because cash reconciliation is the only check that catches a sign error, a
+    dropped row or a double-counted transfer; an account whose custodian
+    genuinely reports no cash line is listed in `allow_missing_cash`, so the
+    exception is on the record rather than silent.
+  - **A capability is declared on validated data, not on a present column.**
+    Six named checks — `populated`, `unique`, `matches`,
+    `not_before_trade_date`, `history_since`, `activity_covers` — run over the
+    parsed rows, and a capability is declared only if its check passes. The
+    reference custodian's settlement column, most of whose populated cells
+    precede their own trade dates, is the case this exists for.
+  - **A withheld capability's data is not read.** Not merely unreported: if
+    `settlement_date` fails its check the records carry no settlement dates,
+    rather than carrying the dates that failed. A capability that labels data
+    which flows through anyway is a comment, not a safeguard.
+  - **`activity_map.toml` has no default arm.** An activity string the map does
+    not name stops the import and quotes the row. Everything wrong with a
+    mapping is refused when the file *loads* — two rules for one string, a fee
+    with no `fee_class` (`PORT-GIPS-D01`), a skip with no reason, an unknown
+    type or check name — because a map is reviewed once and used for every row
+    after.
+  - **Sign conventions are declared per activity**, then normalised to one
+    canonical convention: positive is cash in, negative is out. Custodians are
+    not consistent even with themselves, and taking an amount column at face
+    value is how a sign error gets in.
+  - **A date pattern must carry a whole date.** `%Y-%m` parses without
+    complaint and silently returns the first of the month; a round-trip check
+    at load refuses it, along with bogus directives that would otherwise not
+    surface until six thousand rows into an import.
+  - Spreadsheets are refused by name with the remedy. The runtime dependencies
+    stay Typer and Rich; a workbook parser for a file the custodian also emits
+    as CSV is a large dependency for no capability (invariant 10).
+  - `pt import inspect <directory>` reads both documents and reports the
+    capability set with **what each absence costs**, before anything is
+    written. `schemas/import-inspect-1.0.json` published and validated in CI.
+  - `examples/importers/example-brokerage/` — a worked example, exercised by
+    the suite so it cannot drift from the code.
+  - 71 tests.
+
+### Fixed
+
+- **The error-code registry had never been tested, and had drifted.**
+  `errors/kinds.py` said `tests/unit/test_errors.py` asserted its codes were
+  unique; that file did not exist. `PT-E-WITHHOLDING-INVALID`,
+  `PT-E-DUPLICATE-REF` and `PT-E-MIGRATION-BLOCKED` were raised in production
+  and absent from `ERROR_CODES`, so `pt introspect` under-reported the failures
+  a consumer has to handle. All three are published, `tests/unit/
+  test_error_codes.py` now asserts every declared constant appears — reading
+  the module source, so a constant added to the file and forgotten in the tuple
+  fails — and the docstring names a file that exists.
+
 ### Schema
 
 - **`schema_version` 1 → 2**, migration `0002_external_ref_unique`.

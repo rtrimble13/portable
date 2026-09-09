@@ -1,4 +1,10 @@
-"""`pt import batch` -- the commit stage of the import pipeline (ADR 0012)."""
+"""`pt import` -- the broker import pipeline (ADR 0012).
+
+`inspect` is the extract stage's front door: it reads a custodian's
+exports through the generic tabular adapter and reports what they can
+support before anything is written. `batch` is the commit stage: it takes a
+reviewed batch file and writes the ledger.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +14,7 @@ from typing import Annotated
 import typer
 
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
+from portable_core.importers import ABSENCE_MEANS, TabularAdapter
 from portable_core.persistence.connection import scratch_transaction
 from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.services.import_batch import BatchImporter, ImportBatch, load_batch
@@ -118,3 +125,104 @@ def _by_rule(batch: ImportBatch) -> list[dict[str, object]]:
         {"action": action, "rule": rule, "rows": count}
         for (action, rule), count in sorted(tally.items())
     ]
+
+
+def import_inspect(
+    adapter: Annotated[
+        Path,
+        typer.Argument(help="An adapter directory holding source.toml and activity_map.toml."),
+    ],
+) -> None:
+    """Read a custodian's exports and report what they can support.
+
+    The first stage of the pipeline (ADR 0012) and the first thing to run
+    against a new custodian. It reads both required documents -- a holdings
+    snapshot carrying cash, and a transaction history -- maps every activity
+    string, and reports the capability set.
+
+    **Read the capability table before anything else.** A portfolio built
+    without `cost_basis` is permanently different from one built with it, and
+    the difference is not visible in any later number: `pt tax` simply refuses
+    on pre-cutover lots. The table says which capabilities this custodian's
+    export earned, which it did not, and what each absence costs (ADR 0018).
+
+    A capability is declared on *validated data*, never on a present column. A
+    settlement-date column whose dates precede their own trade dates does not
+    earn `settlement_date`: the column is not read, and the reason is reported
+    here — which is more useful than the column being absent, because it says
+    the export is broken rather than the field unavailable.
+
+    Nothing is written. This reads files and reports.
+    """
+
+    def action() -> CommandResult:
+        report = TabularAdapter.load(adapter).read()
+        capabilities = report.capabilities
+
+        table = Table(
+            columns=(
+                Column("capability", "Capability"),
+                Column("declared", "Declared", ColumnKind.BOOL),
+                Column("check", "Check"),
+                Column("detail", "Detail"),
+            ),
+            rows=tuple(
+                {
+                    "capability": finding.capability.value,
+                    "declared": finding.declared,
+                    "check": finding.check,
+                    "detail": finding.summary(),
+                }
+                for finding in capabilities.findings
+            ),
+            title=f"{report.name} — declared capabilities",
+            # The consequences go under the table rather than in a column: what
+            # a missing capability costs is a paragraph, and a paragraph in a
+            # cell is a paragraph nobody reads.
+            footnotes=(
+                "A capability is declared on validated data, not on a present "
+                "column (ADR 0018 §3). Data behind a withheld capability is not "
+                "read at all.",
+                *(
+                    f"without {finding.capability.value}: {ABSENCE_MEANS[finding.capability]}"
+                    for finding in capabilities.withheld
+                ),
+            ),
+        )
+
+        return CommandResult(
+            command="import inspect",
+            data={
+                "adapter": str(adapter),
+                "broker": report.broker,
+                "name": report.name,
+                "accounts": list(report.accounts),
+                "as_of": report.as_of.isoformat() if report.as_of else None,
+                "period": ([d.isoformat() for d in report.period] if report.period else None),
+                "holdings": len(report.holdings),
+                "transactions": len(report.transactions),
+                "skipped": len(report.skipped),
+                "files": [{"name": name, "sha256": digest} for name, digest in report.files],
+                "capabilities": {
+                    "declared": [c.value for c in capabilities.declared],
+                    "withheld": [
+                        {
+                            "capability": finding.capability.value,
+                            "check": finding.check,
+                            "reason": finding.reason,
+                            "absence_means": ABSENCE_MEANS[finding.capability],
+                        }
+                        for finding in capabilities.withheld
+                    ],
+                },
+                "skipped_rows": [
+                    {"row": row.index, "activity": row.activity, "reason": row.reason}
+                    for row in report.skipped
+                ],
+            },
+            table=table,
+            as_of=report.as_of,
+            schema_ref="import-inspect-1.0.json",
+        )
+
+    dispatch(action)

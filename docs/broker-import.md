@@ -4,7 +4,11 @@ How a custodian's exports become ledger rows: what `portable` requires of any
 custodian, what it does with more when more is available, and what it refuses to
 guess.
 
-**Status:** designed, not built. The decisions are ADRs
+**Status:** partly built. The prerequisites, the batch format and its commit
+stage, and the generic tabular adapter with its capability model are
+implemented; the extract stage that turns canonical records into a batch, and
+the cutover reconstruction it depends on, are not. §1 says which command is
+which. The decisions are ADRs
 [0012](adr/0012-broker-import-pipeline.md) (the pipeline),
 [0013](adr/0013-cash-sweep-is-cash.md) (sweep vehicles),
 [0014](adr/0014-advisory-fees-paid-across-accounts.md) (adviser fees),
@@ -28,12 +32,19 @@ custodian export ──[extract]──▶ batch file ──[review]──▶ ─
 ```
 
 ```bash
-pt import broker holdings.xlsx activity.xlsx --broker <name> -o batch.json
+pt import inspect adapters/<name>/       # what this custodian can support
+pt import broker adapters/<name>/ -o batch.json
 $EDITOR batch.json                       # the review is the point
 pt import batch batch.json --dry-run
 pt import batch batch.json
-pt reconcile --account <acct> --against holdings.xlsx --as-of <date>
+pt reconcile --account <acct> --against holdings.csv --as-of <date>
 ```
+
+**Implemented so far:** `pt import inspect` (the adapter and the capability
+report) and `pt import batch` (validate and commit). `pt import broker` — the
+step that turns canonical records into a batch — needs the cutover
+reconstruction of §7 and is the next piece of work; until it lands, `inspect`
+reads and reports and nothing writes a batch.
 
 Three commands rather than one, deliberately. The ledger is append-only: a wrong
 row is corrected with a reversing entry that stays visible for the life of the
@@ -91,9 +102,11 @@ settlement-date column full of impossible dates has not supplied settlement
 dates — and saying so in the import report is better than silence, because the
 user learns their export is broken rather than assuming the field is unavailable.
 
-`pt import` prints the declared set before doing anything, and `pt info` carries
-it forward. A portfolio built without `COST_BASIS` is permanently different from
-one built with it, and a reader months later needs to know which they have.
+`pt import inspect` prints the declared set before doing anything — it is the
+first command to run against a new custodian and the one to read before trusting
+any number that comes out later — and `pt info` carries it forward. A portfolio
+built without `COST_BASIS` is permanently different from one built with it, and a
+reader months later needs to know which they have.
 
 ---
 
@@ -132,6 +145,14 @@ class TransactionRecord:
 
 `activity` stays the custodian's raw string. Mapping it is the activity map's
 job, done once, where it can be reviewed.
+
+Two conventions are fixed at this boundary rather than left to each adapter,
+because leaving them open is how a sign error gets in. `amount` is the **cash
+effect on the account** — positive in, negative out — and `quantity` is the
+**signed change in units**, `None` where the event has none. Note what `amount`
+is not: it is what the statement says the cash did, not what `portable`
+concludes follows from the event. Deriving the consequences stays with the
+services (ADR 0012).
 
 ---
 
@@ -237,7 +258,14 @@ a silent skip.
 
 ## 6. Writing an adapter
 
-Two data files under `src/portable_core/importers/<name>/`, reviewed as data:
+**Implemented.** `portable_core.importers.TabularAdapter` reads the two files
+below and emits the canonical records of §4; `pt import inspect <directory>`
+runs it and reports. A worked example lives in
+`examples/importers/example-brokerage/` — copy the directory, change the
+mappings, run `pt import inspect` against your own export.
+
+Two data files, reviewed as data (a built-in custodian lives under
+`src/portable_core/importers/<name>/`; your own can live anywhere):
 
 **`source.toml`** — which file is which, the column map per document, date and
 number formats, the account's cash-equivalent identifier set (ADR 0013), and the
@@ -258,6 +286,65 @@ per-custodian post-pass and each is a documented deviation, not the norm.
 
 A crosswalk file (`instruments.toml`) is additionally required where
 `INSTRUMENT_SYMBOL` is absent.
+
+### The checks a capability can name
+
+A capability names one of six checks, which run over the parsed rows. The list
+is deliberately short and each entry is deliberately dumb: a check clever enough
+to be interesting is a check nobody can review, and reviewing these is the
+entire safeguard.
+
+| Check | Passes when | Typically earns |
+|---|---|---|
+| `populated` | the field carries a value in at least `min_ratio` of rows (default: all) | `cost_basis`, `acquisition_date`, `lot_detail` |
+| `unique` | the field is populated everywhere and never repeats | `transaction_id` |
+| `matches` | every value matches a declared regex — how a symbol column is told from a column of descriptions | `instrument_symbol` |
+| `not_before_trade_date` | no row's date precedes its own trade date | `settlement_date` |
+| `history_since` | the earliest row is on or before a stated inception date | `history_to_inception` |
+| `activity_covers` | the activity map names a rule producing each listed transaction type | `corporate_actions`, `external_flows` |
+
+**A withheld capability's data is not read.** If `settlement_date` fails its
+check the records carry no settlement dates — not the dates that failed. A
+capability that merely labels data which flows through anyway is a comment, not
+a safeguard.
+
+### Sign conventions
+
+Custodians are not consistent even with themselves: some sign the amount column,
+some state a magnitude and put the direction in the activity string, some use
+accounting parentheses on one report and a minus on another. `activity_map.toml`
+declares which, per activity, and the adapter normalises to the canonical
+convention — positive is in, negative is out.
+
+| Convention | Means |
+|---|---|
+| `as_stated` | the column's own sign is authoritative; use only where it was checked |
+| `positive` | a magnitude that always means an increase for this activity |
+| `negative` | a magnitude that always means a decrease for this activity |
+| `none` | this activity carries no value in that column at all — a stated absence, not a zero |
+
+### What is refused, and when
+
+Everything wrong with a *mapping* is refused when the file loads, because a map
+is reviewed once and used for every row after: an unmapped activity string, two
+rules for one string, a fee with no `fee_class`, a skip with no reason, an
+unknown transaction type or check name, a capability declared twice, a date
+pattern that is invalid *or that carries only part of a date* (`%Y-%m` parses
+happily and silently returns the first of the month).
+
+Everything wrong with the *data* is refused with the row quoted: a mapped column
+the file does not have (the error lists the headers it does have), a cell that is
+not a number in the declared format, a date matching no declared pattern, a blank
+where the map expects a value, a snapshot carrying two as-of dates, and a
+snapshot stating no cash for an account — which is refusable rather than
+tolerable because cash reconciliation is the only check that catches a sign
+error or a dropped row. An account whose custodian genuinely reports no cash
+line is listed in `allow_missing_cash`, so the exception is on the record.
+
+Spreadsheets are refused by name with the remedy. `portable`'s runtime
+dependencies are Typer and Rich; adding a workbook parser for a file the
+custodian will also emit as CSV is a large dependency for no capability
+(`CLAUDE.md` invariant 10).
 
 ---
 
