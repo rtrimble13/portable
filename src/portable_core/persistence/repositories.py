@@ -617,6 +617,21 @@ class TransactionRepository(_Repository):
         ).fetchone()
         return int(row["m"]) + 1
 
+    def count_after(self, trade_date: date, seq: int) -> int:
+        """How many ledger rows sort after ``(trade_date, seq)``.
+
+        Zero means a just-appended row is the ledger's last in replay order,
+        which is the only case in which deriving state incrementally gives the
+        same answer as replaying the whole ledger. Anything else is a back-dated
+        entry, and ADR 0016 requires the caller to rebuild instead.
+        """
+        row = self.con.execute(
+            'SELECT COUNT(*) AS n FROM "transaction" '
+            "WHERE trade_date > ? OR (trade_date = ? AND seq > ?)",
+            (trade_date.isoformat(), trade_date.isoformat(), seq),
+        ).fetchone()
+        return int(row["n"])
+
     def append(self, txn: Transaction) -> int:
         """Append one ledger row. There is no update and no delete."""
         cursor = self.con.execute(
@@ -1362,13 +1377,43 @@ class Repositories:
         "valuation_snapshot": ("account_id, snapshot_date", "snapshot_id"),
     }
 
+    #: Foreign keys the digest resolves to a natural key rather than dropping.
+    #:
+    #: Excluding them was the original behaviour and it left the digest blind to
+    #: the relationships that give a derived row its meaning: a lot's quantity
+    #: and basis were hashed, and *which instrument it belonged to* was not
+    #: (ADR 0016). The surrogate itself cannot be hashed -- a rebuild may
+    #: reassign it -- but the thing it points at is exactly what must be.
+    #:
+    #: The referenced tables are CONFIG and REFERENCE under ADR 0010's
+    #: partition, so a rebuild never touches them and their natural keys are
+    #: stable across one.
+    _NATURAL_KEY_SQL: ClassVar[dict[str, str]] = {
+        "account_id": "SELECT name FROM account WHERE account.account_id = {t}.account_id",
+        "instrument_id": (
+            "SELECT symbol FROM instrument WHERE instrument.instrument_id = {t}.instrument_id"
+        ),
+    }
+
+    #: Surrogate ids a rebuild does NOT reassign, so they may be hashed as they
+    #: stand. The ledger is never rebuilt (ADR 0010), which makes a transaction
+    #: id a stable identifier and the one meaningful link from a disposition
+    #: back to the entry that caused it.
+    _STABLE_ID_COLUMNS: ClassVar[frozenset[str]] = frozenset({"txn_id"})
+
     def derived_rows(self, table: str) -> tuple[list[str], list[tuple[str | None, ...]]]:
         """Content columns and rows of one derived table, in digest order.
 
         Returns ``(columns, rows)`` with every value stringified, so the caller
-        can hash them without knowing anything about SQLite. Surrogate id
-        columns are excluded, for the reason on
-        :data:`DERIVED_DIGEST_TABLES`.
+        can hash them without knowing anything about SQLite.
+
+        Three kinds of column, per :data:`DERIVED_DIGEST_TABLES`,
+        :data:`_NATURAL_KEY_SQL` and :data:`_STABLE_ID_COLUMNS`: a surrogate key
+        a rebuild may reassign is excluded; a foreign key with a natural key
+        behind it is resolved to that; everything else is hashed as it stands.
+
+        Values are read **positionally**, so the resolved columns may be aliased
+        without an alias shadowing a real column in the ``ORDER BY``.
         """
         if table not in self.DERIVED_DIGEST_TABLES:
             raise ValidationError(
@@ -1377,18 +1422,29 @@ class Repositories:
                 known=sorted(self.DERIVED_DIGEST_TABLES),
             )
         ordering, id_column = self.DERIVED_DIGEST_TABLES[table]
-        columns = [
-            str(row["name"])
-            for row in self.con.execute(f'PRAGMA table_info("{table}")')
-            if str(row["name"]) != id_column and not str(row["name"]).endswith("_id")
-        ]
+
+        columns: list[str] = []
+        selected: list[str] = []
+        for info in self.con.execute(f'PRAGMA table_info("{table}")'):
+            name = str(info["name"])
+            if name == id_column:
+                continue
+            if name in self._NATURAL_KEY_SQL:
+                columns.append(name)
+                inner = self._NATURAL_KEY_SQL[name].format(t=f'"{table}"')
+                selected.append(f'({inner}) AS "{name}__key"')
+            elif name.endswith("_id") and name not in self._STABLE_ID_COLUMNS:
+                continue
+            else:
+                columns.append(name)
+                selected.append(f'"{name}"')
+
         if not columns:
             return [], []
-        selected = ", ".join(f'"{c}"' for c in columns)
         rows = [
-            tuple(None if row[c] is None else str(row[c]) for c in columns)
+            tuple(None if value is None else str(value) for value in row)
             for row in self.con.execute(
-                f"SELECT {selected} FROM {table} ORDER BY {ordering}"  # noqa: S608 -- table and columns come from DERIVED_DIGEST_TABLES
+                f"SELECT {', '.join(selected)} FROM {table} ORDER BY {ordering}"  # noqa: S608 -- table and columns come from DERIVED_DIGEST_TABLES
             )
         ]
         return columns, rows

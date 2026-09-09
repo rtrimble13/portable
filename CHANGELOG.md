@@ -41,12 +41,145 @@ Two rules specific to this repository:
   and the C++ build with Catch2 on both platforms.
 - Documentation: `docs/architecture.md`, `docs/domain-model.md`, and eleven
   ADRs covering every decision the bootstrap prompt left open.
+- `docs/broker-import.md` — the design for turning custodian exports into ledger
+  rows: the three-stage pipeline, the canonical batch format, the activity and
+  instrument maps as reviewed data files, the refusal list, and reconciliation as
+  the acceptance criterion. **Design only; nothing is implemented.**
+- Five ADRs for the decisions that design rests on:
+  - **0012** — import is a staged pipeline with a reviewable batch file between
+    extraction and commit, because the ledger is append-only and the cheap place to
+    catch a bad row is before it is written.
+  - **0013** — a cash sweep vehicle is cash. Its transfer rows are discarded at
+    import (a third of the sample export), its income is income on the cash
+    balance, and `account.sweep_instrument_id` is dropped rather than left as a
+    column no code reads.
+  - **0014** — an adviser fee billed to one account and settled from another is a
+    `transfer` plus a `fee`, never two fees; an unpaired settlement to an account
+    outside the portfolio is a `withdrawal`, never a fee.
+  - **0015** — `transfer_in` / `transfer_out` for securities crossing the portfolio
+    boundary, carrying the lot's original basis and acquisition date separately
+    from the market value that forms the flow. This is how a position acquired
+    before the ledger begins enters it without inventing a cash flow.
+  - **0016** — a back-dated append forces a full rebuild in the same transaction,
+    and `pt validate` digests stored derived state *before* rebuilding so that it
+    compares stored against replayed rather than one rebuild against another.
+  - **0017** — the opening position set is reconstructed by rolling the
+    transaction export backwards from the dated holdings snapshot, and every lot
+    carries a `basis_source` (`derived` · `reconstructed` · `estimated` ·
+    `custodian_asserted`), `NOT NULL` with no default, which `pt tax` and
+    `pt pnl` disclose. Written after it was established that no further broker
+    report is obtainable: it **amends ADR 0015**, whose flat refusal on averaged
+    basis would, on that evidence, have declined to build the portfolio at all
+    rather than declining to guess. The rule is now that approximation is
+    permitted and concealment is not. The relief-method assumption is FIFO, and
+    the ADR records how little any such assumption reaches: of 70 positions held
+    at the sample cutover, 38 are exactly reconstructed, FIFO anchors 6 more, and
+    26 have no surviving remainder to anchor against and so get
+    `basis_source = 'unavailable'`. Those are excluded from every `pt tax` total
+    and reported separately with the year marked incomplete, rather than shown as
+    a gain measured from an arbitrary date.
+  - **0018** — the generalisation. Any import requires exactly two documents: a
+    holdings snapshot carrying cash, and a transaction history. Everything else —
+    cost basis, acquisition dates, lot detail, transaction identifiers, symbols,
+    settlement dates, a flows report, history reaching inception — is an
+    `ImportCapability` the adapter declares, mirroring `providers.Capability`, and
+    its absence is a refusal that names the missing input rather than a quiet
+    degradation. A capability is declared only on **validated** data: a column is
+    not a capability, and a custodian emitting a settlement-date column full of
+    impossible dates has not supplied settlement dates. Adapters are two TOML
+    mapping files plus a fixture, with Python reserved for data that needs logic a
+    mapping cannot express; ADRs 0013 and 0014 are re-scoped accordingly, and
+    `account.sweep_instrument_id` becomes a declared *set* of cash-equivalent
+    identifiers, since one nullable column does not survive an account that sweeps
+    to two vehicles.
+
+### Fixed
+
+- **A back-dated ledger append left derived state disagreeing with the ledger**
+  (ADR 0016, now implemented). `ReplayEngine.apply_transaction` derives against
+  state as it currently stands, which equals a replay only when the appended row
+  sorts last; a back-dated entry sorted ahead of rows already applied and so
+  consumed the wrong lots. Reproduced with a three-transaction portfolio whose
+  realized gain — and the tax estimated on it — changed on the next `pt rebuild`.
+
+  Every live append now goes through `ReplayEngine.apply_or_rebuild`, which
+  rebuilds in the same database transaction when the row does not sort last, and
+  says so: `rebuilt` in the result payload and a warning, because a back-dated
+  entry re-deriving the book can change a figure already reported.
+
+- **`pt validate` could not detect that divergence** — the failure `CLAUDE.md`
+  invariant 3 exists to make detectable. It called `rebuild()` twice and compared
+  the two, but `rebuild()` drops derived state before re-deriving it, so the
+  stored state was destroyed before anything could be compared against it. The
+  command measured idempotence, and reported a clean file on a book that was
+  demonstrably wrong.
+
+  It now digests **stored** state first, replays inside a transaction that is
+  always rolled back, and compares — so it detects the divergence, names the
+  tables that differ, exits 4 with `PT-E-REPLAY-MISMATCH`, and leaves the file
+  byte-identical. Idempotence is kept as a separate check with its own message.
+  A command that repaired what it was asked to inspect would report a break and
+  then, on a second run, a clean file, with nothing to show which was true.
+
+- **`pt validate` discarded the ledger rows a replay could not apply.**
+  `ReplayEngine.rebuild` collects one message per such row and keeps going, so
+  that a single pass surfaces every problem; its docstring has always said
+  `pt validate` is what turns those into a non-zero exit, and `validate` threw
+  them away. A row that produces no derived state is a real invariant break —
+  derived state is then not a function of the *whole* ledger — and cash
+  conservation does not reliably catch it, because `apply_transaction` moves
+  cash before it does the position work.
+
+  `validate` now reports each as a problem under `unreplayable` and exits 4.
+  `pt rebuild` still renders the same facts as warnings and still succeeds: it
+  rebuilds and reports, `validate` judges. `ReplayResult.warnings` documents
+  both audiences at the point it is defined.
+
+- **The derived-state digest was blind to relationships.** It excluded every
+  column whose name ended in `_id`, which dropped the surrogate keys a rebuild
+  legitimately reassigns and also `account_id` and `instrument_id` — so a lot's
+  quantity and basis were hashed and *which instrument it belonged to* was not.
+  Foreign keys are now resolved to their natural keys (account name, instrument
+  symbol) and hashed; surrogate keys stay excluded; `txn_id` is hashed as it
+  stands, since the ledger is never rebuilt.
+
+### Added
+
+- `Repositories.transactions.count_after` — how many ledger rows sort after a
+  given `(trade_date, seq)`. Zero is the only case in which incremental
+  derivation equals a replay.
+- `persistence.connection.scratch_transaction` — a transaction that always rolls
+  back, for a command that must rewrite derived state to answer a question about
+  it and leave the file untouched.
+- `services.replay.derived_state_digests` — the digest per derived table, so a
+  mismatch can name what differs rather than reporting "something".
+- `services.trading.CommitResult` — `TradingService.commit` now returns the
+  stored transaction *and* whether committing it rebuilt.
+- `tests/unit/test_replay_ordering.py` and
+  `tests/integration/test_validate_replay.py` — 18 tests, each of which fails
+  without the corresponding part of the fix, including the ADR's reproduction
+  asserted as the realized gain a person would read, and the split between
+  `pt rebuild` reporting an unreplayable row and `pt validate` failing on it.
 
 ### Changed
 
 - `CLAUDE.md` invariant 11 carries `gips-lint: allow` markers on the three lines
   that name the prohibited phrases in order to forbid them. This is the case the
   marker exists for, and `CLAUDE.md` says so itself.
+- `docs/roadmap.md` — broker import pulled forward from v1.0 to the head of v0.2,
+  ahead of the return engine, because there is nothing to compute a return on
+  until the real portfolio is loaded.
+- `docs/broker-import.md` — reworked once it was established that no further
+  broker report is available. Reporting inception becomes the transaction
+  export's first date rather than the date the accounts were funded; the
+  capital-flows export contributes no ledger rows and becomes `portfolio_event`
+  documentation plus a cross-check; §4 records what the reconstruction recovers
+  exactly (position quantities, and about 83% of pre-cutover cost basis) and what
+  it can only estimate. Then restructured to lead with the custodian-neutral
+  contract — required documents, capabilities, canonical records, the adapter
+  contract, the reconstruction, refusals, acceptance — with the reference
+  custodian moved into a worked example that declares four of the nine
+  capabilities and notes, per trap, which ones generalise.
 
 ## [0.1.0] — unreleased
 

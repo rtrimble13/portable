@@ -22,7 +22,7 @@ will have, a GitHub issue; the labels are `area:core`, `area:pt`, `area:pert`,
 
 ---
 
-## v0.2 — `pert`, performance
+## v0.2 — onboarding, then `pert`
 
 **Three items block everything else in this milestone**, in this order:
 
@@ -33,6 +33,38 @@ will have, a GitHub issue; the labels are `area:core`, `area:pt`, `area:pert`,
 
 All three were pulled forward into v0.1 precisely because retrofitting them
 after returns exist would mean restating every published number.
+
+**Then broker import, ahead of the return engine.** Pulled forward from v1.0 for
+the plainest of reasons: there is nothing to compute a return on until the real
+portfolio is in the file, and a return engine validated only against generated
+fixtures has been validated against the easy case. Designed in
+`docs/broker-import.md`; decided in ADRs 0012–0015.
+
+0. **The replay defect** ([ADR 0016](adr/0016-out-of-order-appends-and-validation.md))
+   — a back-dated append leaves derived state disagreeing with the ledger, and
+   `pt validate` cannot see it because it rebuilds before it compares. This blocks
+   everything below it: a historical import is out-of-order by construction.
+1. **Import prerequisites** — `source='import'` on the write path, a synthesized
+   `external_ref` with `UNIQUE (account_id, external_ref)`, `--ref` on every
+   mutating command, a `taxes_withheld` path, and `pt reconcile` extended with
+   per-account scoping and a cash comparison.
+2. **The batch format** — `schemas/import-batch-1.0.json`, and `pt import batch`.
+3. **In-kind transfers** ([ADR 0015](adr/0015-in-kind-transfers-and-opening-positions.md))
+   — `transfer_in` / `transfer_out`, so a position that predates the ledger enters
+   it without inventing the cash flow that would rewrite the track record.
+3a. **Cutover reconstruction** ([ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md))
+   — roll the transaction file back from the holdings snapshot to derive the
+   opening position set, and `lot.basis_source` so an approximate basis can never
+   be mistaken for an exact one. Required because no further broker report is
+   obtainable: these three exports are the whole of the evidence.
+4. **The generic tabular adapter** ([ADR 0018](adr/0018-minimum-broker-dataset.md))
+   — two required documents (a holdings snapshot with cash, and a transaction
+   history), everything beyond them a declared capability whose absence is a
+   named refusal rather than a quiet degradation. A custodian with plain tabular
+   exports is then two TOML mapping files and a fixture, no Python.
+5. **The first custodian**, as an instance of that adapter, accepted on
+   reconciliation rather than on parser tests. **A second custodian is the only
+   real test of item 4** — the first one always fits.
 
 Then:
 
@@ -107,7 +139,7 @@ Option risk is the likeliest candidate for the first real C++ hot path.
 |---|---|
 | Multi-currency — FX as first-class data, base vs. local decomposition | P1 |
 | MCP server, generated from `pt introspect` and the published schemas | P1 |
-| Broker import adapters — OFX/QFX and per-broker CSV, with duplicate detection | P1 |
+| Further broker adapters — OFX/QFX and other custodians (the first lands in v0.2) | P1 |
 | Corporate action auto-ingestion from fafnir | P1 |
 | C++ hot paths — **profile first** | P2 |
 | Retirement account rules — contribution limits, RMDs, penalties | P2 |

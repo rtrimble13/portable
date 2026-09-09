@@ -208,6 +208,7 @@ rather than a migration, but v0.1 is USD-only and validates that. Backlog, P1.
 
 **Intraday prices.** The protocol exists; no shipped provider declares it.
 
-**Broker statement import.** Backlog, P1 — and note the constraint it inherits:
-an imported fee must carry a `fee_class`, and an unclassifiable bundled fee is
-refused rather than guessed (`PORT-GIPS-D01`, `D03`).
+**Broker statement import.** Designed in `docs/broker-import.md` and pulled
+forward to `v0.2` — note the constraint it inherits: an imported fee must carry a
+`fee_class`, and an unclassifiable bundled fee is refused rather than guessed
+(`PORT-GIPS-D01`, `D03`).
