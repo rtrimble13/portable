@@ -27,7 +27,7 @@ portfolio.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -35,8 +35,8 @@ from typing import Final
 
 from portable_core.domain.enums import ReliefMethod, TransactionType
 from portable_core.domain.import_records import MappedTransaction, TransactionRecord
-from portable_core.errors import DataUnavailableError
-from portable_core.errors.kinds import E_PRICE_MISSING
+from portable_core.errors import DataUnavailableError, ValidationError
+from portable_core.errors.kinds import E_IMPORT_SOURCE_INVALID, E_PRICE_MISSING
 from portable_core.services.import_batch import (
     SUPPORTED_TYPES,
     BatchRow,
@@ -49,12 +49,27 @@ from portable_core.services.reconstruction import (
     Reconstruction,
 )
 
-__all__ = ["ExtractResult", "build_batch", "cutover_prices_needed"]
+__all__ = [
+    "ExtractResult",
+    "InLedger",
+    "build_batch",
+    "build_incremental_batch",
+    "cutover_prices_needed",
+]
 
 ZERO: Final = Decimal("0")
 
 #: How many characters of the digest an `external_ref` carries. ADR 0012.
 _REF_WIDTH: Final = 16
+
+#: Whether the ledger already holds ``(account, external_ref)``. Supplied by
+#: the command, which has the portfolio open; the service stays free of SQL.
+InLedger = Callable[[str, str], bool]
+
+
+def _nothing_in_ledger(_account: str, _external_ref: str) -> bool:
+    return False
+
 
 #: Trades that consume lots, and therefore need a relief method stated.
 _CLOSING: Final = frozenset(
@@ -102,6 +117,7 @@ def build_batch(
     cutover_prices: Mapping[str, Decimal],
     files: Sequence[tuple[str, str]] = (),
     capabilities: Sequence[str] = (),
+    in_ledger: InLedger = _nothing_in_ledger,
 ) -> ExtractResult:
     """Build the reviewable batch. Writes nothing.
 
@@ -114,6 +130,10 @@ def build_batch(
         cutover_prices: market value per unit on the cutover date, per
             instrument. Required, never defaulted: see
             :func:`cutover_prices_needed`.
+        in_ledger: whether a history row's reference is already recorded in
+            its account. Such a row is written as a `skip` naming the reason,
+            so an overlapping export shows its overlap in the file under
+            review rather than refusing at commit (ADR 0012).
 
     Raises:
         DataUnavailableError: when a seeded position has no cutover price. Exit
@@ -157,8 +177,9 @@ def build_batch(
     unsupported: set[str] = set()
     appended = skipped = dropped = 0
     history = _after(mapped, reconstruction.cutover)
+    ordinals = _Ordinals()
     for entry in history:
-        row = _history_row(entry, len(rows) + 1, unsupported)
+        row = _history_row(entry, len(rows) + 1, unsupported, ordinals, in_ledger)
         rows.append(row)
         if row.action == "append":
             appended += 1
@@ -183,6 +204,94 @@ def build_batch(
             rows=tuple(rows),
         ),
         seeded=seeded,
+        appended=appended,
+        skipped=skipped,
+        dropped=dropped,
+        unsupported=tuple(sorted(unsupported)),
+    )
+
+
+def build_incremental_batch(
+    *,
+    broker: str,
+    mapped: Sequence[MappedTransaction],
+    inception: Mapping[str, date],
+    in_ledger: InLedger,
+    files: Sequence[tuple[str, str]] = (),
+    capabilities: Sequence[str] = (),
+) -> ExtractResult:
+    """Build the batch for a periodic update to accounts already in the ledger.
+
+    The other shape an extract takes, and the one every import after the first
+    takes. There is no seed: the accounts already hold their opening positions,
+    and seeding them again would double every one. What remains is the history,
+    with two kinds of row set aside and shown:
+
+    - a row **already recorded** -- the custodian's window overlaps the last
+      export, which is ordinary and on purpose -- is a `skip` naming the
+      reference the ledger already carries;
+    - a row **on or before the account's first ledger date** is inside the
+      seeded position from the initial extract, and appending it would count
+      it twice. Also a `skip`, saying so.
+
+    Args:
+        inception: each account's first ledger date, from the portfolio. An
+            account the export mentions that is not here is refused: an
+            incremental extract has nothing to extend for it, and the initial
+            extract is the command for that.
+    """
+    missing = sorted({m.record.account for m in mapped} - set(inception))
+    if missing:
+        raise ValidationError(
+            "the export mentions "
+            + ", ".join(missing)
+            + ", which carries no ledger rows. An incremental extract extends a "
+            "history that is already there; run the initial extract for an "
+            "account that has none",
+            code=E_IMPORT_SOURCE_INVALID,
+            accounts=missing,
+        )
+
+    rows: list[BatchRow] = []
+    unsupported: set[str] = set()
+    appended = skipped = dropped = 0
+    ordinals = _Ordinals()
+    for entry in sorted(mapped, key=lambda m: m.record.trade_date):
+        record = entry.record
+        if record.trade_date <= inception[record.account]:
+            row = BatchRow(
+                index=len(rows) + 1,
+                action="skip",
+                rule="ledger:before-inception",
+                source_row=dict(record.source_row),
+                note=(
+                    f"dated on or before {record.account}'s first ledger row "
+                    f"({inception[record.account].isoformat()}), so it is inside the "
+                    f"position seeded at the cutover and would be counted twice"
+                ),
+            )
+        else:
+            row = _history_row(entry, len(rows) + 1, unsupported, ordinals, in_ledger)
+        rows.append(row)
+        if row.action == "append":
+            appended += 1
+        elif row.action == "skip":
+            skipped += 1
+        else:
+            dropped += 1
+
+    dates = [e.record.trade_date for e in mapped]
+    return ExtractResult(
+        batch=ImportBatch(
+            source=BatchSource(
+                broker=broker,
+                files=tuple(files),
+                capabilities=tuple(capabilities),
+                period=(min(dates), max(dates)) if dates else None,
+            ),
+            rows=tuple(rows),
+        ),
+        seeded=0,
         appended=appended,
         skipped=skipped,
         dropped=dropped,
@@ -333,7 +442,33 @@ def _after(mapped: Sequence[MappedTransaction], cutover: date) -> list[MappedTra
     return [m for m in mapped if m.record.trade_date > cutover]
 
 
-def _history_row(entry: MappedTransaction, index: int, unsupported: set[str]) -> BatchRow:
+class _Ordinals:
+    """ADR 0012's ordinal: a row's index among otherwise-identical rows.
+
+    Two identical dividends on one day are not hypothetical, and without an
+    ordinal the second would collide with the first and be refused as a
+    duplicate of it. Counted over the *identity material* rather than the
+    batch position, so that the same source row gets the same reference in an
+    initial extract and in every incremental one after it -- which is what
+    lets an overlapping export be recognised as an overlap.
+    """
+
+    def __init__(self) -> None:
+        self._seen: dict[str, int] = {}
+
+    def next(self, material: str) -> int:
+        ordinal = self._seen.get(material, 0)
+        self._seen[material] = ordinal + 1
+        return ordinal
+
+
+def _history_row(
+    entry: MappedTransaction,
+    index: int,
+    unsupported: set[str],
+    ordinals: _Ordinals,
+    in_ledger: InLedger,
+) -> BatchRow:
     record = entry.record
     if entry.is_skipped:
         return BatchRow(
@@ -364,12 +499,26 @@ def _history_row(entry: MappedTransaction, index: int, unsupported: set[str]) ->
             ),
         )
 
+    external_ref = _history_ref(record, ordinals)
+    if in_ledger(record.account, external_ref):
+        # The overlap belongs in the artifact under review, not in a refusal
+        # at commit and not in a `--skip-duplicates` flag that would hide it.
+        return BatchRow(
+            index=index,
+            action="skip",
+            rule="ledger:already-recorded",
+            source_row=dict(record.source_row),
+            external_ref=external_ref,
+            account=record.account,
+            note=f"{record.account} already carries a row with reference {external_ref}",
+        )
+
     return BatchRow(
         index=index,
         action="append",
         rule=entry.rule,
         source_row=dict(record.source_row),
-        external_ref=_history_ref(record, index),
+        external_ref=external_ref,
         account=record.account,
         txn_type=entry.txn_type,
         trade_date=record.trade_date,
@@ -379,6 +528,7 @@ def _history_row(entry: MappedTransaction, index: int, unsupported: set[str]) ->
         price=_unit_price(record),
         amount=abs(record.amount) if record.amount else None,
         fee_class=entry.fee_class,
+        counter_account=entry.counter_account,
         # ADR 0017 §2a. The reconstruction solved every seeded basis under an
         # assumed FIFO relief; the ledger must relieve the same way or a block
         # solved for FIFO gets relieved spec-ID and yields a basis the solve
@@ -403,7 +553,7 @@ def _unit_price(record: TransactionRecord) -> Decimal | None:
     return abs(record.amount) / abs(record.quantity)
 
 
-def _history_ref(record: TransactionRecord, index: int) -> str:
+def _history_ref(record: TransactionRecord, ordinals: _Ordinals) -> str:
     """ADR 0012's synthesized identity, over the source row's raw text.
 
     Raw text and not the mapped values, deliberately: a change to the activity
@@ -422,7 +572,7 @@ def _history_ref(record: TransactionRecord, index: int) -> str:
             record.trade_date.isoformat(),
             record.activity,
             *(f"{k}={v}" for k, v in sorted(record.source_row.items())),
-            str(index),
         ]
     )
+    material = f"{material}|{ordinals.next(material)}"
     return "row:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:_REF_WIDTH]

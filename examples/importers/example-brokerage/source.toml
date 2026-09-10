@@ -51,6 +51,10 @@ activity = "Activity"
 identifier = "Symbol"
 quantity = "Quantity"
 amount = "Amount"
+# Read by the activity map: the note is the second key where one activity
+# word names several events, and the pairing rule reads the counterpart
+# account from it (ADR 0014).
+note = "Description"
 external_id = "Confirm #"
 
 # ── Capabilities ─────────────────────────────────────────────────────────────

@@ -124,6 +124,11 @@ class MappedTransaction:
     txn_type: TransactionType | None = None
     fee_class: FeeClass | None = None
     reason: str | None = None
+    #: The receiving account of a ``transfer``, resolved by the adapter's
+    #: pairing rule (ADR 0014). The other leg of the same movement is carried
+    #: as a skipped row naming this one, so the batch shows both and the
+    #: ledger records one.
+    counter_account: str | None = None
 
     @property
     def is_skipped(self) -> bool:

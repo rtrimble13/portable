@@ -15,6 +15,8 @@ from typing import Annotated, Any
 
 import typer
 
+from portable_core.errors import ValidationError
+from portable_core.errors.kinds import E_IMPORT_SOURCE_INVALID
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.importers import ABSENCE_MEANS, TabularAdapter
 from portable_core.persistence.connection import scratch_transaction
@@ -25,7 +27,11 @@ from portable_core.services.import_batch import (
     dump_batch,
     load_batch,
 )
-from portable_core.services.import_extract import build_batch, cutover_prices_needed
+from portable_core.services.import_extract import (
+    build_batch,
+    build_incremental_batch,
+    cutover_prices_needed,
+)
 from portable_core.services.reconstruction import Reconstruction, reconstruct
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, maybe_dry_run
@@ -422,6 +428,17 @@ def import_broker(
             help="Cut over at this date instead of the day before the history begins.",
         ),
     ] = None,
+    incremental: Annotated[
+        bool,
+        typer.Option(
+            "--incremental",
+            help=(
+                "A periodic update to accounts already in the ledger: no seed, rows "
+                "already recorded are skipped, rows on or before an account's first "
+                "ledger date are skipped."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Extract a custodian's exports into a reviewable batch.
 
@@ -443,6 +460,16 @@ def import_broker(
     gain at cutover. So the command refuses when a price is missing and says
     which instruments need one.
 
+    **Every import after the first is `--incremental`.** The accounts already
+    hold their opening positions, so there is no seed; the history is
+    extracted with two kinds of row set aside and shown: one the ledger
+    already carries under the same reference -- an overlapping export window,
+    which is ordinary -- and one dated on or before the account's first ledger
+    row, which is inside the seeded position. Either shape run against the
+    wrong portfolio is refused by name: an initial extract into an account
+    that already has rows would seed it twice, and an incremental one into an
+    empty account has nothing to extend.
+
     Nothing is written to the portfolio. Read the batch, edit it, then
     `pt import batch --dry-run` and `pt import batch`.
     """
@@ -452,18 +479,33 @@ def import_broker(
         repos = ctx.require_portfolio()
 
         report = TabularAdapter.load(adapter).read()
-        boundary = date.fromisoformat(cutover) if cutover else None
-        result = reconstruct(report.holdings, report.transactions, cutover=boundary)
+        inception = _ledger_inception(repos, report.accounts)
+        _check_shape(inception, incremental=incremental)
+        in_ledger = _in_ledger(repos)
 
-        prices = _cutover_prices(repos, result)
-        extract = build_batch(
-            broker=report.broker,
-            reconstruction=result,
-            mapped=report.mapped,
-            cutover_prices=prices,
-            files=report.files,
-            capabilities=[c.value for c in report.capabilities.declared],
-        )
+        result: Reconstruction | None = None
+        if incremental:
+            extract = build_incremental_batch(
+                broker=report.broker,
+                mapped=report.mapped,
+                inception={a: d for a, d in inception.items() if d is not None},
+                in_ledger=in_ledger,
+                files=report.files,
+                capabilities=[c.value for c in report.capabilities.declared],
+            )
+        else:
+            boundary = date.fromisoformat(cutover) if cutover else None
+            result = reconstruct(report.holdings, report.transactions, cutover=boundary)
+            prices = _cutover_prices(repos, result)
+            extract = build_batch(
+                broker=report.broker,
+                reconstruction=result,
+                mapped=report.mapped,
+                cutover_prices=prices,
+                files=report.files,
+                capabilities=[c.value for c in report.capabilities.declared],
+                in_ledger=in_ledger,
+            )
         out.write_text(dump_batch(extract.batch), encoding="utf-8")
 
         warnings: list[str] = []
@@ -475,12 +517,12 @@ def import_broker(
                 "in the batch as `skip` rows and must be recorded with the typed "
                 "commands, or the position quantities will not reconcile."
             )
-        if result.findings:
+        if result is not None and result.findings:
             warnings.append(
                 f"{len(result.findings)} reconstruction finding(s); run "
                 f"`pt import reconstruct` to read them before committing."
             )
-        if result.uncertain_dispositions:
+        if result is not None and result.uncertain_dispositions:
             warnings.append(
                 f"{len(result.uncertain_dispositions)} disposition(s) fall within a "
                 f"year of the cutover, so their holding-period character rests on the "
@@ -493,15 +535,21 @@ def import_broker(
                 "adapter": str(adapter),
                 "batch": str(out),
                 "broker": report.broker,
-                "cutover": result.cutover.isoformat(),
+                "incremental": incremental,
+                # Explicitly null on an incremental extract: there is no
+                # cutover because nothing is seeded, and a reader must not
+                # mistake the absence for an unstated date.
+                "cutover": result.cutover.isoformat() if result is not None else None,
                 "seeded": extract.seeded,
                 "appended": extract.appended,
                 "skipped": extract.skipped,
                 "dropped": extract.dropped,
                 "unsupported": list(extract.unsupported),
-                "by_basis_source": {
-                    source.value: count for source, count in result.by_source().items()
-                },
+                "by_basis_source": (
+                    {source.value: count for source, count in result.by_source().items()}
+                    if result is not None
+                    else {}
+                ),
             },
             table=Table(
                 columns=(
@@ -520,11 +568,78 @@ def import_broker(
                 ),
             ),
             warnings=tuple(warnings),
-            as_of=result.as_of,
+            as_of=report.as_of,
             portfolio=ctx.portfolio_name(),
         )
 
     dispatch(action)
+
+
+def _ledger_inception(repos: Any, accounts: tuple[str, ...]) -> dict[str, date | None]:
+    """Each account's first ledger date, or None for one with no rows.
+
+    An account the portfolio does not know yet has no rows either, and is
+    reported the same way: the initial extract is allowed to run before
+    `pt account add`, as the reconstruction and the price check are.
+    """
+    inception: dict[str, date | None] = {}
+    for name in accounts:
+        account = repos.accounts.by_name(name)
+        inception[name] = (
+            None if account is None else repos.transactions.first_trade_date(account.account_id)
+        )
+    return inception
+
+
+def _check_shape(inception: dict[str, date | None], *, incremental: bool) -> None:
+    """An extract's shape has to match the portfolio it is for.
+
+    Both directions are refused by name rather than inferred. Seeding into an
+    account that already holds its opening positions doubles every one of
+    them; extending an account that has nothing to extend leaves its opening
+    positions out entirely. Neither is a guess this command makes.
+    """
+    populated = {a: d for a, d in inception.items() if d is not None}
+    if incremental and len(populated) != len(inception):
+        empty = sorted(a for a, d in inception.items() if d is None)
+        raise ValidationError(
+            "an incremental extract extends accounts already in the ledger, but "
+            + ", ".join(empty)
+            + " carries no ledger rows. Run the initial extract (without "
+            "--incremental) for an account that has none",
+            code=E_IMPORT_SOURCE_INVALID,
+            remedy=(
+                "`pt import broker <adapter> -o batch.json` seeds an account's opening state."
+            ),
+            accounts=empty,
+        )
+    if not incremental and populated:
+        raise ValidationError(
+            "an initial extract seeds each account's opening positions, but "
+            + ", ".join(
+                f"{a} already carries ledger rows from {d.isoformat()}"
+                for a, d in sorted(populated.items())
+            )
+            + ". Seeding again would double every one of them",
+            code=E_IMPORT_SOURCE_INVALID,
+            remedy=(
+                "Pass --incremental for a periodic update to accounts already in the "
+                "ledger. Rows already recorded are then skipped and shown as such."
+            ),
+            accounts=sorted(populated),
+        )
+
+
+def _in_ledger(repos: Any) -> Any:
+    """Whether `(account, external_ref)` is already recorded."""
+
+    def check(account: str, external_ref: str) -> bool:
+        found = repos.accounts.by_name(account)
+        if found is None:
+            return False
+        return repos.transactions.with_external_ref(found.account_id, external_ref) is not None
+
+    return check
 
 
 def _cutover_prices(repos: Any, result: Reconstruction) -> dict[str, Decimal]:

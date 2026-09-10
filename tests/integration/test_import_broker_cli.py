@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -56,9 +57,9 @@ def portfolio(run_pt: CliRunner, tmp_path: Path) -> Path:
     return path
 
 
-def _stated(tmp_path: Path) -> Path:
+def _stated(tmp_path: Path, adapter: Path = EXAMPLE) -> Path:
     """The custodian's own snapshot, as `pt reconcile` reads it."""
-    source = EXAMPLE / "holdings.csv"
+    source = adapter / "holdings.csv"
     target = tmp_path / "stated.csv"
     with source.open(encoding="utf-8-sig") as handle:
         rows = list(csv.DictReader(handle))
@@ -138,9 +139,10 @@ def test_the_batch_is_written_and_nothing_is_committed(
 
     assert batch.is_file()
     assert data["seeded"] == 4  # two positions, two cash balances
-    assert data["appended"] == 8
-    assert data["skipped"] == 1
+    assert data["appended"] == 10
+    assert data["skipped"] == 3  # a memo, a sweep movement, a paired leg
     assert data["cutover"] == "2025-01-21"
+    assert data["incremental"] is False
     assert run_pt("--port", str(portfolio), "holdings").ok().data["rows"] == []
 
 
@@ -233,3 +235,155 @@ def test_the_output_is_identical_across_runs(
             "--port", str(portfolio), "import", "broker", str(EXAMPLE), "-o", str(target)
         ).ok()
     assert first.read_text(encoding="utf-8") == second.read_text(encoding="utf-8")
+
+
+# ── the grammar, end to end ──────────────────────────────────────────────────
+
+
+def test_a_paired_transfer_is_one_ledger_row_and_the_fee_is_charged_once(
+    run_pt: CliRunner, portfolio: Path, tmp_path: Path
+) -> None:
+    """ADR 0014. The brokerage funds the Roth's fee: the custodian reports the
+    movement in both accounts, the batch carries one `transfer` with a counter
+    account and the other leg as a skip naming it, and the Roth's fee is a
+    fee in the Roth and nowhere else."""
+    batch = tmp_path / "batch.json"
+    run_pt("--port", str(portfolio), "import", "broker", str(EXAMPLE), "-o", str(batch)).ok()
+    rows = json.loads(batch.read_text(encoding="utf-8"))["rows"]
+
+    transfers = [r for r in rows if r.get("txn_type") == "transfer"]
+    assert [(t["account"], t["counter_account"], t["amount"]) for t in transfers] == [
+        ("Brokerage", "Roth IRA", "45.00")
+    ]
+    receiving = next(r for r in rows if r["source_row"].get("Confirm #") == "C-1009")
+    assert receiving["action"] == "skip"
+    assert "receiving leg" in receiving["note"]
+
+    fees = [(r["account"], r["amount"]) for r in rows if r.get("txn_type") == "fee"]
+    assert fees == [("Brokerage", "212.75"), ("Roth IRA", "45.00")]
+
+    run_pt("--port", str(portfolio), "import", "batch", str(batch)).ok()
+    result = run_pt(
+        "--port", str(portfolio), "reconcile", "--against", str(_stated(tmp_path))
+    ).ok()
+    assert result.data["breaks"] == 0
+
+
+# ── the incremental extract ──────────────────────────────────────────────────
+
+
+def _later_export(tmp_path: Path) -> Path:
+    """The custodian's next export: an overlapping window with one new row."""
+    target = tmp_path / "later"
+    shutil.copytree(EXAMPLE, target)
+    with (target / "transactions.csv").open("a", encoding="utf-8") as handle:
+        handle.write(
+            "07/15/2025,07/15/2025,Brokerage,Dividend Received,VTI,,$98.10,"
+            "VANGUARD TOTAL STOCK MKT ETF,C-1014\n"
+        )
+    # The snapshot moves with the history: the dividend landed in the sweep.
+    holdings = target / "holdings.csv"
+    holdings.write_text(
+        holdings.read_text(encoding="utf-8").replace(
+            'FDRXX,4210.55,"$4,210.55","$4,210.55"', 'FDRXX,4308.65,"$4,308.65","$4,308.65"'
+        ),
+        encoding="utf-8",
+    )
+    return target
+
+
+def _imported(run_pt: CliRunner, portfolio: Path, tmp_path: Path) -> None:
+    batch = tmp_path / "initial.json"
+    run_pt("--port", str(portfolio), "import", "broker", str(EXAMPLE), "-o", str(batch)).ok()
+    run_pt("--port", str(portfolio), "import", "batch", str(batch)).ok()
+
+
+def test_an_incremental_extract_appends_only_what_is_new(
+    run_pt: CliRunner, portfolio: Path, tmp_path: Path
+) -> None:
+    """Every import after the first. No seed; the overlap is shown as skips
+    naming the reference the ledger already carries; the one new row appends;
+    and the result still validates and reconciles."""
+    _imported(run_pt, portfolio, tmp_path)
+    later = _later_export(tmp_path)
+    batch = tmp_path / "update.json"
+
+    data = (
+        run_pt(
+            "--port",
+            str(portfolio),
+            "import",
+            "broker",
+            str(later),
+            "-o",
+            str(batch),
+            "--incremental",
+        )
+        .ok()
+        .data
+    )
+    assert data["incremental"] is True
+    assert data["seeded"] == 0
+    assert data["cutover"] is None
+    assert data["appended"] == 1
+    assert data["skipped"] == 13  # 10 already recorded, 3 the map skips
+
+    rows = json.loads(batch.read_text(encoding="utf-8"))["rows"]
+    already = [r for r in rows if r["rule"] == "ledger:already-recorded"]
+    assert len(already) == 10
+    assert all(r["external_ref"] and r["note"] for r in already)
+    new = next(r for r in rows if r["action"] == "append")
+    assert new["external_ref"] == "C-1014"
+
+    run_pt("--port", str(portfolio), "import", "batch", str(batch)).ok()
+    assert run_pt("--port", str(portfolio), "validate").ok().data["problems"] == 0
+    stated = _stated(tmp_path, later)
+    assert (
+        run_pt("--port", str(portfolio), "reconcile", "--against", str(stated))
+        .ok()
+        .data["breaks"]
+        == 0
+    )
+
+
+def test_an_initial_extract_into_a_populated_account_is_refused_by_name(
+    run_pt: CliRunner, portfolio: Path, tmp_path: Path
+) -> None:
+    """Seeding again would double every opening position."""
+    _imported(run_pt, portfolio, tmp_path)
+    result = run_pt(
+        "--port",
+        str(portfolio),
+        "import",
+        "broker",
+        str(EXAMPLE),
+        "-o",
+        str(tmp_path / "again.json"),
+        expect=4,
+    )
+    error = result.json()["error"]
+    assert error["code"] == "PT-E-IMPORT-SOURCE"
+    assert "already carries ledger rows from 2025-01-21" in error["message"]
+    assert "--incremental" in error["remedy"]
+    assert error["context"]["accounts"] == ["Brokerage", "Roth IRA"]
+
+
+def test_an_incremental_extract_into_an_empty_account_is_refused_by_name(
+    run_pt: CliRunner, portfolio: Path, tmp_path: Path
+) -> None:
+    """Nothing to extend: the opening positions would be left out entirely."""
+    result = run_pt(
+        "--port",
+        str(portfolio),
+        "import",
+        "broker",
+        str(EXAMPLE),
+        "-o",
+        str(tmp_path / "update.json"),
+        "--incremental",
+        expect=4,
+    )
+    error = result.json()["error"]
+    assert error["code"] == "PT-E-IMPORT-SOURCE"
+    assert error["context"]["accounts"] == ["Brokerage", "Roth IRA"]
+    assert "without --incremental" in error["message"]

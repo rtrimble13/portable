@@ -155,6 +155,11 @@ class DocumentSpec:
     columns: dict[str, str]
     #: For a snapshot whose as-of date is in a page header rather than a column.
     as_of: date | None = None
+    #: The crosswalk file, where this document's identifiers are security
+    #: *names* rather than symbols (``INSTRUMENT_SYMBOL`` absent). Every
+    #: identifier in the document is then resolved through it, and a name it
+    #: does not carry is a refusal. Relative to the adapter directory.
+    crosswalk: str | None = None
     #: Accounts the custodian's snapshot genuinely omits a cash line for. A
     #: declared exception, recorded in the file, rather than a silent pass:
     #: cash on the snapshot is required precisely because cash reconciliation
@@ -317,11 +322,21 @@ def _document(path: Path, kind: str, raw: Any) -> DocumentSpec:
             path,
             f"[documents.{kind}.columns] is missing required field(s) {', '.join(missing)}",
         )
+    crosswalk = raw.get("crosswalk")
+    if crosswalk is not None and (not isinstance(crosswalk, str) or not crosswalk.strip()):
+        raise _invalid(path, f"[documents.{kind}] `crosswalk` must name a file")
+    if crosswalk is not None and "identifier" not in columns:
+        raise _invalid(
+            path,
+            f"[documents.{kind}] declares a crosswalk but maps no `identifier` "
+            f"column, so there is nothing to resolve through it",
+        )
     return DocumentSpec(
         kind=kind,
         file=file_name,
         columns=dict(columns),
         as_of=as_of,
+        crosswalk=crosswalk,
         allow_missing_cash=_strings(path, raw.get("allow_missing_cash", [])),
     )
 

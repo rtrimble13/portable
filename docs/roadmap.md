@@ -87,6 +87,17 @@ fixtures has been validated against the easy case. Designed in
    absence costs. Six named checks earn a capability, and a capability that
    fails its check does not merely go unreported — the data behind it is not
    read.
+4a. **The grammar the first custodian needed** — *done*. Measured against the
+   reference custodian's traps, the mapping files could not express four of
+   them without Python: transaction rows carrying names rather than symbols, one
+   activity word naming several events, sweep bookkeeping that had to be dropped
+   by a rule which could not also swallow a real movement, and both legs of an
+   internal transfer reported once per account. Each is general, so each became
+   grammar (`docs/broker-import.md` §6): a crosswalk, a note key, a
+   cash-equivalent whitelist, and a pairing rule. Alongside them, the two
+   things a periodic update needs: rows already in the ledger are skipped at
+   extract and shown as such, and `pt import broker --incremental` extends an
+   account rather than seeding it twice.
 5. **The first custodian**, as an instance of that adapter, accepted on
    reconciliation rather than on parser tests. **A second custodian is the only
    real test of item 4** — the first one always fits.

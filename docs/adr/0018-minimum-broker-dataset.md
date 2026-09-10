@@ -1,6 +1,6 @@
 # ADR 0018 — The minimum broker dataset, and capability-gated import
 
-- **Status:** Proposed — the capability model, the mapping files and the generic tabular adapter are implemented; the per-custodian post-pass of §4 and the `pt info` carry-forward are not
+- **Status:** Accepted — the capability model, the mapping files and the generic tabular adapter are implemented, and the mapping grammar was widened (a crosswalk, a note key, a cash-equivalent whitelist, a pairing rule) until the reference custodian fit without the per-custodian post-pass §4 allows; nothing needs one today. The `pt info` carry-forward is not implemented
 - **Date:** 2026-09-09
 - **Milestone:** v0.2
 - **Governs:** `CLAUDE.md` invariants 9, 10

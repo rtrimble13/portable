@@ -9,9 +9,16 @@ data, and the exports themselves:
   source.toml        which file is which, how to read its columns, what the
                      adapter claims and the check on data that justifies each
   activity_map.toml  every activity string the custodian emits, mapped once
+  instruments.toml   the name-to-symbol crosswalk, where rows carry names
   holdings.csv       the position statement, with cash
   transactions.csv   the activity history
 ```
+
+The example exercises the whole grammar: an activity word keyed on its note
+(*Expense* is a fee or the transfer that funds another account's fee), a sweep
+movement dropped by a rule that is whitelisted to the account's cash-equivalent
+set, and both legs of an internal transfer paired into one ledger row with the
+receiving account read from the note (ADR 0014).
 
 ```bash
 pt import inspect examples/importers/example-brokerage

@@ -16,6 +16,46 @@ Two rules specific to this repository:
 
 ### Added
 
+- **The mapping grammar the first custodian actually needed, and the
+  incremental import.** Measured against the reference custodian's traps
+  (`docs/broker-import.md` §12), the two mapping files of ADR 0018 could not
+  express four of them without per-custodian Python. Each is general, so each
+  is now grammar rather than a post-pass:
+  - **`instruments.toml`, the crosswalk.** Declared per document
+    (`crosswalk = "instruments.toml"`); every identifier in that document
+    resolves through it and a name it does not carry is refused as
+    `PT-E-INSTRUMENT-UNMAPPED` naming the row. No fuzzy matching. The
+    cash-equivalent set is checked against the resolved identifier, so a sweep
+    vehicle is declared once, by symbol.
+  - **A second key on the note.** A rule may carry `note = "<regex>"` and then
+    applies only where the row's note matches. Once any rule for an activity is
+    keyed on the note, every rule for it must be — an un-keyed rule beside keyed
+    ones would be a default arm — and a row matching none or two of the
+    patterns is refused naming them.
+  - **`cash_equivalent_only`.** A rule restricted to the account's declared
+    cash-equivalent identifiers; anything else under that activity stops the
+    import. This is how sweep bookkeeping is dropped without a blanket rule
+    that could swallow a real movement (ADR 0013).
+  - **`[activity.pair]`, on a `transfer`.** Both legs of an internal transfer,
+    reported once per account, become one ledger row with a counter account
+    and one skip naming it (ADR 0014). Legs pair on date, magnitude, opposite
+    direction and different accounts; `counterpart` reads the other account
+    from the note; `unpaired_out` / `unpaired_in` declare what a leg with no
+    counterpart becomes when the other side is outside the portfolio, and a
+    leg naming an account that *is* in the export but has no matching row
+    refuses as a hole in the history. ADR 0014 is accepted as implemented.
+  - **`cash = "inverted"`**, for a column whose sign is authoritative and
+    backwards.
+  - **`pt import broker --incremental`.** Every import after the first. No
+    seed; a row the ledger already carries is written as a
+    `ledger:already-recorded` skip naming the reference (the overlap that
+    `docs/broker-import.md` §5 designed and nothing implemented); a row on or
+    before the account's first ledger date is a `ledger:before-inception`
+    skip. An initial extract into an account that already has rows, and an
+    incremental one into an account that has none, are both refused by name.
+  - The example adapter exercises all of it and still reconciles to zero
+    breaks, before and after an incremental update.
+
 - **`pt import broker` — the extract stage, and the pipeline runs end to end.**
   ADR 0012's first stage, which turns a custodian's exports plus a cutover
   reconstruction into the reviewable batch the other two stages already
@@ -90,6 +130,17 @@ Two rules specific to this repository:
     Report issuance is its own feature (`PORT-GIPS-J01`/`J02`) and nothing
     writes that table yet; the incompleteness is carried in the output instead.
   - 22 tests.
+
+### Changed
+
+- **A synthesized `external_ref` no longer depends on the row's position in
+  the batch.** ADR 0012's ordinal is now counted among identical source rows
+  rather than taken from the batch index, so the same custodian row gets the
+  same reference in the initial extract and in every incremental one — which is
+  what lets an overlapping export be recognised as an overlap rather than
+  refused as a duplicate. References synthesized by the previous extract differ
+  from these; no portfolio built from a real export exists yet, and a portfolio
+  built from the example fixture should be re-extracted.
 
 ### Fixed
 

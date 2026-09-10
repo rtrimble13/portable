@@ -3,9 +3,16 @@
 #
 # `quantity` and `cash` declare how to read those columns for this activity:
 #   as_stated  the column's own sign is authoritative
+#   inverted   the column's sign is authoritative and backwards -- the custodian
+#              signs from its own side of the ledger, so positive is money out
 #   positive   a magnitude that always means an increase
 #   negative   a magnitude that always means a decrease
 #   none       this activity carries no value in that column at all
+#
+# A rule may carry a `note` pattern as a second key, where one activity word
+# names several events. Once any rule for an activity is keyed on the note,
+# every rule for it must be: an un-keyed rule beside keyed ones would be a
+# default arm for every row the patterns miss.
 
 [[activity]]
 match = "Bought"
@@ -31,14 +38,46 @@ txn_type = "interest"
 quantity = "none"
 cash = "positive"
 
+# ── one activity word, several events ────────────────────────────────────────
+# This custodian writes "Expense" for a fee and for the transfer that funds
+# another account's fee. The note tells them apart, so the rules key on it.
+
 [[activity]]
-match = "Advisory Fee"
+match = "Expense"
+note = "Management Fee"
 txn_type = "fee"
 # Required on any fee: the three return bases are derived from it
 # (PORT-GIPS-D01) and it is a stored fact, never inferred at report time.
 fee_class = "external_mgmt_fee"
 quantity = "none"
 cash = "negative"
+
+[[activity]]
+match = "Expense"
+note = "Transfer to Cover"
+txn_type = "transfer"
+quantity = "none"
+# Positive in the paying account and negative in the receiving one, while
+# every other row in the export is unsigned (ADR 0014).
+cash = "inverted"
+# ADR 0014: both legs of the movement are reported, once per account. They
+# pair on date, magnitude and opposite direction; the paying leg's note names
+# the receiving account, so a day with two such transfers is not a guess. A
+# paying leg whose counterpart is outside the portfolio is money that left.
+[activity.pair]
+counterpart = "FEE FOR (?P<account>.+)$"
+unpaired_out = "withdrawal"
+
+# ── sweep bookkeeping ────────────────────────────────────────────────────────
+
+[[activity]]
+match = "MoneyTransfer"
+skip = true
+# ADR 0013: a movement between the cash ledger and the sweep vehicle is cash
+# either way. Restricted to the account's declared cash-equivalent set, so a
+# MoneyTransfer naming anything else stops the import rather than vanishing.
+cash_equivalent_only = true
+reason = "a movement between the cash ledger and the sweep vehicle; cash either way (ADR 0013)"
 
 [[activity]]
 match = "Contribution"

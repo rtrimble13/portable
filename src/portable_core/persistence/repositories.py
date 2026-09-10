@@ -653,6 +653,19 @@ class TransactionRepository(_Repository):
         ).fetchone()
         return int(row["n"])
 
+    def first_trade_date(self, account_id: int) -> date | None:
+        """The account's earliest ledger row, or ``None`` for an account with none.
+
+        What an incremental import extends from. For an account seeded by a
+        cutover reconstruction this is the cutover date, and a custodian row on
+        or before it is already inside the seeded position (ADR 0017).
+        """
+        row = self.con.execute(
+            'SELECT MIN(trade_date) AS d FROM "transaction" WHERE account_id = ?',
+            (account_id,),
+        ).fetchone()
+        return None if row is None or row["d"] is None else date.fromisoformat(row["d"])
+
     def with_external_ref(self, account_id: int, external_ref: str) -> Transaction | None:
         """The row in *account_id* already carrying *external_ref*, if any.
 

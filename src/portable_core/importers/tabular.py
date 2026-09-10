@@ -61,6 +61,8 @@ from portable_core.importers.capabilities import (
     ImportCapability,
 )
 from portable_core.importers.checks import CHECKS, CheckInput, run_check
+from portable_core.importers.crosswalk import Crosswalk, load_crosswalk
+from portable_core.importers.pairing import Leg, pair_legs
 from portable_core.importers.source import (
     HOLDINGS,
     TRANSACTIONS,
@@ -137,10 +139,18 @@ class AdapterReport:
 class TabularAdapter:
     """Reads one custodian's delimited exports into canonical records."""
 
-    def __init__(self, spec: SourceSpec, activity: ActivityMap, root: Path) -> None:
+    def __init__(
+        self,
+        spec: SourceSpec,
+        activity: ActivityMap,
+        root: Path,
+        crosswalks: dict[str, Crosswalk] | None = None,
+    ) -> None:
         self.spec = spec
         self.activity = activity
         self.root = root
+        #: document kind -> the crosswalk its identifiers resolve through.
+        self.crosswalks = crosswalks or {}
         for check in spec.checks:
             if check.check not in CHECKS:
                 raise ValidationError(
@@ -150,13 +160,45 @@ class TabularAdapter:
                     capability=check.capability.value,
                     check=check.check,
                 )
+        self._check_map_against_columns()
+
+    def _check_map_against_columns(self) -> None:
+        """The map may only read columns the source actually maps.
+
+        Caught here, where both files are in hand, rather than on the first
+        row: a note-keyed rule over a document with no note column would match
+        nothing and refuse every row -- correctly, but six thousand rows into
+        an import instead of at the review.
+        """
+        transactions = self.spec.document(TRANSACTIONS)
+        if self.activity.uses_notes and transactions.column("note") is None:
+            raise ValidationError(
+                "the activity map keys rules on the note (a `note` pattern or a "
+                "pair `counterpart`), but source.toml maps no `note` column for the "
+                "transactions document. Map the column the patterns are meant to "
+                "read",
+                code=E_IMPORT_SOURCE_INVALID,
+            )
+        if self.activity.uses_identifiers and transactions.column("identifier") is None:
+            raise ValidationError(
+                "the activity map restricts a rule to cash-equivalent identifiers "
+                "(`cash_equivalent_only`), but source.toml maps no `identifier` "
+                "column for the transactions document, so there is nothing to check "
+                "against the declared set",
+                code=E_IMPORT_SOURCE_INVALID,
+            )
 
     @classmethod
     def load(cls, path: Path) -> TabularAdapter:
         """Load an adapter from its directory. Both mapping files are required."""
         root = path if path.is_dir() else path.parent
         spec = load_source(path)
-        return cls(spec, load_activity_map(root / "activity_map.toml"), root)
+        crosswalks = {
+            kind: load_crosswalk(root / document.crosswalk)
+            for kind, document in spec.documents.items()
+            if document.crosswalk is not None
+        }
+        return cls(spec, load_activity_map(root / "activity_map.toml"), root, crosswalks)
 
     # ── reading ──────────────────────────────────────────────────────────────
 
@@ -167,7 +209,16 @@ class TabularAdapter:
 
         capabilities = self._capabilities(holdings_rows, transaction_rows)
         holdings = self._holdings(holdings_rows, capabilities)
-        transactions, skipped, mapped = self._transactions(transaction_rows, capabilities)
+        # Every account the export mentions: what a pairing rule's named
+        # counterpart is checked against, to tell a hole in the history from
+        # a movement across the portfolio boundary.
+        accounts = frozenset(
+            {h.account for h in holdings}
+            | {str(r["account"]) for r in transaction_rows if r.get("account")}
+        )
+        transactions, skipped, mapped = self._transactions(
+            transaction_rows, capabilities, accounts
+        )
 
         self._check_cash_is_stated(holdings)
         as_of = self._one_as_of(holdings)
@@ -302,7 +353,7 @@ class TabularAdapter:
         for row in rows:
             index = row["_index"]
             account = _required(row, "account", index)
-            identifier = _required(row, "identifier", index)
+            identifier = self._resolve(HOLDINGS, _required(row, "identifier", index), index)
             quantity = row.get("quantity")
             if not isinstance(quantity, Decimal):
                 raise _missing(index, "quantity", "a holdings line")
@@ -325,7 +376,10 @@ class TabularAdapter:
         return tuple(records)
 
     def _transactions(
-        self, rows: list[dict[str, Any]], capabilities: CapabilitySet
+        self,
+        rows: list[dict[str, Any]],
+        capabilities: CapabilitySet,
+        accounts: frozenset[str],
     ) -> tuple[
         tuple[TransactionRecord, ...],
         tuple[SkippedRow, ...],
@@ -343,39 +397,55 @@ class TabularAdapter:
         records: list[TransactionRecord] = []
         skipped: list[SkippedRow] = []
         mapped: list[MappedTransaction] = []
+        indices: list[int] = []
+        legs: list[Leg] = []
 
         for row in rows:
             index = row["_index"]
+            indices.append(index)
             activity = _required(row, "activity", index)
-            rule = self.activity.rule_for(activity, row=index)
+            rule = self.activity.rule_for(activity, note=row.get("note"), row=index)
             # Built leniently for a skipped row: it will never become a
             # ledger row, so holding it to a ledger row's completeness
             # would refuse the import over a blank in a memo line -- which
             # is frequently the very reason the map skips it.
             record = self._record(row, rule, activity, guarded, index, strict=not rule.skip)
+            self._check_cash_equivalent_only(rule, record, index)
 
             if rule.skip:
                 skipped.append(
                     SkippedRow(index=index, activity=activity, reason=rule.reason or "")
                 )
                 mapped.append(
-                    MappedTransaction(
-                        record=record,
-                        rule=f"activity:{rule.match}",
-                        reason=rule.reason,
-                    )
+                    MappedTransaction(record=record, rule=rule.label, reason=rule.reason)
                 )
                 continue
 
             records.append(record)
+            if rule.pair is not None:
+                # Decided once every row is read: a leg's meaning depends on
+                # whether its other half is in the file.
+                legs.append(Leg(index=index, record=record, rule=rule))
+                mapped.append(MappedTransaction(record=record, rule=rule.label))
+                continue
             mapped.append(
                 MappedTransaction(
                     record=record,
-                    rule=f"activity:{rule.match}",
+                    rule=rule.label,
                     txn_type=rule.txn_type,
                     fee_class=rule.fee_class,
                 )
             )
+
+        if legs:
+            paired = pair_legs(legs, accounts)
+            mapped = [paired.get(i, m) for i, m in zip(indices, mapped, strict=True)]
+            skipped.extend(
+                SkippedRow(index=leg.index, activity=leg.record.activity, reason=reason)
+                for leg in legs
+                if (reason := paired[leg.index].reason) is not None
+            )
+            skipped.sort(key=lambda entry: entry.index)
         return tuple(records), tuple(skipped), tuple(mapped)
 
     def _record(
@@ -406,11 +476,16 @@ class TabularAdapter:
             raw_amount = row.get("amount")
             quantity = raw_quantity if isinstance(raw_quantity, Decimal) else None
             amount = raw_amount if isinstance(raw_amount, Decimal) else None
+        raw_identifier = row.get("identifier")
         return TransactionRecord(
             trade_date=traded,
             account=_required(row, "account", index),
             activity=activity,
-            identifier=row.get("identifier"),
+            identifier=(
+                self._resolve(TRANSACTIONS, raw_identifier, index)
+                if isinstance(raw_identifier, str)
+                else None
+            ),
             quantity=quantity,
             # `Sign.NONE` is the map asserting this activity moves no cash --
             # a stated zero, not an unstated one.
@@ -422,6 +497,64 @@ class TabularAdapter:
             ),
             note=row.get("note"),
         )
+
+    def _resolve(self, document: str, identifier: str, index: int) -> str:
+        """The identifier as the ledger will know it.
+
+        Through the document's crosswalk where one is declared -- the custodian
+        wrote a name, and a name it does not carry is a refusal -- and verbatim
+        otherwise. The cash-equivalent set is checked against the *resolved*
+        identifier, so an adapter declares its sweep vehicles by symbol once
+        rather than by every spelling the custodian uses for them.
+        """
+        crosswalk = self.crosswalks.get(document)
+        if crosswalk is None:
+            return identifier
+        return crosswalk.resolve(identifier, row=index)
+
+    def _check_cash_equivalent_only(
+        self, rule: ActivityRule, record: TransactionRecord, index: int
+    ) -> None:
+        """ADR 0013's whitelist. A rule restricted to sweep vehicles is held to it.
+
+        The rule is usually a skip -- a movement between the cash ledger and
+        the sweep fund is bookkeeping, not an event -- and a skip that also
+        caught a real security would discard a real movement silently. So the
+        row's identifier has to be in the account's declared set, and anything
+        else under this activity stops the import and names itself.
+        """
+        if not rule.cash_equivalent_only:
+            return
+        declared = sorted(
+            self.spec.cash_equivalents.get(record.account, frozenset())
+            | self.spec.cash_equivalents.get("", frozenset())
+        )
+        if record.identifier is None:
+            raise ValidationError(
+                f"row {index}: {rule.match!r} is restricted to cash-equivalent "
+                f"identifiers but the row names none. A sweep movement names its "
+                f"vehicle; a row that does not is something else",
+                code=E_IMPORT_SOURCE_INVALID,
+                row=index,
+                activity=rule.match,
+                declared=declared,
+            )
+        if not self.spec.is_cash_equivalent(record.account, record.identifier):
+            raise ValidationError(
+                f"row {index}: {rule.match!r} names {record.identifier!r}, which is "
+                f"not in the cash-equivalent set declared for {record.account} "
+                f"({', '.join(declared) or 'nothing declared'}). The rule applies "
+                f"only to sweep vehicles (ADR 0013): a real movement must not be "
+                f"handled by a rule written for bookkeeping noise. Map this row "
+                f"under a rule of its own, or add the identifier to "
+                f"[cash_equivalents] if it is genuinely cash",
+                code=E_IMPORT_SOURCE_INVALID,
+                row=index,
+                activity=rule.match,
+                identifier=record.identifier,
+                account=record.account,
+                declared=declared,
+            )
 
     def _cleared(self, document: str, capabilities: CapabilitySet) -> frozenset[str]:
         """Fields whose capability was withheld, and which are therefore unread."""
@@ -501,9 +634,11 @@ def _apply(sign: Sign, value: Any, index: int, field: str) -> Decimal | None:
         raise _missing(index, field, f"an activity mapped with {field} = {sign.value!r}")
     if not isinstance(value, Decimal):  # pragma: no cover -- parsing guarantees it
         raise _missing(index, field, "a transaction")
-    magnitude = abs(value)
     if sign is Sign.AS_STATED:
         return value
+    if sign is Sign.INVERTED:
+        return -value
+    magnitude = abs(value)
     return magnitude if sign is Sign.POSITIVE else -magnitude
 
 
