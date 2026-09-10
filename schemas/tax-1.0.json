@@ -17,7 +17,10 @@
         "long_term_gain",
         "short_term_tax",
         "long_term_tax",
-        "excludes_wash_sales"
+        "excludes_wash_sales",
+        "is_complete",
+        "basis_provenance",
+        "unreportable"
       ],
       "properties": {
         "tax_year": { "type": "integer" },
@@ -28,8 +31,67 @@
         "excludes_wash_sales": {
           "const": true,
           "description": "True until wash-sale detection lands in v0.2. A const, so that flipping it silently is impossible: the schema has to change too."
+        },
+        "is_complete": {
+          "type": "boolean",
+          "description": "False when a disposition was excluded from every total above because no cost basis for it can be derived (ADR 0017 §2b). Required, so an incomplete report cannot be read as a whole one — the same treatment `valuation_snapshot.is_complete` gives a snapshot built from a position that could not be priced."
+        },
+        "approximate_basis": {
+          "description": "Cost basis inside the reported totals that did not come from this portfolio's own ledger.",
+          "$ref": "envelope-1.0.json#/$defs/decimal"
+        },
+        "approximate_basis_share": {
+          "description": "Proportion of reported cost basis resting on a non-derived lot. Measured on basis, not on gain: the basis is the approximate input, and a proportion of a signed total near zero misleads more than it informs. Null when nothing was reported — NOT zero, which would say every basis was exact.",
+          "anyOf": [
+            { "$ref": "envelope-1.0.json#/$defs/decimal" },
+            { "type": "null" }
+          ]
+        },
+        "basis_provenance": {
+          "description": "What rests on each rung of ADR 0017's ladder. A report where every basis is exact and one where a sixth is reconstructed must not look identical.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["basis_source", "dispositions", "proceeds", "cost_basis", "gain"],
+            "properties": {
+              "basis_source": { "$ref": "#/$defs/basis_source" },
+              "dispositions": { "type": "integer", "minimum": 1 },
+              "proceeds": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+              "cost_basis": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+              "gain": { "$ref": "envelope-1.0.json#/$defs/decimal" }
+            }
+          }
+        },
+        "unreportable": {
+          "description": "Dispositions excluded from every total, listed with proceeds only. `cost_basis` and `gain` are REQUIRED to be null: the lot was seeded at cutover market value so cash conservation would close, and the difference between that and the proceeds is the change since an arbitrary date, not a gain. A zero would be read as a figure.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["date", "proceeds", "cost_basis", "gain"],
+            "properties": {
+              "date": { "type": "string", "format": "date" },
+              "account": { "type": ["string", "null"] },
+              "symbol": { "type": ["string", "null"] },
+              "holding_period": { "type": "string", "enum": ["short", "long"] },
+              "proceeds": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+              "cost_basis": { "type": "null" },
+              "gain": { "type": "null" }
+            }
+          }
         }
       }
+    }
+  },
+  "$defs": {
+    "basis_source": {
+      "type": "string",
+      "enum": [
+        "derived",
+        "reconstructed",
+        "estimated",
+        "unavailable",
+        "custodian_asserted"
+      ]
     }
   }
 }

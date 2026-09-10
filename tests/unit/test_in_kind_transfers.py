@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -63,14 +64,28 @@ def instrument() -> Instrument:
     )
 
 
-def _service() -> TradingService:
-    """A service with no repositories.
+class _Ledger:
+    """The one thing these builders read: the next sequence for a date.
 
-    `record_transfer_in` reads none: it validates and builds a row, and the
-    caller commits it. Constructing one without a portfolio is the point --
-    these are checks on the arithmetic, not on the file.
+    Stubbed rather than mocked away, because the reason it is read matters --
+    two in-kind transfers on one date must not collide, and seeding a cutover
+    puts dozens on a single date.
     """
-    return TradingService.__new__(TradingService)
+
+    def __init__(self) -> None:
+        self.issued: list[date] = []
+
+    def next_seq(self, on: date) -> int:
+        self.issued.append(on)
+        return self.issued.count(on)
+
+
+def _service() -> TradingService:
+    """A service with just enough repository behind it to build a row."""
+    service = TradingService.__new__(TradingService)
+    service.repos = SimpleNamespace(transactions=_Ledger())  # type: ignore[assignment]
+    service.check_external_ref = lambda *a, **k: None  # type: ignore[method-assign]
+    return service
 
 
 def _transfer_in(
@@ -84,9 +99,7 @@ def _transfer_in(
     basis_source: BasisSource = BasisSource.CUSTODIAN_ASSERTED,
     assumption: str | None = None,
 ) -> Transaction:
-    service = _service()
-    service.check_external_ref = lambda *a, **k: None  # type: ignore[method-assign]
-    return service.record_transfer_in(
+    return _service().record_transfer_in(
         account,
         instrument,
         Decimal(quantity),
@@ -269,9 +282,7 @@ def test_a_fractional_share_an_account_cannot_hold_is_refused(
 
 def test_a_transfer_out_asserts_no_basis(account: Account, instrument: Instrument) -> None:
     """The lots being relieved already carry their own."""
-    service = _service()
-    service.check_external_ref = lambda *a, **k: None  # type: ignore[method-assign]
-    txn = service.record_transfer_out(
+    txn = _service().record_transfer_out(
         account, instrument, Decimal("40"), TRANSFERRED, value=Decimal("9000.00")
     )
     assert txn.txn_type is TransactionType.TRANSFER_OUT
@@ -341,3 +352,38 @@ def test_the_flow_is_the_market_value_never_the_basis() -> None:
     the whole unrealized gain."""
     row = replace(_row(TransactionType.TRANSFER_IN), original_basis=Decimal("12500.00"))
     assert classify(row, FlowLevel.PORTFOLIO).amount == Decimal("20000.00")
+
+
+def test_two_transfers_on_one_date_get_distinct_sequences(
+    account: Account, instrument: Instrument
+) -> None:
+    """Seeding a cutover puts dozens of these on a single date.
+
+    Every other write path assigns `seq` from the ledger; these two did not,
+    and collided on `UNIQUE (trade_date, seq)` the first time two were recorded
+    for the same day — which is the ordinary case for the feature, not an edge
+    of it. A smoke test caught it.
+    """
+    service = _service()
+    first = service.record_transfer_in(
+        account,
+        instrument,
+        Decimal("100"),
+        TRANSFERRED,
+        value=Decimal("20000.00"),
+        original_basis=Decimal("12500.00"),
+        original_acquired_date=BOUGHT,
+        basis_source=BasisSource.CUSTODIAN_ASSERTED,
+    )
+    second = service.record_transfer_in(
+        account,
+        instrument,
+        Decimal("40"),
+        TRANSFERRED,
+        value=Decimal("8000.00"),
+        original_basis=Decimal("5000.00"),
+        original_acquired_date=BOUGHT,
+        basis_source=BasisSource.CUSTODIAN_ASSERTED,
+    )
+    assert first.seq != second.seq
+    assert (first.seq, second.seq) == (1, 2)

@@ -600,7 +600,11 @@ class TradingService:
             txn_id=0,
             account_id=account.account_id,
             trade_date=on,
-            seq=0,
+            # Every other write path assigns this; these two did not, so two
+            # in-kind transfers on one date collided on UNIQUE(trade_date,
+            # seq). Seeding a cutover creates dozens on a single date, which
+            # is the case this type exists for.
+            seq=self.repos.transactions.next_seq(on),
             txn_type=TransactionType.TRANSFER_IN,
             instrument_id=instrument.instrument_id,
             quantity=quantity,
@@ -661,7 +665,11 @@ class TradingService:
             txn_id=0,
             account_id=account.account_id,
             trade_date=on,
-            seq=0,
+            # Every other write path assigns this; these two did not, so two
+            # in-kind transfers on one date collided on UNIQUE(trade_date,
+            # seq). Seeding a cutover creates dozens on a single date, which
+            # is the case this type exists for.
+            seq=self.repos.transactions.next_seq(on),
             txn_type=TransactionType.TRANSFER_OUT,
             instrument_id=instrument.instrument_id,
             quantity=quantity,

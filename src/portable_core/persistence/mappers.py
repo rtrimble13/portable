@@ -364,6 +364,10 @@ def to_realized_gain(row: sqlite3.Row) -> RealizedGain:
         state_rate=to_optional_decimal(row["state_rate"]),
         niit_rate=to_optional_decimal(row["niit_rate"]),
         estimated_tax=to_optional_decimal(row["estimated_tax"]),
+        # Present only where the query joined the lot. Defaulting to `derived`
+        # would be a claim, so the absence is handled by the caller supplying
+        # the column rather than by guessing here.
+        basis_source=BasisSource(row["basis_source"]),
     )
 
 

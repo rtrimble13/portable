@@ -507,6 +507,16 @@ class RealizedGain:
     state_rate: Decimal | None = None
     niit_rate: Decimal | None = None
     estimated_tax: Decimal | None = None
+    #: ADR 0017 §3. Where the basis of the lot this disposition consumed came
+    #: from. Not a column on `realized_gain` -- it is joined at read time from
+    #: the lot, because the lot is where the fact lives and duplicating it would
+    #: give two places for it to disagree.
+    #:
+    #: It travels **with the gain** for the same reason the flow classification
+    #: travels with the flow: a report that has the number but not its
+    #: provenance cannot disclose one without going back for the other, and the
+    #: one that gets skipped is always the provenance.
+    basis_source: BasisSource = BasisSource.DERIVED
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)

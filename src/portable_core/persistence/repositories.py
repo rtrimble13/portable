@@ -1183,12 +1183,19 @@ class LotRepository(_Repository):
         if account_id is not None:
             clauses.append("account_id = ?")
             params.append(account_id)
-        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        where = f" WHERE {' AND '.join(f'g.{c}' for c in clauses)}" if clauses else ""
+        # Joined to the lot rather than stored on the gain: ADR 0017 §3 needs
+        # every reported gain to carry where its basis came from, and the lot is
+        # where that fact lives. An INNER join is right -- a realized gain
+        # without the disposition and lot behind it is a broken file, not a row
+        # to render with a missing column.
         return [
             mappers.to_realized_gain(r)
             for r in self.con.execute(
-                f"SELECT * FROM realized_gain{where}"  # noqa: S608 -- interpolates fixed literals only; all values are bound
-                " ORDER BY disposition_date, realized_gain_id",
+                "SELECT g.*, l.basis_source FROM realized_gain g "  # noqa: S608 -- interpolates fixed literals only; all values are bound
+                "JOIN lot_disposition d ON d.disposition_id = g.disposition_id "
+                "JOIN lot l ON l.lot_id = d.lot_id"
+                f"{where} ORDER BY g.disposition_date, g.realized_gain_id",
                 params,
             )
         ]
