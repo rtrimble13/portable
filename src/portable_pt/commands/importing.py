@@ -9,8 +9,9 @@ reviewed batch file and writes the ledger.
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -18,7 +19,13 @@ from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.importers import ABSENCE_MEANS, TabularAdapter
 from portable_core.persistence.connection import scratch_transaction
 from portable_core.persistence.connection import transaction as db_transaction
-from portable_core.services.import_batch import BatchImporter, ImportBatch, load_batch
+from portable_core.services.import_batch import (
+    BatchImporter,
+    ImportBatch,
+    dump_batch,
+    load_batch,
+)
+from portable_core.services.import_extract import build_batch, cutover_prices_needed
 from portable_core.services.reconstruction import Reconstruction, reconstruct
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, maybe_dry_run
@@ -407,3 +414,143 @@ def _reconstruction_notes(result: Reconstruction) -> tuple[str, ...]:
             f"output and are reviewed individually, not counted."
         )
     return tuple(notes)
+
+
+def import_broker(
+    adapter: Annotated[
+        Path,
+        typer.Argument(help="An adapter directory holding source.toml and activity_map.toml."),
+    ],
+    out: Annotated[
+        Path,
+        typer.Option("--out", "-o", help="Where to write the batch."),
+    ],
+    cutover: Annotated[
+        str | None,
+        typer.Option(
+            "--cutover",
+            help="Cut over at this date instead of the day before the history begins.",
+        ),
+    ] = None,
+) -> None:
+    """Extract a custodian's exports into a reviewable batch.
+
+    The first stage of the pipeline, and the one that produces something to
+    argue with. It reads the adapter, rolls the history back to derive what was
+    held before it begins (ADR 0017), and writes a batch with two halves:
+
+    **The seed** — one `transfer_in` per position held at the cutover, carrying
+    the basis the reconstruction recovered and the rung it sits on. These exist
+    because a position that predates every available record has to enter the
+    ledger somehow, and every other lot-creating type moves cash.
+
+    **The history** — one row per custodian transaction after the cutover.
+
+    A seeded row needs the **market value on the cutover date**, which is not
+    the cost basis and cannot be substituted for it: the value is the flow that
+    establishes the account's beginning market value, and using the basis
+    instead would make the first period's return wrong by the whole unrealized
+    gain at cutover. So the command refuses when a price is missing and says
+    which instruments need one.
+
+    Nothing is written to the portfolio. Read the batch, edit it, then
+    `pt import batch --dry-run` and `pt import batch`.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+
+        report = TabularAdapter.load(adapter).read()
+        boundary = date.fromisoformat(cutover) if cutover else None
+        result = reconstruct(report.holdings, report.transactions, cutover=boundary)
+
+        prices = _cutover_prices(repos, result)
+        extract = build_batch(
+            broker=report.broker,
+            reconstruction=result,
+            mapped=report.mapped,
+            cutover_prices=prices,
+            files=report.files,
+            capabilities=[c.value for c in report.capabilities.declared],
+        )
+        out.write_text(dump_batch(extract.batch), encoding="utf-8")
+
+        warnings: list[str] = []
+        if extract.unsupported:
+            warnings.append(
+                "the history contains "
+                + ", ".join(extract.unsupported)
+                + " rows, which a batch cannot carry in format version 1. They are "
+                "in the batch as `skip` rows and must be recorded with the typed "
+                "commands, or the position quantities will not reconcile."
+            )
+        if result.findings:
+            warnings.append(
+                f"{len(result.findings)} reconstruction finding(s); run "
+                f"`pt import reconstruct` to read them before committing."
+            )
+        if result.uncertain_dispositions:
+            warnings.append(
+                f"{len(result.uncertain_dispositions)} disposition(s) fall within a "
+                f"year of the cutover, so their holding-period character rests on the "
+                f"seeded acquisition date. Review them individually."
+            )
+
+        return CommandResult(
+            command="import broker",
+            data={
+                "adapter": str(adapter),
+                "batch": str(out),
+                "broker": report.broker,
+                "cutover": result.cutover.isoformat(),
+                "seeded": extract.seeded,
+                "appended": extract.appended,
+                "skipped": extract.skipped,
+                "dropped": extract.dropped,
+                "unsupported": list(extract.unsupported),
+                "by_basis_source": {
+                    source.value: count for source, count in result.by_source().items()
+                },
+            },
+            table=Table(
+                columns=(
+                    Column("action", "Action"),
+                    Column("rule", "Rule"),
+                    Column("rows", "Rows", ColumnKind.INTEGER),
+                ),
+                rows=tuple(_by_rule(extract.batch)),
+                title=f"Batch written to {out}",
+                footnotes=(
+                    "Nothing has been written to the portfolio. Read the batch, "
+                    "then `pt import batch --dry-run`.",
+                    "A seeded row's `amount` is the market value on the cutover "
+                    "date — the flow. `original_basis` is what was paid, at the "
+                    "delivering custodian. They are never interchangeable.",
+                ),
+            ),
+            warnings=tuple(warnings),
+            as_of=result.as_of,
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
+def _cutover_prices(repos: Any, result: Reconstruction) -> dict[str, Decimal]:
+    """The market value per unit on the cutover date, per seeded instrument.
+
+    Looked up rather than derived, and missing entries are left missing: the
+    extract refuses on them and names them, which is the only honest outcome.
+    An instrument the portfolio does not know yet has no price by definition,
+    and that is reported the same way.
+    """
+    prices: dict[str, Decimal] = {}
+    for symbol in cutover_prices_needed(result):
+        instrument = repos.instruments.find(symbol, on=result.cutover)
+        if instrument is None:
+            continue
+        price = repos.prices.newest_on_or_before(instrument.instrument_id, result.cutover)
+        if price is not None:
+            prices[symbol] = price.price
+    return prices

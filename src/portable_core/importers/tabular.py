@@ -39,13 +39,22 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Final
 
-from portable_core.domain.import_records import HoldingRecord, TransactionRecord
+from portable_core.domain.import_records import (
+    HoldingRecord,
+    MappedTransaction,
+    TransactionRecord,
+)
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import (
     E_IMPORT_COLUMN_MISSING,
     E_IMPORT_SOURCE_INVALID,
 )
-from portable_core.importers.activity import ActivityMap, Sign, load_activity_map
+from portable_core.importers.activity import (
+    ActivityMap,
+    ActivityRule,
+    Sign,
+    load_activity_map,
+)
 from portable_core.importers.capabilities import (
     CapabilityFinding,
     CapabilitySet,
@@ -111,6 +120,9 @@ class AdapterReport:
     holdings: tuple[HoldingRecord, ...]
     transactions: tuple[TransactionRecord, ...]
     skipped: tuple[SkippedRow, ...]
+    #: Every transaction row with its activity resolved, skips included. The
+    #: seam ADR 0018 §5 describes: downstream sees this and never the map.
+    mapped: tuple[MappedTransaction, ...]
     #: (file name, sha256) per document read, for the batch's provenance.
     files: tuple[tuple[str, str], ...]
     as_of: date | None = None
@@ -155,7 +167,7 @@ class TabularAdapter:
 
         capabilities = self._capabilities(holdings_rows, transaction_rows)
         holdings = self._holdings(holdings_rows, capabilities)
-        transactions, skipped = self._transactions(transaction_rows, capabilities)
+        transactions, skipped, mapped = self._transactions(transaction_rows, capabilities)
 
         self._check_cash_is_stated(holdings)
         as_of = self._one_as_of(holdings)
@@ -168,6 +180,7 @@ class TabularAdapter:
             holdings=holdings,
             transactions=transactions,
             skipped=skipped,
+            mapped=mapped,
             files=self._digests(),
             as_of=as_of,
             period=(dates[0], dates[-1]) if dates else None,
@@ -313,44 +326,102 @@ class TabularAdapter:
 
     def _transactions(
         self, rows: list[dict[str, Any]], capabilities: CapabilitySet
-    ) -> tuple[tuple[TransactionRecord, ...], tuple[SkippedRow, ...]]:
+    ) -> tuple[
+        tuple[TransactionRecord, ...],
+        tuple[SkippedRow, ...],
+        tuple[MappedTransaction, ...],
+    ]:
+        """Canonical records, the skips, and every row with its rule resolved.
+
+        The third return is the seam ADR 0018 §5 describes: the adapter owns the
+        activity map, so the adapter resolves the activity, and everything
+        downstream works from the resolution rather than from the vocabulary.
+        Skipped rows appear there too — a row deliberately kept out of the
+        ledger is a decision the batch has to be able to show.
+        """
         guarded = self._cleared(TRANSACTIONS, capabilities)
         records: list[TransactionRecord] = []
         skipped: list[SkippedRow] = []
+        mapped: list[MappedTransaction] = []
+
         for row in rows:
             index = row["_index"]
             activity = _required(row, "activity", index)
             rule = self.activity.rule_for(activity, row=index)
+            # Built leniently for a skipped row: it will never become a
+            # ledger row, so holding it to a ledger row's completeness
+            # would refuse the import over a blank in a memo line -- which
+            # is frequently the very reason the map skips it.
+            record = self._record(row, rule, activity, guarded, index, strict=not rule.skip)
+
             if rule.skip:
                 skipped.append(
                     SkippedRow(index=index, activity=activity, reason=rule.reason or "")
                 )
+                mapped.append(
+                    MappedTransaction(
+                        record=record,
+                        rule=f"activity:{rule.match}",
+                        reason=rule.reason,
+                    )
+                )
                 continue
 
-            traded = row.get("trade_date")
-            if not isinstance(traded, date):
-                raise _missing(index, "trade_date", "a transaction")
-            quantity = _apply(rule.quantity, row.get("quantity"), index, "quantity")
-            amount = _apply(rule.cash, row.get("amount"), index, "amount")
-            records.append(
-                TransactionRecord(
-                    trade_date=traded,
-                    account=_required(row, "account", index),
-                    activity=activity,
-                    identifier=row.get("identifier"),
-                    quantity=quantity,
-                    # `Sign.NONE` is the map asserting this activity moves no
-                    # cash -- a stated zero, not an unstated one.
-                    amount=amount if amount is not None else Decimal("0"),
-                    source_row=row["_raw"],
-                    external_id=(None if "external_id" in guarded else row.get("external_id")),
-                    settlement_date=(
-                        None if "settlement_date" in guarded else row.get("settlement_date")
-                    ),
-                    note=row.get("note"),
+            records.append(record)
+            mapped.append(
+                MappedTransaction(
+                    record=record,
+                    rule=f"activity:{rule.match}",
+                    txn_type=rule.txn_type,
+                    fee_class=rule.fee_class,
                 )
             )
-        return tuple(records), tuple(skipped)
+        return tuple(records), tuple(skipped), tuple(mapped)
+
+    def _record(
+        self,
+        row: dict[str, Any],
+        rule: ActivityRule,
+        activity: str,
+        guarded: frozenset[str],
+        index: int,
+        *,
+        strict: bool = True,
+    ) -> TransactionRecord:
+        """One canonical record: signs normalised, withheld capabilities cleared.
+
+        ``strict`` is False only for a row the map skips. Such a row is carried
+        into the batch so the decision is visible, and its numbers are never
+        read -- what a reviewer needs from it is the verbatim source row and
+        the rule that dropped it.
+        """
+        traded = row.get("trade_date")
+        if not isinstance(traded, date):
+            raise _missing(index, "trade_date", "a transaction")
+        if strict:
+            quantity = _apply(rule.quantity, row.get("quantity"), index, "quantity")
+            amount = _apply(rule.cash, row.get("amount"), index, "amount")
+        else:
+            raw_quantity = row.get("quantity")
+            raw_amount = row.get("amount")
+            quantity = raw_quantity if isinstance(raw_quantity, Decimal) else None
+            amount = raw_amount if isinstance(raw_amount, Decimal) else None
+        return TransactionRecord(
+            trade_date=traded,
+            account=_required(row, "account", index),
+            activity=activity,
+            identifier=row.get("identifier"),
+            quantity=quantity,
+            # `Sign.NONE` is the map asserting this activity moves no cash --
+            # a stated zero, not an unstated one.
+            amount=amount if amount is not None else Decimal("0"),
+            source_row=row["_raw"],
+            external_id=(None if "external_id" in guarded else row.get("external_id")),
+            settlement_date=(
+                None if "settlement_date" in guarded else row.get("settlement_date")
+            ),
+            note=row.get("note"),
+        )
 
     def _cleared(self, document: str, capabilities: CapabilitySet) -> frozenset[str]:
         """Fields whose capability was withheld, and which are therefore unread."""

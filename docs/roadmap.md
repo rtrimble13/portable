@@ -66,16 +66,14 @@ fixtures has been validated against the easy case. Designed in
    cannot alter a `CHECK` constraint, so a new `txn_type` value means
    rebuilding the ledger table.
 3a. **Cutover reconstruction** ([ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md))
-   — *the roll-back and the provenance column are done*. `pt import
-   reconstruct` derives the opening position set and each block's basis
-   provenance from the canonical records, reports the findings the roll-back
-   proves about the history, and enumerates the dispositions whose
-   holding-period character rests on a seeded date; `lot.basis_source` is
-   `NOT NULL` with no default, so no writer can create a lot without answering
-   the question. **Still to do:** the seeding step that turns a reconstruction
-   into `transfer_in` rows, and the `pt tax` disclosure of §3 — a realized gain
-   resting on a lot that is not `derived` must be marked, and `unavailable`
-   dispositions excluded from every total rather than printed.
+   — *done*. `pt import reconstruct` derives the opening position set and each
+   block's basis provenance; `pt import broker` turns it into a batch of
+   `transfer_in` rows, the cash held at the cutover, and the history after it;
+   `lot.basis_source` records where every basis came from. **The pipeline runs
+   end to end and reconciles to the custodian's own snapshot** —
+   `docs/broker-import.md` §9, which is the only thing standing behind the
+   reconstruction. Remaining: the `report_issue` row of §2b, which waits on
+   report issuance (`PORT-GIPS-J01`/`J02`) being built at all.
 4. **The generic tabular adapter** ([ADR 0018](adr/0018-minimum-broker-dataset.md))
    — *done*. Two required documents (a holdings snapshot with cash, and a
    transaction history), everything beyond them a declared capability whose

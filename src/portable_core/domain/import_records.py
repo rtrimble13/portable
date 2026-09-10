@@ -38,6 +38,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from portable_core.domain.enums import FeeClass, TransactionType
+
 __all__ = ["HoldingRecord", "TransactionRecord"]
 
 
@@ -98,3 +100,31 @@ class TransactionRecord:
     #: recognition -- `portable` is trade-date accounting (invariant 7).
     settlement_date: date | None = None
     note: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MappedTransaction:
+    """A custodian row with its activity resolved, and nothing else decided.
+
+    The seam between the adapter and everything downstream. The adapter owns
+    the activity map and so it owns this resolution; the batch builder owns
+    what becomes a ledger row and must not need to know what a custodian calls
+    things. Putting the resolved type here rather than letting the builder read
+    the map is what keeps `services` from depending on `importers` — the
+    dependency runs the other way, and a service reaching into an adapter for
+    its input type would make the adapter the thing everything depends on.
+
+    ``txn_type`` is ``None`` for a row the map deliberately keeps out of the
+    ledger; ``reason`` then says why, and a skip without one is refused when
+    the map loads.
+    """
+
+    record: TransactionRecord
+    rule: str
+    txn_type: TransactionType | None = None
+    fee_class: FeeClass | None = None
+    reason: str | None = None
+
+    @property
+    def is_skipped(self) -> bool:
+        return self.txn_type is None

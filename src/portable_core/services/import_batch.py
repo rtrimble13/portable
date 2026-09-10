@@ -27,9 +27,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Final
 
-from portable_core.decimals import from_text
+from portable_core.decimals import from_text, to_text
 from portable_core.domain.enums import (
+    BasisSource,
     FeeClass,
+    ReliefMethod,
     TransactionSource,
     TransactionType,
 )
@@ -47,6 +49,7 @@ __all__ = [
     "BatchSource",
     "ImportBatch",
     "ImportResult",
+    "dump_batch",
     "load_batch",
 ]
 
@@ -80,6 +83,10 @@ _CASH: Final = frozenset(
         TransactionType.MARGIN_INTEREST,
     }
 )
+#: ADR 0015. Securities crossing the portfolio boundary without being traded.
+#: These are what a cutover reconstruction emits: the opening position set has
+#: to enter the ledger somehow, and every other lot-creating type moves cash.
+_IN_KIND: Final = frozenset({TransactionType.TRANSFER_IN, TransactionType.TRANSFER_OUT})
 _INCOME: Final = frozenset(
     {
         TransactionType.DIVIDEND,
@@ -87,7 +94,7 @@ _INCOME: Final = frozenset(
         TransactionType.RETURN_OF_CAPITAL,
     }
 )
-SUPPORTED_TYPES: Final[frozenset[TransactionType]] = _TRADES | _CASH | _INCOME
+SUPPORTED_TYPES: Final[frozenset[TransactionType]] = _TRADES | _CASH | _INCOME | _IN_KIND
 
 _ACTIONS: Final = frozenset({"append", "drop", "skip"})
 
@@ -129,9 +136,25 @@ class BatchRow:
     taxes_withheld: Decimal = ZERO
     withholding_reclaimable: Decimal | None = None
     counter_account: str | None = None
+    #: How a closing trade relieves lots. Stated in the batch rather than left
+    #: to the account default, because ADR 0017 §2a solved the seeded basis
+    #: under an assumed relief method and the ledger has to relieve the same
+    #: way -- a block solved for FIFO and then relieved spec-ID gives a basis
+    #: the solve never computed. Visible in the file, so a reviewer can change
+    #: it, which is what the review is for.
+    relief_method: ReliefMethod | None = None
     ex_date: date | None = None
     is_qualified: bool | None = None
     note: str | None = None
+    #: ADR 0015, on an in-kind row only. `amount` is the market value on the
+    #: transfer date -- the flow -- and these are what the owner paid at the
+    #: delivering custodian. Two numbers, never interchangeable.
+    original_basis: Decimal | None = None
+    original_acquired_date: date | None = None
+    #: ADR 0017. Which rung of the ladder the basis sits on, and the argument
+    #: behind it where the rung is an approximate one.
+    basis_source: BasisSource | None = None
+    basis_assumption: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +235,84 @@ def _date(value: Any, *, index: int, field_name: str) -> date | None:
             row=index,
             field=field_name,
         ) from exc
+
+
+def dump_batch(batch: ImportBatch) -> str:
+    """Serialise a batch to the published format. The inverse of `load_batch`.
+
+    Written by hand rather than by a generic encoder, so that what goes out is
+    exactly what `schemas/import-batch-1.0.json` describes and what comes back
+    in reads identically -- a round trip is the only cheap check that the
+    extract stage and the commit stage agree.
+
+    Sorted keys and a trailing newline: a batch is a file a person reviews and
+    very often a file `git diff` is run over, and a stable key order is what
+    makes the second useful (invariant 6).
+    """
+    document: dict[str, Any] = {
+        "format": FORMAT,
+        "format_version": FORMAT_VERSION,
+        "source": {
+            "broker": batch.source.broker,
+            "capabilities": list(batch.source.capabilities),
+            "files": [{"name": n, "sha256": h} for n, h in batch.source.files],
+        },
+        "rows": [_row_json(row) for row in batch.rows],
+    }
+    if batch.source.period is not None:
+        start, end = batch.source.period
+        document["source"]["period"] = {
+            "from": start.isoformat(),
+            "to": end.isoformat(),
+        }
+    return json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def _row_json(row: BatchRow) -> dict[str, Any]:
+    """One row, with absent fields absent rather than null.
+
+    A batch is read by a person. Forty nulls per row buries the six fields that
+    say what the row is.
+    """
+    payload: dict[str, Any] = {
+        "action": row.action,
+        "rule": row.rule,
+        "source_row": dict(row.source_row),
+    }
+    optional: dict[str, Any] = {
+        "external_ref": row.external_ref,
+        "account": row.account,
+        "txn_type": str(row.txn_type) if row.txn_type else None,
+        "trade_date": row.trade_date.isoformat() if row.trade_date else None,
+        "settlement_date": (row.settlement_date.isoformat() if row.settlement_date else None),
+        "symbol": row.symbol,
+        "quantity": _text(row.quantity),
+        "price": _text(row.price),
+        "amount": _text(row.amount),
+        "fees": _text(row.fees) if row.fees else None,
+        "commissions": _text(row.commissions) if row.commissions else None,
+        "fee_class": str(row.fee_class) if row.fee_class else None,
+        "taxes_withheld": _text(row.taxes_withheld) if row.taxes_withheld else None,
+        "withholding_reclaimable": _text(row.withholding_reclaimable),
+        "counter_account": row.counter_account,
+        "relief_method": str(row.relief_method) if row.relief_method else None,
+        "ex_date": row.ex_date.isoformat() if row.ex_date else None,
+        "is_qualified": row.is_qualified,
+        "original_basis": _text(row.original_basis),
+        "original_acquired_date": (
+            row.original_acquired_date.isoformat() if row.original_acquired_date else None
+        ),
+        "basis_source": str(row.basis_source) if row.basis_source else None,
+        "basis_assumption": row.basis_assumption,
+        "note": row.note,
+    }
+    payload.update({k: v for k, v in optional.items() if v is not None})
+    return payload
+
+
+def _text(value: Decimal | None) -> str | None:
+    """Canonical decimal text, never `str()`. ADR 0005."""
+    return None if value is None else to_text(value)
 
 
 def load_batch(path: Path) -> ImportBatch:
@@ -340,6 +441,17 @@ def _row(raw: Any, index: int) -> BatchRow:
         commissions=_decimal(raw.get("commissions"), index=index, field_name="commissions")
         or ZERO,
         fee_class=FeeClass(raw_class) if raw_class else None,
+        relief_method=_relief(raw.get("relief_method"), index=index),
+        original_basis=_decimal(
+            raw.get("original_basis"), index=index, field_name="original_basis"
+        ),
+        original_acquired_date=_date(
+            raw.get("original_acquired_date"),
+            index=index,
+            field_name="original_acquired_date",
+        ),
+        basis_source=_basis_source(raw.get("basis_source"), index=index),
+        basis_assumption=raw.get("basis_assumption") or None,
         taxes_withheld=_decimal(
             raw.get("taxes_withheld"), index=index, field_name="taxes_withheld"
         )
@@ -452,9 +564,62 @@ class BatchImporter:
 
         if row.txn_type in _TRADES:
             return self._trade(row, account)
+        if row.txn_type in _IN_KIND:
+            return self._in_kind(row, account)
         if row.txn_type in _CASH:
             return self._cash(row, account)
         return self._income(row, account)
+
+    def _in_kind(self, row: BatchRow, account: Any) -> Transaction:
+        """A transfer in or out, through the same service a typed command uses.
+
+        Which means the same refusals: a basis that claims to be `derived` when
+        it came from elsewhere, an approximate rung with no stated assumption,
+        an acquisition date after the transfer, a fractional share an account
+        cannot hold. An importer that reached past those would be a second,
+        laxer path into the ledger, which is the thing ADR 0012 exists to
+        prevent.
+        """
+        if row.symbol is None or row.quantity is None or row.amount is None:
+            raise _fail(
+                f"row {row.index}: an in-kind transfer states its symbol, quantity "
+                f"and amount — the amount being the market value on the transfer "
+                f"date, which is the flow and not the basis",
+                row=row.index,
+            )
+        instrument = self.repos.instruments.resolve(row.symbol, on=row.trade_date)
+        if row.txn_type is TransactionType.TRANSFER_OUT:
+            return self.trading.record_transfer_out(
+                account,
+                instrument,
+                row.quantity,
+                row.trade_date,  # type: ignore[arg-type]
+                value=row.amount,
+                note=row.note,
+                external_ref=row.external_ref,
+                source=TransactionSource.IMPORT,
+            )
+        if row.basis_source is None:
+            raise _fail(
+                f"row {row.index}: a transfer_in states where its basis came from "
+                f"(`basis_source`). It creates a lot, and a lot cannot exist "
+                f"without answering that",
+                row=row.index,
+            )
+        return self.trading.record_transfer_in(
+            account,
+            instrument,
+            row.quantity,
+            row.trade_date,  # type: ignore[arg-type]
+            value=row.amount,
+            original_basis=row.original_basis,
+            original_acquired_date=row.original_acquired_date,
+            basis_source=row.basis_source,
+            basis_assumption=row.basis_assumption,
+            note=row.note,
+            external_ref=row.external_ref,
+            source=TransactionSource.IMPORT,
+        )
 
     def _trade(self, row: BatchRow, account: Any) -> Transaction:
         if row.symbol is None or row.quantity is None or row.price is None:
@@ -474,6 +639,7 @@ class BatchImporter:
                 fees=row.fees,
                 commissions=row.commissions,
                 fee_class=row.fee_class,
+                relief_method=row.relief_method,
                 settlement_date=row.settlement_date,
                 note=row.note,
                 external_ref=row.external_ref,
@@ -528,3 +694,33 @@ class BatchImporter:
             external_ref=row.external_ref,
             source=TransactionSource.IMPORT,
         )
+
+
+def _basis_source(value: Any, *, index: int) -> BasisSource | None:
+    """Parse a declared basis source, or refuse naming the row."""
+    if value is None or value == "":
+        return None
+    try:
+        return BasisSource(str(value))
+    except ValueError as exc:
+        raise _fail(
+            f"row {index}: unknown basis_source {value!r}",
+            row=index,
+            basis_source=str(value),
+            known=sorted(s.value for s in BasisSource),
+        ) from exc
+
+
+def _relief(value: Any, *, index: int) -> ReliefMethod | None:
+    """Parse a declared relief method, or refuse naming the row."""
+    if value is None or value == "":
+        return None
+    try:
+        return ReliefMethod(str(value))
+    except ValueError as exc:
+        raise _fail(
+            f"row {index}: unknown relief_method {value!r}",
+            row=index,
+            relief_method=str(value),
+            known=sorted(m.value for m in ReliefMethod),
+        ) from exc

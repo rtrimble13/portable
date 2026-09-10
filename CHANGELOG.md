@@ -14,6 +14,60 @@ Two rules specific to this repository:
 
 ## [Unreleased]
 
+### Added
+
+- **`pt import broker` — the extract stage, and the pipeline runs end to end.**
+  ADR 0012's first stage, which turns a custodian's exports plus a cutover
+  reconstruction into the reviewable batch the other two stages already
+  understood. `inspect` → `reconstruct` → `broker` → `batch` → `reconcile`.
+  - **It reconciles.** Against the worked example, the imported portfolio
+    matches the custodian's own snapshot exactly — positions *and* cash, zero
+    breaks. `docs/broker-import.md` §9 is the only thing standing behind the
+    reconstruction, and there is now an integration test that runs the whole
+    pipeline and asserts it. The MSFT block, solved backwards under FIFO from
+    the 11,240 the custodian states, arrives back at exactly 11,240.
+  - **A seeded row keeps the two numbers apart.** `amount` is the market value
+    on the cutover date — the flow; `original_basis` is what was paid. A
+    missing cutover price is **refused** (exit 5) naming the instruments, and
+    the remedy says why the basis cannot stand in for it: the value establishes
+    the account's beginning market value, so substituting would make the first
+    period's return wrong by the whole unrealized gain at cutover.
+  - **The cash held at the cutover is seeded too.** Found by running the
+    pipeline: without it every account starts from zero cash and goes negative
+    by exactly its opening balance, and the reconciler reports it as a break.
+    Recorded as a `deposit` on the cutover date — a `withdrawal` where the
+    rolled-back balance is negative, which is a margin loan and not a
+    contribution — on ADR 0015's reasoning that a flow on the opening date
+    establishes beginning market value rather than a flow into the period.
+  - **Every closing trade states FIFO relief** rather than taking the account
+    default. ADR 0017 §2a solved each seeded basis under that assumption, and a
+    block solved for FIFO then relieved spec-ID yields a basis the solve never
+    computed. Written into the batch so a reviewer can see it, change it, and
+    understand that changing it invalidates the solve.
+  - Seed references are synthesized deterministically, so re-committing an
+    extract is refused as a duplicate rather than doubling every position.
+  - A type the batch cannot carry — a split, an option assignment — becomes a
+    `skip` row naming itself, never a silent drop, and the command warns that
+    they must be recorded by hand or quantities will not reconcile.
+  - The batch format gains `transfer_in` / `transfer_out` with
+    `original_basis`, `original_acquired_date`, `basis_source` and
+    `basis_assumption` (ADR 0015), plus `relief_method`; `dump_batch` is the
+    inverse of `load_batch` and a test round-trips through the published
+    schema. 26 tests.
+  - `MappedTransaction` in `domain/import_records.py` is the seam that keeps
+    `services` from depending on `importers`: the adapter owns the activity map
+    and resolves the activity, and the batch builder never learns what a
+    custodian calls things.
+
+### Fixed
+
+- **Two in-kind transfers on one date collided** — `record_transfer_in` and
+  `record_transfer_out` set `seq = 0` where every other write path assigns it
+  from the ledger. Seeding a cutover puts dozens on a single date, so
+  `pt import broker` could not work at all until this was fixed. Also fixed in
+  the tax-disclosure pull request; the two changes are identical and either
+  order merges cleanly.
+
 ### Schema
 
 - **`schema_version` 2 → 3**, migration `0003_in_kind_transfers_and_basis_source`.

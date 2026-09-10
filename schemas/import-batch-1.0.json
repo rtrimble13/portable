@@ -103,7 +103,9 @@
           "enum": [
             "buy", "sell", "sell_short", "buy_to_cover",
             "deposit", "withdrawal", "transfer", "interest", "fee", "margin_interest",
-            "dividend", "coupon", "return_of_capital"
+            "dividend", "coupon", "return_of_capital",
+            "transfer_in",
+            "transfer_out"
           ],
           "description": "The types a batch can carry in format_version 1 -- those with a service behind them. Corporate actions and the options lifecycle are refused rather than half-supported: they need the position context a typed command has."
         },
@@ -130,6 +132,36 @@
           "description": "Required wherever a fee is present. The three return bases are derived from it, so portable refuses rather than guessing (PORT-GIPS-D01)."
         },
         "taxes_withheld": { "anyOf": [{ "$ref": "#/$defs/decimal" }, { "type": "null" }] },
+        "relief_method": {
+          "description": "How a closing trade relieves lots. Stated in the batch rather than left to the account default: ADR 0017 §2a solved every seeded basis under an assumed relief method, and the ledger has to relieve the same way — a block solved for FIFO and then relieved spec-ID yields a basis the solve never computed. Changing it here invalidates the solve.",
+          "type": "string",
+          "enum": ["spec", "fifo", "lifo", "hifo", "lofo", "avg"]
+        },
+        "original_basis": {
+          "description": "ADR 0015, on transfer_in only: total cost basis at the DELIVERING custodian. Not the transfer's value — `amount` is that. Using value as basis makes every future sale report the gain since the transfer; using basis as value makes the period's return wrong by the whole unrealized gain. Absent under basis_source 'unavailable', where no figure is supportable.",
+          "anyOf": [
+            { "$ref": "envelope-1.0.json#/$defs/decimal" },
+            { "type": "null" }
+          ]
+        },
+        "original_acquired_date": {
+          "description": "When the owner originally bought the shares. Becomes the lot's open date and holding-period start: a change of custodian is not a disposition.",
+          "anyOf": [{ "$ref": "#/$defs/date" }, { "type": "null" }]
+        },
+        "basis_source": {
+          "description": "ADR 0017. REQUIRED on transfer_in, which creates a lot. Never 'derived' — that means portable computed the basis from its own ledger, and a transferred lot's came from elsewhere.",
+          "type": "string",
+          "enum": [
+            "custodian_asserted",
+            "reconstructed",
+            "estimated",
+            "unavailable"
+          ]
+        },
+        "basis_assumption": {
+          "description": "How an approximate basis was arrived at. Required for 'reconstructed', 'estimated' and 'unavailable': an approximation with no stated reasoning is indistinguishable from a number somebody made up.",
+          "type": ["string", "null"]
+        },
         "withholding_reclaimable": {
           "anyOf": [{ "$ref": "#/$defs/decimal" }, { "type": "null" }],
           "description": "Null and zero differ: null says nobody stated a split, zero says none of it is reclaimable (PORT-GIPS-A06)."
