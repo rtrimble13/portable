@@ -41,14 +41,9 @@ pt import batch batch.json
 pt reconcile --account <acct> --against holdings.csv --as-of <date>
 ```
 
-**Implemented so far:** `pt import inspect` (the adapter and the capability
-report), `pt import reconstruct` (the roll-back of §7, reported and not
-written), and `pt import batch` (validate and commit). `pt import broker` — the
-step that turns canonical records and a reconstruction into a batch — needs the
-`transfer_in` / `transfer_out` transaction types of ADR 0015 and the
-`lot.basis_source` column of ADR 0017, both of which are schema changes; until
-those land, `inspect` and `reconstruct` read and report and nothing writes a
-batch.
+**The pipeline is complete.** `inspect` and `reconstruct` read and report;
+`broker` writes a batch; `batch` validates and commits; `reconcile` is the
+acceptance test. Nothing before `pt import batch` writes to the portfolio.
 
 Three commands rather than one, deliberately. The ledger is append-only: a wrong
 row is corrected with a reversing entry that stays visible for the life of the
@@ -363,10 +358,41 @@ default to a two-year window — the portfolio's reporting inception is the
 transaction history's first date, not the date the accounts opened
 ([ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md)).
 
-**Implemented as `pt import reconstruct`**, which reports and writes nothing.
-Seeding the ledger from it is a separate step, and keeping the two apart is what
-makes the reconstruction re-runnable — the correct response to finding a mapping
-error is to re-derive the cutover state and rebuild, never to patch lots.
+**Implemented as `pt import reconstruct`**, which reports and writes nothing,
+and as `pt import broker`, which turns the same result into batch rows. Keeping
+the two apart is what makes the reconstruction re-runnable — the correct
+response to finding a mapping error is to re-derive the cutover state and
+rebuild, never to patch lots.
+
+Three things the seed needs that the roll-back does not supply:
+
+**A market value at the cutover.** Each `transfer_in` carries two numbers that
+must not be conflated: `amount` is what the shares were worth on the cutover
+day, and `original_basis` is what was paid. `pt import broker` **refuses** when
+a cutover price is missing and names the instruments. There is no honest
+substitute, and the basis — the number to hand — is exactly the one that must
+not be used: the value establishes the account's beginning market value, so
+substituting the basis would make the first period's return wrong by the whole
+unrealized gain at cutover.
+
+**The cash held at the cutover.** Seeded as a `deposit` on the cutover date —
+or a `withdrawal` where the rolled-back balance is negative, which is a margin
+loan and not a contribution. Without it the account starts from zero cash and
+every purchase drives it negative by exactly the opening balance, which the
+reconciler reports as a break. Recording it as a flow needs the justification
+ADR 0015 already gives: a flow on the account's opening date establishes its
+beginning market value rather than a flow into the period, and the cutover
+*is* the reporting inception (§7, ADR 0017 §1). That exception belongs to the
+return engine and is not yet implemented; until it is, no first-period return
+is computed and nothing reads the classification.
+
+**A relief method on every closing trade.** The seeded basis was solved under
+an assumed FIFO relief (ADR 0017 §2a), so the ledger has to relieve the same
+way: a block solved for FIFO and then relieved spec-ID yields a basis the solve
+never computed. `pt import broker` writes `relief_method: "fifo"` on each
+closing row rather than leaving it to the account default — visible in the
+file, changeable by the reviewer, and understood to invalidate the solve if
+changed.
 
 **The opening position set is derived, not read.** Apply the transaction history
 **in reverse** to the holdings snapshot to obtain the holding of every instrument

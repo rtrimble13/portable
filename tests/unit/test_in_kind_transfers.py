@@ -362,7 +362,8 @@ def test_two_transfers_on_one_date_get_distinct_sequences(
     Every other write path assigns `seq` from the ledger; these two did not,
     and collided on `UNIQUE (trade_date, seq)` the first time two were recorded
     for the same day — which is the ordinary case for the feature, not an edge
-    of it. A smoke test caught it.
+    of it. A smoke test caught it, and `pt import broker` cannot seed a cutover
+    at all without the fix.
     """
     service = _service()
     first = service.record_transfer_in(
