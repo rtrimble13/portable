@@ -67,10 +67,14 @@ fixtures has been validated against the easy case. Designed in
    rebuilding the ledger table.
 3a. **Cutover reconstruction** ([ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md))
    — *done*. `pt import reconstruct` derives the opening position set and each
-   block's basis provenance; `pt import broker` turns it into a batch of
-   `transfer_in` rows, the cash held at the cutover, and the history after it;
-   `lot.basis_source` records where every basis came from. **The pipeline runs
-   end to end and reconciles to the custodian's own snapshot** —
+   block's basis provenance; `lot.basis_source` is `NOT NULL` with no default;
+   `pt import broker` turns the reconstruction into a batch of `transfer_in`
+   rows, the cash held at the cutover, and the history after it; and `pt tax`
+   and `pt pnl` mark every reported figure with the rung it rests on, state the
+   share of reported basis that is not this portfolio's own arithmetic, and
+   **exclude an `unavailable` disposition from every total**, listing it
+   separately with proceeds only and marking the year incomplete. **The
+   pipeline runs end to end and reconciles to the custodian's own snapshot** —
    `docs/broker-import.md` §9, which is the only thing standing behind the
    reconstruction. Remaining: the `report_issue` row of §2b, which waits on
    report issuance (`PORT-GIPS-J01`/`J02`) being built at all.

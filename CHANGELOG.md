@@ -58,15 +58,57 @@ Two rules specific to this repository:
     `services` from depending on `importers`: the adapter owns the activity map
     and resolves the activity, and the batch builder never learns what a
     custodian calls things.
+- **`pt tax` and `pt pnl` disclose where each basis came from** — ADR 0017 §3,
+  the half that makes the provenance ladder protect something rather than
+  merely record it.
+  - **A disposition resting on an `unavailable` lot is excluded from every
+    total.** That lot was seeded at cutover market value so cash conservation
+    would close and the position engine had a lot to relieve; the difference
+    between that seed and the proceeds is the change since an arbitrary date
+    wearing the units of a gain. It is reported separately with **proceeds
+    only** — basis and gain are `null`, never zero, because a zero is read as a
+    figure — and the year is marked `is_complete: false`. The same treatment
+    `valuation_snapshot.is_complete` gives a snapshot built from a position
+    that could not be priced.
+  - **Everything reported is labelled.** A per-disposition "Basis from" column,
+    a per-rung breakdown that sums exactly to the reported basis, and the share
+    of reported basis that is not this portfolio's own arithmetic. The share is
+    measured on **cost basis** and not on gain, deliberately: the basis is the
+    approximate input, and a proportion of a signed total near zero misleads
+    more than it informs. `null` when nothing was reported, `0` when everything
+    was exact — different claims.
+  - `RealizedGain` carries `basis_source`, joined from the lot at read time
+    rather than duplicated onto `realized_gain`. It travels **with the gain**
+    for the reason the flow classification travels with the flow: a report
+    holding the number but not its provenance has to go back for the second
+    one, and the one that gets skipped is always the provenance.
+  - `schemas/tax-1.0.json` requires `is_complete`, `basis_provenance` and
+    `unreportable`, and requires the excluded rows' `cost_basis` and `gain` to
+    be **null** — so a consumer cannot receive an incomplete report shaped like
+    a whole one.
+  - Not implemented, and stated rather than stubbed: §2b's `report_issue` row.
+    Report issuance is its own feature (`PORT-GIPS-J01`/`J02`) and nothing
+    writes that table yet; the incompleteness is carried in the output instead.
+  - 22 tests.
 
 ### Fixed
 
-- **Two in-kind transfers on one date collided** — `record_transfer_in` and
+- **Two in-kind transfers on one date collided.** `record_transfer_in` and
   `record_transfer_out` set `seq = 0` where every other write path assigns it
-  from the ledger. Seeding a cutover puts dozens on a single date, so
-  `pt import broker` could not work at all until this was fixed. Also fixed in
-  the tax-disclosure pull request; the two changes are identical and either
-  order merges cleanly.
+  from the ledger, so the second transfer on a given day failed
+  `UNIQUE (trade_date, seq)`. Seeding a cutover puts dozens on a single date —
+  the case the transaction type exists for — so this would have broken on first
+  real use. Found by a smoke test, not by the suite.
+- **`machine()` did not recurse.** Only a top-level `Decimal` became a string,
+  so any command putting a nested structure in `data` raised `Object of type
+  Decimal is not JSON serializable`. Call sites had begun hand-stringifying
+  around it, which is worse than it looks: `str(Decimal("1E+2"))` is `"1E+2"`
+  where the canonical form is `"100"` — the exact trap ADR 0005 names and
+  `formatters.quantity` already documents. Fixed in the formatter, once, and
+  the workarounds in `pt import reconstruct` removed.
+- **The human `data` block rendered nested values as reprs**, printing
+  `Decimal('6000.00')` to somebody reading a terminal. It now goes through the
+  same presentation path as everything else.
 
 ### Schema
 

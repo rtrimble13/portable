@@ -21,7 +21,7 @@ from portable_core.formatters.model import (
     CommandResult,
     OutputFormat,
 )
-from portable_core.formatters.numbers import NULL_TEXT, human
+from portable_core.formatters.numbers import NULL_TEXT, human, machine
 
 __all__ = ["render", "supports_color"]
 
@@ -253,7 +253,11 @@ def _render_plain(result: CommandResult) -> str:
     if result.data:
         width = max((len(k) for k in result.data), default=0)
         for key in sorted(result.data):
-            value = result.data[key]
+            # Through `machine` first: a nested structure printed raw shows
+            # `Decimal('6000.00')` to a human reading a terminal, which is a
+            # repr, not a number. Flat values are unaffected -- the canonical
+            # text and `str()` agree for anything already quantized.
+            value = machine(result.data[key])
             lines.append(f"{key.ljust(width)}  {NULL_TEXT if value is None else value}")
         lines.append("")
 

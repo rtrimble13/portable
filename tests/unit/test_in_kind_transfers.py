@@ -361,9 +361,9 @@ def test_two_transfers_on_one_date_get_distinct_sequences(
 
     Every other write path assigns `seq` from the ledger; these two did not,
     and collided on `UNIQUE (trade_date, seq)` the first time two were recorded
-    for one day — the ordinary case for the feature, not an edge of it. This
-    fix is also in the pull request for the tax disclosure; it is here because
-    without it `pt import broker` cannot seed a cutover at all.
+    for the same day — which is the ordinary case for the feature, not an edge
+    of it. A smoke test caught it, and `pt import broker` cannot seed a cutover
+    at all without the fix.
     """
     service = _service()
     first = service.record_transfer_in(
@@ -386,4 +386,5 @@ def test_two_transfers_on_one_date_get_distinct_sequences(
         original_acquired_date=BOUGHT,
         basis_source=BasisSource.CUSTODIAN_ASSERTED,
     )
+    assert first.seq != second.seq
     assert (first.seq, second.seq) == (1, 2)

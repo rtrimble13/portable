@@ -223,6 +223,48 @@ Each of these stops the command rather than producing a number.
 
 ---
 
+## Where a basis came from, and when a gain is not reported
+
+[ADR 0017](adr/0017-cutover-reconstruction-and-basis-provenance.md). A basis
+`portable` computed from its own ledger is exact. A basis that entered the file
+from somewhere else is not necessarily, and the difference is recorded on the
+lot as `basis_source` — `NOT NULL` with no default, so no writer can create a
+lot without answering the question.
+
+| `basis_source` | What it means | In a report |
+|---|---|---|
+| `derived` | Computed from this portfolio's ledger. Exact. | Counted, unmarked |
+| `custodian_asserted` | Read from a custodian's lot-detail report | Counted, marked |
+| `reconstructed` | Today's stated basis less every later addition. Exact as an aggregate, averaged within the block | Counted, marked |
+| `estimated` | A partly consumed block solved backwards under an assumed relief method | Counted, marked |
+| `unavailable` | Nothing survives to anchor a solve | **Excluded from every total** |
+
+`pt tax` and `pt pnl` state the share of reported cost basis that did not come
+from this portfolio's own ledger, and the per-disposition column says which rung
+each figure rests on. The share is measured on **basis** rather than on gain,
+deliberately: the basis is the approximate input — proceeds and dates come from
+the ledger and are exact — and a proportion of a signed total that may be near
+zero misleads more often than it informs.
+
+### Why `unavailable` is excluded rather than reported
+
+A lot on that rung was seeded at its market value on the cutover date. That
+value exists so cash conservation closes (`CLAUDE.md` invariant 4) and the
+position engine has a lot to relieve. **It is not a basis claim.** The
+difference between it and the proceeds is the change since an arbitrary date,
+wearing the units of a gain and carrying none of its meaning.
+
+So the disposition is left out of every total, listed separately with its
+proceeds — which are exact, they come from the sale — and its basis and gain
+reported as **null, never zero**. The year is marked `is_complete: false`. This
+is the treatment `valuation_snapshot.is_complete` already gives a snapshot built
+from a position that could not be priced, and it is `CLAUDE.md`'s rule that
+blank and zero must never mean the same thing, one level up.
+
+For the affected years the custodian's 1099-B is the authority and always was.
+What `portable` must not do is print a number that looks like a tax figure and
+is the gain since an arbitrary cutover instead.
+
 ## Wash sales — not implemented
 
 **`pt tax` does not account for wash sales.** Detection is deferred to v0.2
