@@ -318,7 +318,7 @@ any case (§5), and the typed commands record them with the position context
 they need. A per-custodian post-pass remains a documented deviation, not the
 norm, and nothing currently needs one.
 
-### Four things a rule can say beyond its type
+### Six things a rule can say beyond its type
 
 Each was forced by the reference custodian and each is general, so each is
 grammar rather than a post-pass.
@@ -334,29 +334,57 @@ refusal naming the patterns tried, never a fall-through; a row matching two is a
 refusal naming the map. A map that keys on notes over a source that maps no
 `note` column is refused when the adapter loads.
 
-**A cash-equivalent whitelist.** `cash_equivalent_only = true` restricts a rule
-to rows whose identifier is in the account's declared cash-equivalent set. This
-is how sweep bookkeeping is dropped: a `skip` rule for the custodian's
-*MoneyTransfer* that is also whitelisted discards a movement between the cash
-ledger and the sweep fund, and **stops the import** on a *MoneyTransfer* naming
-anything else. The one thing that must never happen is a real movement
-discarded by a rule written for bookkeeping noise, and a blanket skip on the
-activity word is exactly that.
+**A third key on the identifier's class.** `identifiers = "cash_equivalents"`
+or `"securities"` restricts a rule to rows whose identifier is, or is not, in
+the account's declared cash-equivalent set, and the same all-or-none rule
+binds: once one rule for an activity and note is class-keyed, its siblings
+must be. Two uses. A `skip` rule for the custodian's *MoneyTransfer* keyed to
+`cash_equivalents` discards a movement between the cash ledger and the sweep
+fund and **stops the import** on a *MoneyTransfer* naming anything else — the
+one thing that must never happen is a real movement discarded by a rule
+written for bookkeeping noise, and a blanket skip on the activity word is
+exactly that. And one word for two events: a distribution *reinvested* into
+the sweep is income into cash, while the same word on a fund is income and a
+lot (`dividend_reinvest`), and only the identifier's class tells them apart.
+
+**A value, where no cash moved.** `amount` on a record is the cash the
+account's balance moved. A reinvested distribution and an in-kind receipt move
+none, and are still worth something: `value = "positive"` reads the amount
+column as the event's stated value instead (a magnitude), and a rule may read
+the column as one or the other, never both. The cash roll-back reads the cash;
+the batch carries the value as the row's amount and derives the unit price
+from it.
 
 **A pairing rule.** A custodian that reports both legs of an internal transfer,
 once per account, has reported one event twice; `portable` records a transfer
 once, as one row with a counter account (ADR 0007). A rule with
 `txn_type = "transfer"` must carry an `[activity.pair]` table, and the adapter
-pairs its rows on trade date, magnitude, opposite direction and different
-accounts. The outbound leg becomes the `transfer`; the inbound leg is carried
-as a skip naming it. `counterpart = "<regex with (?P<account>...)>"` reads the
-other account's name from the note, so two IRAs funded with the same amount on
-the same day are not a guess — and a leg naming an account that *is* in the
-export but has no matching row is a hole in the history and refuses, whatever
-else the rule says. `unpaired_out = "withdrawal"` and `unpaired_in = "deposit"`
-declare what a leg with no counterpart becomes when the other side is outside
-the portfolio; absent, an unpaired leg is a refusal. Direction is the leg's
-direction and the fallbacks are checked against it at load.
+pairs its rows on magnitude, opposite direction, different accounts, and a
+trade date within `window_days` of each other (default zero, meaning the same
+day; the reference custodian dates the receiving leg three days before the
+paying one). The nearest date wins and a tie refuses. The outbound leg becomes
+the `transfer`; the inbound leg is carried as a skip naming it.
+`counterpart = '<regex with (?P<account>...)>'` reads the other account from
+the note, so two IRAs funded with the same amount in the same week are not a
+guess — and a leg naming an account that *is* in the export but has no
+matching row is a hole in the history and refuses, whatever else the rule
+says. Where the note names accounts by number, capture only the part that
+tells them apart and resolve it through `[account_aliases]` in `source.toml`
+(`"48" = "IRA"`), so the number is in no mapping file. `unpaired_out =
+"withdrawal"` and `unpaired_in = "deposit"` declare what a leg with no
+counterpart becomes when the other side is outside the portfolio; absent, an
+unpaired leg is a refusal. Direction is the leg's direction and the fallbacks
+are checked against it at load.
+
+**An attachment.** A custodian that reports tax withheld at source as its own
+line — one per foreign dividend, same day, same security — has reported one
+event in two rows. Withholding is tax, not a fee, and the return is earned on
+the gross while the cash moves by the net (`PORT-GIPS-A06`), so the ledger wants
+the income row with `taxes_withheld` on it. A rule with
+`attach = "taxes_withheld"` (and no `txn_type`) folds its row's amount into the
+one income row on the same day, in the same account, on the same instrument,
+and is carried as a skip naming it; none or two such rows refuse. Whether any
+of the withholding is reclaimable is a separate fact the batch carries per row.
 
 **An inverted sign.** `cash = "inverted"` for a column whose sign is
 authoritative and backwards — the custodian signs from its own side of the
@@ -410,20 +438,23 @@ unknown transaction type or check name, a capability declared twice, a date
 pattern that is invalid *or that carries only part of a date* (`%Y-%m` parses
 happily and silently returns the first of the month), a note pattern or
 counterpart pattern that is not a valid regex, an un-keyed rule beside
-note-keyed rules for the same activity, a transfer with no pairing table, a
-pairing table on anything but a transfer, a counterpart pattern with no
-`account` group, a fallback pointing the wrong way, a crosswalk name mapped
-twice, and a map that reads a column (`note`, `identifier`) the source does not
-map.
+note-keyed or class-keyed rules for the same activity, an unknown identifier
+class, a rule reading the amount column as both `cash` and `value`, a transfer
+with no pairing table, a pairing table on anything but a transfer, a
+counterpart pattern with no `account` group, a negative window, a fallback
+pointing the wrong way, an attachment that also names a type or a skip, a
+crosswalk name mapped twice, and a map that reads a column (`note`,
+`identifier`) the source does not map.
 
 Everything wrong with the *data* is refused with the row quoted: a mapped column
 the file does not have (the error lists the headers it does have), a cell that is
 not a number in the declared format, a date matching no declared pattern, a blank
 where the map expects a value, a note matching none or two of an activity's
-patterns, an instrument name the crosswalk does not carry, a whitelisted rule
-reached by an identifier outside the cash-equivalent set, a transfer leg with two
-candidate counterparts or with a named counterpart that is in the export but
-has no matching row, a snapshot carrying two as-of dates, and a snapshot
+patterns, an identifier of a class no rule for its activity names, an
+instrument name the crosswalk does not carry, a transfer leg with two candidate
+counterparts at the same distance or with a named counterpart that is in the
+export but has no matching row, a withholding line with no single same-day
+income row to attach to, a snapshot carrying two as-of dates, and a snapshot
 stating no cash for an account — which is refusable rather than tolerable
 because cash reconciliation is the only check that catches a sign error or a
 dropped row. An account whose custodian genuinely reports no cash line is listed
@@ -458,7 +489,17 @@ a cutover price is missing and names the instruments. There is no honest
 substitute, and the basis — the number to hand — is exactly the one that must
 not be used: the value establishes the account's beginning market value, so
 substituting the basis would make the first period's return wrong by the whole
-unrealized gain at cutover.
+unrealized gain at cutover. One source other than the price table is accepted:
+an account funded in kind on the day the history begins has, for each position
+received, a row on the cutover date stating the units and what they were worth,
+and that valuation — the custodian's own — is used where the table has nothing,
+and recorded on the seed row as where the price came from.
+
+**A snapshot dated before the history ends** is ordinary: the position
+statement is pulled one day and the history the next. Rows dated after the
+snapshot are not in the state being rolled back and are set aside, named in a
+finding, and appended as history like any other; reconcile as of the snapshot
+date rather than the history's end.
 
 **The cash held at the cutover.** Seeded as a `deposit` on the cutover date —
 or a `withdrawal` where the rolled-back balance is negative, which is a margin
@@ -694,7 +735,7 @@ reconstruction enumerates them for review.
 the cash ledger and two cash-equivalent vehicles, in pairs with the event that
 caused it. Recording both halves counts every dividend twice. *Generalises, and is
 grammar:* the drop rule is a **whitelist** of the account's declared
-cash-equivalent identifiers (`cash_equivalent_only`, §6), and a transfer naming
+cash-equivalent identifiers (`identifiers = "cash_equivalents"`, §6), and a transfer naming
 anything outside that set is a refusal — the one thing that must never happen is
 a real movement discarded by a rule written for bookkeeping noise.
 

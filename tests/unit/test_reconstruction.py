@@ -420,3 +420,18 @@ def test_a_cutover_past_the_end_of_the_history_is_refused() -> None:
             [_txn(date(2025, 3, 1), "AAPL", "10", "-1500.00")],
             cutover=date(2026, 1, 1),
         )
+
+
+def test_rows_after_the_snapshot_are_not_rolled_back_and_are_named() -> None:
+    """A history pulled a day after the position statement carries rows the
+    snapshot does not reflect. Subtracting them would leave a hole in every
+    account they touch; they are set aside and reported."""
+    sale = _txn(date(2025, 6, 1), "AAPL", "-10", "2000.00")
+    later = _txn(date(2026, 7, 1), None, None, "50.00", activity="Dividend")
+    result = reconstruct([_hold("AAPL", "30"), SWEEP], [sale, later], cutover=CUTOVER)
+    cash = next(c for c in result.cash if c.account == "Main")
+    # Only the sale moved cash inside the window the snapshot covers.
+    assert cash.moved_after == Decimal("2000.00")
+    finding = next(f for f in result.findings if f.kind == "after_snapshot")
+    assert "1 row(s) are dated after the snapshot (2026-06-30)" in finding.detail
+    assert "2026-07-01" in finding.detail

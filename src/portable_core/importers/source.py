@@ -198,6 +198,12 @@ class SourceSpec:
     #: account name -> identifiers that are cash for that account. The empty
     #: string keys the default set (ADR 0013, generalised by ADR 0018).
     cash_equivalents: dict[str, frozenset[str]] = field(default_factory=dict)
+    #: A token a note uses for an account -> the account's name, folded. For
+    #: a custodian that refers to accounts by number in the note, so that a
+    #: pairing rule's counterpart can be resolved without the number appearing
+    #: in a mapping file: capture the part of it that distinguishes the
+    #: accounts and alias that.
+    account_aliases: dict[str, str] = field(default_factory=dict)
     checks: tuple[CapabilityCheck, ...] = ()
     root: Path | None = None
     note: str | None = None
@@ -247,6 +253,7 @@ def load_source(path: Path) -> SourceSpec:
     documents = _documents(spec_path, raw.get("documents"))
     numbers = _numbers(spec_path, raw.get("format", {}))
     cash = _cash_equivalents(spec_path, raw.get("cash_equivalents", {}))
+    aliases = _aliases(spec_path, raw.get("account_aliases", {}))
     checks = _checks(spec_path, raw.get("capability", []), documents)
 
     return SourceSpec(
@@ -255,6 +262,7 @@ def load_source(path: Path) -> SourceSpec:
         documents=documents,
         numbers=numbers,
         cash_equivalents=cash,
+        account_aliases=aliases,
         checks=checks,
         root=root,
         note=raw.get("note") if isinstance(raw.get("note"), str) else None,
@@ -422,6 +430,17 @@ def _cash_equivalents(path: Path, raw: Any) -> dict[str, frozenset[str]]:
         key = "" if account == "default" else account
         declared[key] = frozenset(i.strip().casefold() for i in _strings(path, identifiers))
     return declared
+
+
+def _aliases(path: Path, raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        raise _invalid(path, "[account_aliases] is not a table")
+    aliases: dict[str, str] = {}
+    for token, account in raw.items():
+        if not isinstance(account, str) or not account.strip():
+            raise _invalid(path, f"[account_aliases] {token!r} names no account")
+        aliases[" ".join(str(token).split()).casefold()] = account.strip()
+    return aliases
 
 
 def _checks(

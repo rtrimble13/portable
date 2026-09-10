@@ -23,7 +23,7 @@ and refuses, whatever fallback the rule declares.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Final
@@ -60,20 +60,39 @@ class Leg:
     def magnitude(self) -> Decimal:
         return abs(self.record.amount)
 
+    #: The counterpart the note names, resolved through the aliases. Set by
+    #: `pair_legs`, which has the aliases; a leg built elsewhere has none.
+    aliases: Mapping[str, str] | None = None
+
     @property
     def named(self) -> str | None:
-        return self.spec.named_counterpart(self.record.note)
+        raw = self.spec.named_counterpart(self.record.note)
+        if raw is None or not self.aliases:
+            return raw
+        return self.aliases.get(_key(raw), raw)
 
 
-def pair_legs(legs: Sequence[Leg], accounts: frozenset[str]) -> dict[int, MappedTransaction]:
+def pair_legs(
+    legs: Sequence[Leg],
+    accounts: frozenset[str],
+    aliases: Mapping[str, str] | None = None,
+) -> dict[int, MappedTransaction]:
     """Resolve every leg to what it becomes, keyed by row index.
 
     ``accounts`` is every account the export mentions. A named counterpart in
     that set with no matching leg is a hole in the history and refuses; one
     outside it is a movement across the portfolio boundary and takes the
-    rule's declared fallback.
+    rule's declared fallback. ``aliases`` maps the token a note uses for an
+    account to the account's name.
+
+    Legs pair within the rule's ``window_days``, nearest date first. Two
+    candidates at the same distance are an ambiguity and refuse.
     """
     known = {_key(a) for a in accounts}
+    legs = [
+        Leg(index=leg.index, record=leg.record, rule=leg.rule, aliases=aliases or {})
+        for leg in legs
+    ]
     for leg in legs:
         if leg.record.amount == ZERO:
             raise _refuse(
@@ -88,15 +107,29 @@ def pair_legs(legs: Sequence[Leg], accounts: frozenset[str]) -> dict[int, Mapped
     resolved: dict[int, MappedTransaction] = {}
 
     for out in outbound:
+        window = max(out.spec.window_days, 0)
         candidates = [
             leg
             for leg in unmatched.values()
-            if leg.record.trade_date == out.record.trade_date
+            if abs((leg.record.trade_date - out.record.trade_date).days)
+            <= max(window, leg.spec.window_days)
             and leg.magnitude == out.magnitude
             and _key(leg.record.account) != _key(out.record.account)
             and (out.named is None or _key(out.named) == _key(leg.record.account))
             and (leg.named is None or _key(leg.named) == _key(out.record.account))
         ]
+        if len(candidates) > 1:
+            # Nearest date first; only a tie is an ambiguity.
+            by_distance = sorted(
+                candidates,
+                key=lambda leg: abs((leg.record.trade_date - out.record.trade_date).days),
+            )
+            nearest = abs((by_distance[0].record.trade_date - out.record.trade_date).days)
+            candidates = [
+                leg
+                for leg in by_distance
+                if abs((leg.record.trade_date - out.record.trade_date).days) == nearest
+            ]
         if len(candidates) > 1:
             raise _refuse(
                 f"row {out.index}: {out.rule.match!r} out of {out.record.account} for "

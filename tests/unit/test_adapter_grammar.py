@@ -333,7 +333,7 @@ SWEEP_ACTIVITY = (
 [[activity]]
 match = "MoneyTransfer"
 skip = true
-cash_equivalent_only = true
+identifiers = "cash_equivalents"
 reason = "a movement between the cash ledger and the sweep vehicle; cash either way (ADR 0013)"
 """
 )
@@ -352,9 +352,10 @@ def test_the_same_rule_refuses_a_movement_naming_anything_else(tmp_path: Path) -
     transactions = TRANSACTIONS + "01/07/2026,Main,MoneyTransfer,AAPL,,500.00,Journal\n"
     with pytest.raises(ValidationError) as excinfo:
         _read(tmp_path, activity=SWEEP_ACTIVITY, transactions=transactions)
-    assert "not in the cash-equivalent set declared for Main" in str(excinfo.value)
-    assert excinfo.value.context["identifier"] == "AAPL"
-    assert excinfo.value.context["declared"] == ["sweep"]
+    assert excinfo.value.code == "PT-E-ACTIVITY-UNMAPPED"
+    assert "names a security identifier" in str(excinfo.value)
+    assert excinfo.value.context["classes"] == ["cash_equivalents"]
+    assert "row 2" in str(excinfo.value)
 
 
 def test_the_whitelist_is_per_account(tmp_path: Path) -> None:
@@ -376,7 +377,7 @@ def test_the_whitelist_is_per_account(tmp_path: Path) -> None:
 
 def test_a_restricted_row_with_no_identifier_is_refused(tmp_path: Path) -> None:
     transactions = TRANSACTIONS + "01/07/2026,Main,MoneyTransfer,,,500.00,Sweep\n"
-    with pytest.raises(ValidationError, match="names none"):
+    with pytest.raises(ValidationError, match="names no identifier"):
         _read(tmp_path, activity=SWEEP_ACTIVITY, transactions=transactions)
 
 
@@ -406,7 +407,7 @@ txn_type = "transfer"
 # signs from its own side of the ledger.
 cash = "inverted"
 [activity.pair]
-counterpart = "FEE FOR (?P<account>.+)$"
+counterpart = 'FEE FOR (?P<account>.+)$'
 unpaired_out = "withdrawal"
 """
 )
@@ -488,7 +489,7 @@ def test_an_unpaired_inbound_leg_is_refused_without_its_own_fallback(tmp_path: P
 
 def test_two_candidates_with_nothing_to_choose_between_them_are_refused(tmp_path: Path) -> None:
     """Two IRAs funded with the same amount on the same day."""
-    activity = PAIR_ACTIVITY.replace('counterpart = "FEE FOR (?P<account>.+)$"\n', "")
+    activity = PAIR_ACTIVITY.replace("counterpart = 'FEE FOR (?P<account>.+)$'\n", "")
     holdings = HOLDINGS + "03/31/2026,Roth,SWEEP,100.00\n"
     transactions = TRANSACTIONS + (
         "01/07/2026,Main,Expense,,,150.00,Transfer to Cover\n"
@@ -588,3 +589,400 @@ def test_the_reference_date_survives_a_pairing_report(tmp_path: Path) -> None:
     """A pairing rule changes what rows mean, never when they happened."""
     report = _read(tmp_path, activity=PAIR_ACTIVITY, transactions=QUARTER)
     assert report.period == (date(2026, 1, 6), date(2026, 1, 7))
+
+
+# ── the identifier class as a key ────────────────────────────────────────────
+
+REINVEST_ACTIVITY = (
+    ACTIVITY
+    + """
+[[activity]]
+match = "Reinvested Dividend"
+identifiers = "cash_equivalents"
+txn_type = "dividend"
+quantity = "none"
+cash = "positive"
+
+[[activity]]
+match = "Reinvested Dividend"
+identifiers = "securities"
+txn_type = "dividend_reinvest"
+quantity = "positive"
+cash = "positive"
+"""
+)
+
+
+def test_one_activity_word_maps_by_the_class_of_its_identifier(tmp_path: Path) -> None:
+    """A distribution reinvested into the sweep is income; into a fund it is
+    income and a lot. The custodian writes one word for both."""
+    transactions = TRANSACTIONS + (
+        "01/07/2026,Main,Reinvested Dividend,SWEEP,12.5,12.50,sweep dividend\n"
+        "01/07/2026,Main,Reinvested Dividend,AAPL,0.5,100.00,fund dividend\n"
+    )
+    report = _read(tmp_path, activity=REINVEST_ACTIVITY, transactions=transactions)
+    sweep, fund = report.mapped[1], report.mapped[2]
+    assert sweep.txn_type is TransactionType.DIVIDEND and sweep.record.quantity is None
+    assert fund.txn_type is TransactionType.DIVIDEND_REINVEST
+    assert fund.record.quantity == Decimal("0.5")
+    assert fund.rule == "activity:Reinvested Dividend [securities]"
+
+
+def test_a_class_keyed_rule_beside_an_unkeyed_sibling_is_refused_at_load(
+    tmp_path: Path,
+) -> None:
+    activity = REINVEST_ACTIVITY + (
+        '\n[[activity]]\nmatch = "Reinvested Dividend"\ntxn_type = "dividend"\n'
+    )
+    with pytest.raises(ValidationError, match="no `identifiers` class beside"):
+        load_activity_map(_adapter(tmp_path, activity=activity) / "activity_map.toml")
+
+
+def test_an_invalid_identifier_class_lists_the_valid_ones(tmp_path: Path) -> None:
+    activity = (
+        ACTIVITY + '\n[[activity]]\nmatch = "X"\nidentifiers = "bonds"\ntxn_type = "buy"\n'
+    )
+    with pytest.raises(ValidationError, match="cash_equivalents, securities"):
+        load_activity_map(_adapter(tmp_path, activity=activity) / "activity_map.toml")
+
+
+def test_note_and_class_keys_compose(tmp_path: Path) -> None:
+    """Two keys on one activity: first the note narrows, then the class."""
+    activity = (
+        ACTIVITY
+        + """
+[[activity]]
+match = "Income"
+note = "Reinvest"
+identifiers = "cash_equivalents"
+txn_type = "interest"
+quantity = "none"
+cash = "positive"
+
+[[activity]]
+match = "Income"
+note = "Reinvest"
+identifiers = "securities"
+txn_type = "dividend_reinvest"
+quantity = "positive"
+cash = "positive"
+
+[[activity]]
+match = "Income"
+note = "Cash"
+txn_type = "dividend"
+quantity = "none"
+cash = "positive"
+"""
+    )
+    transactions = TRANSACTIONS + (
+        "01/07/2026,Main,Income,SWEEP,1,1.00,Reinvest\n"
+        "01/07/2026,Main,Income,AAPL,1,1.00,Reinvest\n"
+        "01/07/2026,Main,Income,AAPL,,1.00,Cash\n"
+    )
+    report = _read(tmp_path, activity=activity, transactions=transactions)
+    assert [m.txn_type for m in report.mapped[1:]] == [
+        TransactionType.INTEREST,
+        TransactionType.DIVIDEND_REINVEST,
+        TransactionType.DIVIDEND,
+    ]
+
+
+# ── pairing across a date window, and by alias ───────────────────────────────
+
+COUNTERPART_LINE = "counterpart = 'FEE FOR \\S*?(?P<account>\\d{2})$'\n"
+WINDOW_ACTIVITY = (
+    ACTIVITY
+    + r"""
+[[activity]]
+match = "Expense"
+note = "Transfer to Cover"
+txn_type = "transfer"
+cash = "inverted"
+[activity.pair]
+counterpart = 'FEE FOR \S*?(?P<account>\d{2})$'
+window_days = 5
+unpaired_out = "withdrawal"
+"""
+)
+ALIAS_SOURCE = SOURCE + '\n[account_aliases]\n"48" = "IRA"\n"49" = "Roth"\n'
+
+
+def test_legs_pair_across_the_declared_window_nearest_first(tmp_path: Path) -> None:
+    """The reference custodian dates the receiving leg three days before the
+    paying one. Same day is never assumed; the window is declared."""
+    holdings = HOLDINGS + "03/31/2026,Roth,SWEEP,100.00\n"
+    transactions = TRANSACTIONS + (
+        "01/04/2026,IRA,Expense,,,-150.00,Transfer to Cover FEE PAID BY OTHER\n"
+        "01/07/2026,Main,Expense,,,150.00,Transfer to Cover FEE FOR WEF000048\n"
+    )
+    report = _read(
+        tmp_path,
+        source=ALIAS_SOURCE,
+        activity=WINDOW_ACTIVITY,
+        holdings=holdings,
+        transactions=transactions,
+    )
+    paying = next(m for m in report.mapped if m.txn_type is TransactionType.TRANSFER)
+    assert paying.counter_account == "IRA"
+
+
+def test_an_alias_resolves_the_token_the_note_uses_for_an_account(tmp_path: Path) -> None:
+    """The note names accounts by number; the alias keeps the number out of
+    the mapping file and still lets the counterpart decide."""
+    holdings = HOLDINGS + "03/31/2026,Roth,SWEEP,100.00\n"
+    transactions = TRANSACTIONS + (
+        "01/04/2026,IRA,Expense,,,150.00,Transfer to Cover FEE PAID BY OTHER\n"
+        "01/04/2026,Roth,Expense,,,150.00,Transfer to Cover FEE PAID BY OTHER\n"
+        "01/07/2026,Main,Expense,,,150.00,Transfer to Cover FEE FOR WEF000049\n"
+        "01/07/2026,Main,Expense,,,150.00,Transfer to Cover FEE FOR WEF000048\n"
+    )
+    # Both receiving legs are inbound, so their cash sign must read as such
+    # under "inverted": the custodian writes them negative.
+    transactions = transactions.replace(
+        ",150.00,Transfer to Cover FEE PAID", ",-150.00,Transfer to Cover FEE PAID"
+    )
+    report = _read(
+        tmp_path,
+        source=ALIAS_SOURCE,
+        activity=WINDOW_ACTIVITY,
+        holdings=holdings,
+        transactions=transactions,
+    )
+    transfers = sorted(
+        (m.record.note or "")[-2:] + "->" + (m.counter_account or "")
+        for m in report.mapped
+        if m.txn_type is TransactionType.TRANSFER
+    )
+    assert transfers == ["48->IRA", "49->Roth"]
+
+
+def test_two_candidates_at_the_same_distance_are_refused(tmp_path: Path) -> None:
+    activity = WINDOW_ACTIVITY.replace(COUNTERPART_LINE, "")
+    holdings = HOLDINGS + "03/31/2026,Roth,SWEEP,100.00\n"
+    transactions = TRANSACTIONS + (
+        "01/04/2026,IRA,Expense,,,-150.00,Transfer to Cover\n"
+        "01/10/2026,Roth,Expense,,,-150.00,Transfer to Cover\n"
+        "01/07/2026,Main,Expense,,,150.00,Transfer to Cover\n"
+    )
+    with pytest.raises(ValidationError, match="could pair with rows"):
+        _read(tmp_path, activity=activity, holdings=holdings, transactions=transactions)
+
+
+def test_the_nearer_candidate_wins_when_distances_differ(tmp_path: Path) -> None:
+    activity = WINDOW_ACTIVITY.replace(COUNTERPART_LINE, "")
+    holdings = HOLDINGS + "03/31/2026,Roth,SWEEP,100.00\n"
+    transactions = TRANSACTIONS + (
+        "01/04/2026,IRA,Expense,,,-150.00,Transfer to Cover\n"
+        "01/06/2026,Roth,Expense,,,-150.00,Transfer to Cover\n"
+        "01/07/2026,Main,Expense,,,150.00,Transfer to Cover\n"
+        "01/09/2026,Main,Expense,,,150.00,Transfer to Cover\n"
+    )
+    report = _read(tmp_path, activity=activity, holdings=holdings, transactions=transactions)
+    pairs = [
+        (m.record.trade_date.day, m.counter_account)
+        for m in report.mapped
+        if m.txn_type is TransactionType.TRANSFER
+    ]
+    assert pairs == [(7, "Roth"), (9, "IRA")]
+
+
+def test_a_leg_outside_the_window_does_not_pair(tmp_path: Path) -> None:
+    activity = WINDOW_ACTIVITY.replace("window_days = 5", "window_days = 1")
+    transactions = TRANSACTIONS + (
+        "01/04/2026,IRA,Expense,,,-150.00,Transfer to Cover FEE PAID BY OTHER\n"
+        "01/07/2026,Main,Expense,,,150.00,Transfer to Cover FEE FOR WEF000048\n"
+    )
+    with pytest.raises(ValidationError, match="names 'IRA' as the receiving account"):
+        _read(tmp_path, source=ALIAS_SOURCE, activity=activity, transactions=transactions)
+
+
+def test_a_negative_window_is_refused_at_load(tmp_path: Path) -> None:
+    activity = WINDOW_ACTIVITY.replace("window_days = 5", "window_days = -1")
+    with pytest.raises(ValidationError, match="non-negative integer"):
+        load_activity_map(_adapter(tmp_path, activity=activity) / "activity_map.toml")
+
+
+# ── withholding attached to its income row ───────────────────────────────────
+
+WITHHOLD_ACTIVITY = (
+    ACTIVITY
+    + """
+[[activity]]
+match = "Dividend"
+txn_type = "dividend"
+quantity = "none"
+cash = "positive"
+
+[[activity]]
+match = "Foreign Tax Paid"
+attach = "taxes_withheld"
+quantity = "none"
+cash = "negative"
+"""
+)
+
+
+def test_a_withholding_line_lands_on_its_income_row_as_taxes_withheld(tmp_path: Path) -> None:
+    """PORT-GIPS-A06: withholding is tax, not a fee. The return is earned on
+    the gross and the cash moved by the net, and the ledger wants both on one
+    row."""
+    transactions = TRANSACTIONS + (
+        "01/07/2026,Main,Dividend,AAPL,,100.00,APPLE INC\n"
+        "01/07/2026,Main,Foreign Tax Paid,AAPL,,15.00,APPLE INC\n"
+    )
+    report = _read(tmp_path, activity=WITHHOLD_ACTIVITY, transactions=transactions)
+    dividend, tax = report.mapped[1], report.mapped[2]
+    assert dividend.txn_type is TransactionType.DIVIDEND
+    assert dividend.taxes_withheld == Decimal("15.00")
+    assert dividend.record.amount == Decimal("100.00")  # gross, as the custodian stated
+    assert tax.is_skipped and "attached to row 2" in tax.rule
+    assert any(s.index == 3 for s in report.skipped)
+    # Both rows stay in the records: the cash roll-back needs the net.
+    assert sum(t.amount for t in report.transactions if t.identifier == "AAPL") == Decimal(
+        "-15000.00"
+    ) + Decimal("85.00")
+
+
+@pytest.mark.parametrize(
+    ("extra", "complaint"),
+    [
+        ("01/07/2026,Main,Foreign Tax Paid,AAPL,,15.00,x\n", "no income row to attach to"),
+        (
+            "01/07/2026,Main,Dividend,AAPL,,100.00,x\n"
+            "01/07/2026,Main,Dividend,AAPL,,50.00,x\n"
+            "01/07/2026,Main,Foreign Tax Paid,AAPL,,15.00,x\n",
+            "could attach to rows 2, 3",
+        ),
+        (
+            "01/07/2026,Main,Dividend,AAPL,,100.00,x\n"
+            "01/07/2026,Main,Foreign Tax Paid,AAPL,,0.00,x\n",
+            "withholds nothing",
+        ),
+    ],
+)
+def test_an_attachment_with_no_single_target_is_refused(
+    tmp_path: Path, extra: str, complaint: str
+) -> None:
+    with pytest.raises(ValidationError, match=complaint):
+        _read(tmp_path, activity=WITHHOLD_ACTIVITY, transactions=TRANSACTIONS + extra)
+
+
+@pytest.mark.parametrize(
+    ("body", "complaint"),
+    [
+        ('[[activity]]\nmatch = "T"\nattach = "fees"\n', "invalid `attach`"),
+        (
+            '[[activity]]\nmatch = "T"\nattach = "taxes_withheld"\ntxn_type = "fee"\n',
+            "neither a ledger row nor a skip",
+        ),
+    ],
+)
+def test_everything_wrong_with_an_attach_is_refused_at_load(
+    tmp_path: Path, body: str, complaint: str
+) -> None:
+    with pytest.raises(ValidationError, match=complaint):
+        load_activity_map(_adapter(tmp_path, activity=body) / "activity_map.toml")
+
+
+def test_the_withholding_survives_into_the_batch() -> None:
+    from portable_core.domain.import_records import MappedTransaction, TransactionRecord
+    from portable_core.services.import_extract import build_incremental_batch
+
+    record = TransactionRecord(
+        trade_date=date(2026, 1, 7),
+        account="Main",
+        activity="Dividend",
+        identifier="AAPL",
+        quantity=None,
+        amount=Decimal("100.00"),
+        source_row={},
+    )
+    extract = build_incremental_batch(
+        broker="acme",
+        mapped=[
+            MappedTransaction(
+                record=record,
+                rule="activity:Dividend",
+                txn_type=TransactionType.DIVIDEND,
+                taxes_withheld=Decimal("15.00"),
+            )
+        ],
+        inception={"Main": date(2025, 1, 1)},
+        in_ledger=lambda a, r: False,
+    )
+    row = extract.batch.rows[0]
+    assert row.amount == Decimal("100.00") and row.taxes_withheld == Decimal("15.00")
+
+
+# ── value, where no cash moved ───────────────────────────────────────────────
+
+VALUE_ACTIVITY = (
+    ACTIVITY
+    + """
+[[activity]]
+match = "Reinvested"
+txn_type = "dividend_reinvest"
+quantity = "positive"
+cash = "none"
+value = "positive"
+"""
+)
+
+
+def test_a_rule_can_read_the_amount_as_value_rather_than_cash(tmp_path: Path) -> None:
+    """A reinvested distribution moves no cash and is worth something. The
+    record keeps the two apart: the cash roll-back reads one, the batch reads
+    the other."""
+    transactions = TRANSACTIONS + "01/07/2026,Main,Reinvested,AAPL,0.5,100.00,fund\n"
+    report = _read(tmp_path, activity=VALUE_ACTIVITY, transactions=transactions)
+    record = report.transactions[1]
+    assert record.amount == Decimal("0")
+    assert record.value == Decimal("100.00")
+    assert record.quantity == Decimal("0.5")
+
+
+def test_a_rule_reading_one_column_as_two_facts_is_refused_at_load(tmp_path: Path) -> None:
+    activity = VALUE_ACTIVITY.replace(
+        'cash = "none"\nvalue = "positive"', 'cash = "positive"\nvalue = "positive"'
+    )
+    with pytest.raises(ValidationError, match="both `cash` and `value`"):
+        load_activity_map(_adapter(tmp_path, activity=activity) / "activity_map.toml")
+
+
+def test_a_value_is_a_magnitude(tmp_path: Path) -> None:
+    activity = VALUE_ACTIVITY.replace('value = "positive"', 'value = "negative"')
+    with pytest.raises(ValidationError, match="a value is a magnitude"):
+        load_activity_map(_adapter(tmp_path, activity=activity) / "activity_map.toml")
+
+
+def test_the_value_is_what_the_batch_carries_when_no_cash_moved() -> None:
+    from portable_core.domain.import_records import MappedTransaction, TransactionRecord
+    from portable_core.services.import_extract import build_incremental_batch
+
+    record = TransactionRecord(
+        trade_date=date(2026, 1, 7),
+        account="Main",
+        activity="Reinvested",
+        identifier="AAPL",
+        quantity=Decimal("0.5"),
+        amount=Decimal("0"),
+        source_row={},
+        value=Decimal("100.00"),
+    )
+    extract = build_incremental_batch(
+        broker="acme",
+        mapped=[
+            MappedTransaction(
+                record=record,
+                rule="activity:Reinvested",
+                txn_type=TransactionType.DIVIDEND_REINVEST,
+            )
+        ],
+        inception={"Main": date(2025, 1, 1)},
+        in_ledger=lambda a, r: False,
+    )
+    row = extract.batch.rows[0]
+    assert row.amount == Decimal("100.00")
+    assert row.quantity == Decimal("0.5")
+    assert row.price == Decimal("200")

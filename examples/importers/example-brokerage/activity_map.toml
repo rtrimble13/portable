@@ -76,7 +76,7 @@ skip = true
 # ADR 0013: a movement between the cash ledger and the sweep vehicle is cash
 # either way. Restricted to the account's declared cash-equivalent set, so a
 # MoneyTransfer naming anything else stops the import rather than vanishing.
-cash_equivalent_only = true
+identifiers = "cash_equivalents"
 reason = "a movement between the cash ledger and the sweep vehicle; cash either way (ADR 0013)"
 
 [[activity]]

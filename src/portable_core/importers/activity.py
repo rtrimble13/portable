@@ -74,6 +74,15 @@ class Sign(StrEnum):
 
 _SIGNS = frozenset(s.value for s in Sign)
 
+#: The identifier classes a rule may be keyed on. ADR 0013 generalised: a
+#: sweep vehicle is cash, and whether a row names one changes what the row
+#: means -- a reinvested distribution into the sweep is income, into a fund
+#: it is income and a lot.
+_IDENTIFIER_CLASSES = frozenset({"cash_equivalents", "securities"})
+
+#: What a row may attach to another row as, instead of becoming a row.
+_ATTACHMENTS = frozenset({"taxes_withheld"})
+
 #: What an unpaired transfer leg may become. Direction is checked against the
 #: leg: an outbound leg can only fall back to a withdrawal, an inbound one only
 #: to a deposit, because the alternative is a flow pointing the wrong way.
@@ -98,8 +107,16 @@ class PairSpec:
     """
 
     #: A regex over the note with a named group ``account``; where it matches,
-    #: the leg pairs only with that account. Optional.
+    #: the leg pairs only with that account. Optional. The captured text is
+    #: resolved through the source's account aliases, where declared, so a
+    #: custodian that names accounts by number in the note is still expressible
+    #: without the number.
     counterpart: re.Pattern[str] | None = None
+    #: How many days apart the two legs may be dated. Zero means the same day.
+    #: The reference custodian dates the receiving leg three days before the
+    #: paying one in most quarters, and a window that is too wide is refused
+    #: only by ambiguity -- so declare the narrowest one the data needs.
+    window_days: int = 0
     #: What an outbound leg becomes when its counterpart is outside the
     #: portfolio. ``None`` means an unpaired outbound leg is a refusal.
     unpaired_out: TransactionType | None = None
@@ -130,6 +147,13 @@ class ActivityRule:
     txn_type: TransactionType | None
     quantity: Sign
     cash: Sign
+    #: How to read the amount column as the event's *value* where the event
+    #: moves no cash: a distribution reinvested into units, securities received
+    #: in kind. ``cash`` says what the account's balance did; ``value`` says
+    #: what the event was worth. Both read the same column, and a rule that
+    #: sets both to something other than ``none`` is refused, because one
+    #: column cannot be two different facts.
+    value: Sign = Sign.NONE
     fee_class: FeeClass | None = None
     #: A row this custodian emits that must not become a ledger row -- a
     #: position-only memo line, a duplicated summary row. Skipping is a
@@ -140,27 +164,45 @@ class ActivityRule:
     #: pattern matches, and every other rule for this activity must carry one
     #: too. Searched case-insensitively.
     note_pattern: re.Pattern[str] | None = None
-    #: ADR 0013, generalised. The rule applies only to rows whose identifier is
-    #: in the account's declared cash-equivalent set; any other identifier
-    #: under this activity is a refusal. This is what makes a sweep drop a
+    #: The third key, ADR 0013 generalised: ``"cash_equivalents"`` or
+    #: ``"securities"``. Where set, the rule applies only to rows whose
+    #: identifier is, or is not, in the account's declared cash-equivalent set
+    #: -- and every other rule for this activity and note must carry one too. A
+    #: class no rule names is a refusal. This is what makes a sweep drop a
     #: whitelist rather than a blanket: the one thing that must never happen
     #: is a real movement discarded by a rule written for bookkeeping noise.
-    cash_equivalent_only: bool = False
+    identifiers: str | None = None
     #: ADR 0014. Present on, and only on, a ``transfer``.
     pair: PairSpec | None = None
+    #: A row that is not an event but a fact about another row: a withholding
+    #: line that belongs on the same-day income row as ``taxes_withheld``
+    #: (PORT-GIPS-A06 -- withholding is tax, not a fee). The row's amount is
+    #: attached and the row itself is carried as a skip naming its target.
+    attach: str | None = None
 
     @property
     def label(self) -> str:
-        """The rule as a batch names it: the activity, and the note key if any."""
-        if self.note_pattern is None:
+        """The rule as a batch names it: the activity and its keys, if any."""
+        keys = [
+            k
+            for k in (
+                self.note_pattern.pattern if self.note_pattern else None,
+                self.identifiers,
+            )
+            if k
+        ]
+        if not keys:
             return f"activity:{self.match}"
-        return f"activity:{self.match} [{self.note_pattern.pattern}]"
+        return f"activity:{self.match} [{', '.join(keys)}]"
 
     def apply_quantity(self, value: Decimal | None) -> Decimal | None:
         return _signed(value, self.quantity)
 
     def apply_cash(self, value: Decimal | None) -> Decimal | None:
         return _signed(value, self.cash)
+
+    def apply_value(self, value: Decimal | None) -> Decimal | None:
+        return _signed(value, self.value)
 
 
 def _signed(value: Decimal | None, sign: Sign) -> Decimal | None:
@@ -182,7 +224,12 @@ class ActivityMap:
     path: Path | None = None
 
     def rule_for(
-        self, activity: str, *, note: str | None = None, row: int | None = None
+        self,
+        activity: str,
+        *,
+        note: str | None = None,
+        cash_equivalent: bool | None = None,
+        row: int | None = None,
     ) -> ActivityRule:
         """The rule for one activity string, or a refusal naming the row.
 
@@ -197,7 +244,10 @@ class ActivityMap:
         must match the row's note. None is a refusal naming the patterns that
         were tried; more than one is a refusal naming the map, because two
         patterns that both match one row is an ambiguity in the file, not in
-        the data.
+        the data. Where they are keyed on the identifier class, the row's
+        identifier decides, and ``cash_equivalent`` says which class it is in
+        (``None``: the row names no identifier, which no class-keyed rule
+        accepts).
         """
         key = _key(activity)
         candidates = [rule for rule in self.rules if _key(rule.match) == key]
@@ -212,18 +262,34 @@ class ActivityMap:
                 mapped=list(dict.fromkeys(rule.match for rule in self.rules)),
                 path=str(self.path) if self.path else None,
             )
-        if len(candidates) == 1 and candidates[0].note_pattern is None:
-            return candidates[0]
+        if candidates[0].note_pattern is not None:
+            candidates = self._by_note(candidates, activity, note, where, row)
+        if candidates[0].identifiers is not None:
+            candidates = self._by_class(candidates, activity, cash_equivalent, where, row)
+        # One rule, by construction: the loader refuses two rules with the
+        # same activity, note pattern and identifier class.
+        return candidates[0]
 
-        # Every candidate is note-keyed; the loader guarantees it.
+    def _by_note(
+        self,
+        candidates: list[ActivityRule],
+        activity: str,
+        note: str | None,
+        where: str,
+        row: int | None,
+    ) -> list[ActivityRule]:
+        """Narrow note-keyed candidates to the one whose pattern matches."""
         matched = [
             rule
             for rule in candidates
             if rule.note_pattern is not None and rule.note_pattern.search(note or "")
         ]
-        if len(matched) == 1:
-            return matched[0]
-        patterns = [rule.note_pattern.pattern for rule in candidates if rule.note_pattern]
+        patterns = list(
+            dict.fromkeys(rule.note_pattern.pattern for rule in candidates if rule.note_pattern)
+        )
+        distinct = {rule.note_pattern.pattern for rule in matched if rule.note_pattern}
+        if len(distinct) == 1:
+            return matched
         if not matched:
             raise ValidationError(
                 f"activity {activity!r}{where} with note {note!r} matches none of the "
@@ -237,10 +303,10 @@ class ActivityMap:
                 patterns=patterns,
                 path=str(self.path) if self.path else None,
             )
-        both = [r.note_pattern.pattern for r in matched if r.note_pattern]
+        both = sorted(distinct)
         raise ValidationError(
             f"activity {activity!r}{where} with note {note!r} matches "
-            f"{len(matched)} note patterns ({', '.join(map(repr, both))}). Two rules "
+            f"{len(both)} note patterns ({', '.join(map(repr, both))}). Two rules "
             f"for one row would make the result depend on file order; narrow the "
             f"patterns until exactly one applies",
             code=E_IMPORT_SOURCE_INVALID,
@@ -248,6 +314,47 @@ class ActivityMap:
             note=note,
             row=row,
             patterns=both,
+            path=str(self.path) if self.path else None,
+        )
+
+    def _by_class(
+        self,
+        candidates: list[ActivityRule],
+        activity: str,
+        cash_equivalent: bool | None,
+        where: str,
+        row: int | None,
+    ) -> list[ActivityRule]:
+        """Narrow class-keyed candidates to the one for the row's identifier."""
+        declared = sorted({rule.identifiers for rule in candidates if rule.identifiers})
+        if cash_equivalent is None:
+            raise ValidationError(
+                f"activity {activity!r}{where} is keyed on the identifier class "
+                f"({', '.join(declared)}) but the row names no identifier. A sweep "
+                f"movement names its vehicle; a row that does not is something else",
+                code=E_ACTIVITY_UNMAPPED,
+                activity=activity,
+                row=row,
+                classes=declared,
+                path=str(self.path) if self.path else None,
+            )
+        wanted = "cash_equivalents" if cash_equivalent else "securities"
+        matched = [rule for rule in candidates if rule.identifiers == wanted]
+        if matched:
+            return matched
+        raise ValidationError(
+            f"activity {activity!r}{where} names "
+            f"{'a cash-equivalent' if cash_equivalent else 'a security'} identifier, "
+            f"and the map has no rule for that class of it (declared: "
+            f"{', '.join(declared)}). The rule applies only to the class it names "
+            f"(ADR 0013): a real movement must not be handled by a rule written for "
+            f"bookkeeping noise. Map this row under a rule of its own, or declare "
+            f"the identifier in [cash_equivalents] if it is genuinely cash",
+            code=E_ACTIVITY_UNMAPPED,
+            activity=activity,
+            row=row,
+            wanted=wanted,
+            classes=declared,
             path=str(self.path) if self.path else None,
         )
 
@@ -280,8 +387,10 @@ class ActivityMap:
 
     @property
     def uses_identifiers(self) -> bool:
-        """Whether any rule restricts itself to cash-equivalent identifiers."""
-        return any(rule.cash_equivalent_only for rule in self.rules)
+        """Whether any rule keys on the identifier class, or attaches by it."""
+        return any(
+            rule.identifiers is not None or rule.attach is not None for rule in self.rules
+        )
 
 
 def _key(activity: str) -> str:
@@ -308,33 +417,38 @@ def load_activity_map(path: Path) -> ActivityMap:
         raise _invalid(path, "expected at least one [[activity]] table")
 
     rules: list[ActivityRule] = []
-    seen: dict[tuple[str, str | None], str] = {}
+    seen: dict[tuple[str, str | None, str | None], str] = {}
     for position, entry in enumerate(entries):
         rule = _rule(path, position, entry)
         pattern = rule.note_pattern.pattern if rule.note_pattern is not None else None
-        key = (_key(rule.match), _key(pattern) if pattern is not None else None)
+        key = (
+            _key(rule.match),
+            _key(pattern) if pattern is not None else None,
+            rule.identifiers,
+        )
         if key in seen:
             raise _invalid(
                 path,
                 f"activity {rule.match!r} is mapped twice (also as {seen[key]!r}"
                 + (f", both keyed on note {pattern!r}" if pattern else "")
+                + (f", both for {rule.identifiers}" if rule.identifiers else "")
                 + "). Two rules for one string would make the result depend on file "
                 "order",
             )
         seen[key] = rule.match
         rules.append(rule)
 
-    _check_note_keys_are_complete(path, rules)
+    _check_keys_are_complete(path, rules)
     return ActivityMap(rules=tuple(rules), path=path)
 
 
-def _check_note_keys_are_complete(path: Path, rules: list[ActivityRule]) -> None:
-    """Once one rule for an activity is note-keyed, all of them must be.
+def _check_keys_are_complete(path: Path, rules: list[ActivityRule]) -> None:
+    """Once one rule for an activity carries a key, all of them must.
 
-    A note-keyed rule beside an un-keyed rule for the same activity is a
-    default arm one level down: the un-keyed rule would catch every row the
-    patterns miss, which is precisely the silent inheritance the map exists to
-    refuse.
+    A keyed rule beside an un-keyed rule for the same activity is a default
+    arm one level down: the un-keyed rule would catch every row the keys
+    miss, which is precisely the silent inheritance the map exists to refuse.
+    The same holds for the identifier class within one note pattern.
     """
     by_activity: dict[str, list[ActivityRule]] = {}
     for rule in rules:
@@ -350,6 +464,21 @@ def _check_note_keys_are_complete(path: Path, rules: list[ActivityRule]) -> None
                 f"every rule for it must be: an un-keyed rule would be a default "
                 f"arm for every row the patterns miss",
             )
+        by_note: dict[str | None, list[ActivityRule]] = {}
+        for rule in group:
+            pattern = rule.note_pattern.pattern if rule.note_pattern else None
+            by_note.setdefault(_key(pattern) if pattern else None, []).append(rule)
+        for siblings in by_note.values():
+            classed = [r for r in siblings if r.identifiers is not None]
+            if classed and len(classed) != len(siblings):
+                bare = next(r for r in siblings if r.identifiers is None)
+                raise _invalid(
+                    path,
+                    f"activity {bare.match!r} has a rule with no `identifiers` class "
+                    f"beside one that has. Once a rule is keyed on the identifier "
+                    f"class, its siblings must be: an un-keyed rule would be a "
+                    f"default arm for the other class",
+                )
 
 
 def _rule(path: Path, position: int, entry: Any) -> ActivityRule:
@@ -377,10 +506,12 @@ def _rule(path: Path, position: int, entry: Any) -> ActivityRule:
         )
 
     txn_type: TransactionType | None = None
-    if not skip:
+    if not skip and entry.get("attach") is None:
         raw_type = entry.get("txn_type")
         if not isinstance(raw_type, str):
-            raise _invalid(path, f"{where} needs a `txn_type` (or `skip = true`)")
+            raise _invalid(
+                path, f"{where} needs a `txn_type` (or `skip = true`, or an `attach`)"
+            )
         txn_type = _txn_type(path, where, raw_type)
 
     fee_class: FeeClass | None = None
@@ -411,9 +542,28 @@ def _rule(path: Path, position: int, entry: Any) -> ActivityRule:
             f"if it meant something",
         )
 
-    cash_equivalent_only = entry.get("cash_equivalent_only", False)
-    if not isinstance(cash_equivalent_only, bool):
-        raise _invalid(path, f"{where} has a non-boolean `cash_equivalent_only`")
+    identifiers = entry.get("identifiers")
+    if identifiers is not None and identifiers not in _IDENTIFIER_CLASSES:
+        raise _invalid(
+            path,
+            f"{where} has an invalid `identifiers` class {identifiers!r}. One of: "
+            + ", ".join(sorted(_IDENTIFIER_CLASSES)),
+        )
+
+    attach = entry.get("attach")
+    if attach is not None:
+        if attach not in _ATTACHMENTS:
+            raise _invalid(
+                path,
+                f"{where} has an invalid `attach` {attach!r}. One of: "
+                + ", ".join(sorted(_ATTACHMENTS)),
+            )
+        if skip or "txn_type" in entry:
+            raise _invalid(
+                path,
+                f"{where} attaches to another row and so is neither a ledger row "
+                f"nor a skip: drop `txn_type` and `skip`",
+            )
 
     pair = _pair(path, where, entry.get("pair"))
     if txn_type is TransactionType.TRANSFER and pair is None:
@@ -431,17 +581,35 @@ def _rule(path: Path, position: int, entry: Any) -> ActivityRule:
             f"on any other event",
         )
 
+    cash = _sign(path, where, entry.get("cash", "as_stated"), "cash")
+    value = _sign(path, where, entry.get("value", "none"), "value")
+    if value is not Sign.NONE and cash is not Sign.NONE:
+        raise _invalid(
+            path,
+            f"{where} reads the amount column as both `cash` and `value`. One "
+            f"column is one fact: the cash the account's balance moved, or the "
+            f"value of an event that moved none",
+        )
+    if value in (Sign.AS_STATED, Sign.INVERTED, Sign.NEGATIVE):
+        raise _invalid(
+            path,
+            f"{where} has `value` = {value.value!r}; a value is a magnitude, so "
+            f"only `positive` (or `none`) makes sense",
+        )
+
     return ActivityRule(
         match=match,
         txn_type=txn_type,
         quantity=_sign(path, where, entry.get("quantity", "none"), "quantity"),
-        cash=_sign(path, where, entry.get("cash", "as_stated"), "cash"),
+        cash=cash,
+        value=value,
         fee_class=fee_class,
         skip=skip,
         reason=reason if isinstance(reason, str) else None,
         note_pattern=note_pattern,
-        cash_equivalent_only=cash_equivalent_only,
+        identifiers=identifiers,
         pair=pair,
+        attach=attach,
     )
 
 
@@ -450,12 +618,17 @@ def _pair(path: Path, where: str, raw: Any) -> PairSpec | None:
         return None
     if not isinstance(raw, dict):
         raise _invalid(path, f"{where} has a `pair` that is not a table")
-    unknown = sorted(set(raw) - {"counterpart", "unpaired_out", "unpaired_in"})
+    unknown = sorted(set(raw) - {"counterpart", "unpaired_out", "unpaired_in", "window_days"})
     if unknown:
         raise _invalid(
             path,
             f"{where} [activity.pair] has unknown key(s) {', '.join(unknown)}. "
-            f"Known: counterpart, unpaired_in, unpaired_out",
+            f"Known: counterpart, unpaired_in, unpaired_out, window_days",
+        )
+    window = raw.get("window_days", 0)
+    if isinstance(window, bool) or not isinstance(window, int) or window < 0:
+        raise _invalid(
+            path, f"{where} [activity.pair] `window_days` must be a non-negative integer"
         )
     counterpart = _pattern(path, where, raw.get("counterpart"), "pair.counterpart")
     if counterpart is not None and "account" not in counterpart.groupindex:
@@ -467,7 +640,9 @@ def _pair(path: Path, where: str, raw: Any) -> PairSpec | None:
         )
     out = _fallback(path, where, raw.get("unpaired_out"), "unpaired_out", _UNPAIRED_OUT)
     into = _fallback(path, where, raw.get("unpaired_in"), "unpaired_in", _UNPAIRED_IN)
-    return PairSpec(counterpart=counterpart, unpaired_out=out, unpaired_in=into)
+    return PairSpec(
+        counterpart=counterpart, window_days=window, unpaired_out=out, unpaired_in=into
+    )
 
 
 def _fallback(

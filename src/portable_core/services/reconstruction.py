@@ -230,9 +230,32 @@ def reconstruct(
         )
 
     as_of = max(h.as_of for h in holdings)
-    after = [t for t in transactions if t.trade_date > boundary]
+    # The roll-back runs from the snapshot backwards, so a row dated after the
+    # snapshot is not in the state being rolled back and must not be
+    # subtracted from it -- counted, it shows up as a hole in every account it
+    # touches. Such rows are ordinary (a history pulled a day after the
+    # position statement) and go into the batch as history like any other;
+    # they are named here so the reader knows the snapshot is not the end.
+    after = [t for t in transactions if boundary < t.trade_date <= as_of]
+    beyond = [t for t in transactions if t.trade_date > as_of]
 
     positions, opened, findings, held_keys = _positions(holdings, after)
+    if beyond:
+        findings = (
+            *findings,
+            ReconstructionFinding(
+                account=", ".join(sorted({t.account for t in beyond})),
+                identifier="",
+                kind="after_snapshot",
+                detail=(
+                    f"{len(beyond)} row(s) are dated after the snapshot "
+                    f"({as_of.isoformat()}), the latest on "
+                    f"{max(t.trade_date for t in beyond).isoformat()}. They are not "
+                    f"part of the roll-back and are appended as history; reconcile "
+                    f"as of the snapshot date, not the history's end"
+                ),
+            ),
+        )
     return Reconstruction(
         cutover=boundary,
         as_of=as_of,

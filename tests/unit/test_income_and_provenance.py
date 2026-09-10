@@ -286,3 +286,61 @@ def test_source_survives_a_round_trip_through_the_ledger(
     assert stored.taxes_withheld == D("15.00")
     assert stored.withholding_reclaimable == D("5.00")
     assert stored.net_cash_effect == D("85.00")
+
+
+# ── a distribution taken in units ────────────────────────────────────────────
+
+
+def test_a_reinvested_distribution_is_income_and_a_lot_and_moves_no_cash(
+    repos: Repositories, taxable_account: Account, aapl: Instrument
+) -> None:
+    """One event, one row: the gross is the income earned and the cost of the
+    units bought with it. A dividend plus a buy would put a pair of cash
+    movements in the ledger that never happened."""
+    txn = TradingService(repos).record_income(
+        taxable_account,
+        aapl,
+        TransactionType.DIVIDEND_REINVEST,
+        D("100.00"),
+        PAY,
+        ex_date=EX,
+        reinvested_units=D("0.5"),
+    )
+    assert txn.gross_amount == D("100.00")
+    assert txn.net_cash_effect == D("0.00")
+    assert txn.quantity == D("0.5")
+    assert txn.price == D("200")
+
+
+def test_a_reinvestment_states_its_units_and_a_dividend_states_none(
+    repos: Repositories, taxable_account: Account, aapl: Instrument
+) -> None:
+    service = TradingService(repos)
+    with pytest.raises(ValidationError, match="states the units it bought"):
+        service.record_income(
+            taxable_account, aapl, TransactionType.DIVIDEND_REINVEST, D("100.00"), PAY
+        )
+    with pytest.raises(ValidationError, match="reinvests nothing"):
+        service.record_income(
+            taxable_account,
+            aapl,
+            TransactionType.DIVIDEND,
+            D("100.00"),
+            PAY,
+            reinvested_units=D("1"),
+        )
+
+
+def test_withholding_on_a_reinvestment_is_refused_not_netted(
+    repos: Repositories, taxable_account: Account, aapl: Instrument
+) -> None:
+    with pytest.raises(ValidationError, match="cannot also have tax withheld"):
+        TradingService(repos).record_income(
+            taxable_account,
+            aapl,
+            TransactionType.DIVIDEND_REINVEST,
+            D("100.00"),
+            PAY,
+            taxes_withheld=D("15.00"),
+            reinvested_units=D("0.5"),
+        )

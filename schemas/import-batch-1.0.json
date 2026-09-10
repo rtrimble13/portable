@@ -103,7 +103,7 @@
           "enum": [
             "buy", "sell", "sell_short", "buy_to_cover",
             "deposit", "withdrawal", "transfer", "interest", "fee", "margin_interest",
-            "dividend", "coupon", "return_of_capital",
+            "dividend", "dividend_reinvest", "coupon", "return_of_capital",
             "transfer_in",
             "transfer_out"
           ],

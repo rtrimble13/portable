@@ -422,3 +422,36 @@ def test_an_export_round_trip_survives_the_constraint(
     second = tmp_path / "b.json"
     run_pt("--port", str(tmp_path / "copy.port"), "export", "-o", str(second)).ok()
     assert first.read_bytes() == second.read_bytes()
+
+
+def test_a_reinvested_dividend_opens_a_lot_and_leaves_cash_alone(
+    run_pt: CliRunner, held: Path
+) -> None:
+    """One event, one row. The gross is the income and the cost of the units."""
+    before = run_pt("--port", str(held), "account", "show", "B").ok().data["cash"]
+    created = run_pt(
+        "--port",
+        str(held),
+        "income",
+        "dividend",
+        "AAPL",
+        "-a",
+        "B",
+        "--amount",
+        "100.00",
+        "--reinvest-units",
+        "0.5",
+        "--pay-date",
+        "2024-03-15",
+        "--ex-date",
+        "2024-03-01",
+    ).ok()
+    assert created.data["type"] == "dividend_reinvest"
+    assert created.data["reinvested_units"] == "0.5"
+    after = run_pt("--port", str(held), "account", "show", "B").ok().data["cash"]
+    assert after == before
+
+    rows = run_pt("--port", str(held), "holdings").ok().data["rows"]
+    aapl = next(r for r in rows if r["symbol"] == "AAPL")
+    assert aapl["quantity"] == "100.5"
+    assert aapl["cost_basis"] == "18600.00"  # 18,500 paid plus the 100 reinvested

@@ -55,6 +55,36 @@ Two rules specific to this repository:
     incremental one into an account that has none, are both refused by name.
   - The example adapter exercises all of it and still reconciles to zero
     breaks, before and after an incremental update.
+- **What the reference custodian's real exports then needed.** Read against
+  the actual files rather than the description of them, the grammar above
+  needed five more things, each general:
+  - **`identifiers`**, a third rule key on the identifier's class
+    (`cash_equivalents` or `securities`), replacing the boolean whitelist. One
+    activity word means income into cash on the sweep and income plus a lot
+    on a fund, and only the class tells them apart. All-or-none, like the
+    note key.
+  - **`value = "positive"`**, reading the amount column as what an event was
+    worth where it moved no cash — a reinvested distribution, an in-kind
+    receipt — and never as both cash and value.
+  - **`window_days`** on a pairing rule, because the receiving leg of a
+    cross-account fee is dated three days before the paying one; nearest date
+    wins, a tie refuses. **`[account_aliases]`** in `source.toml`, so a note
+    that names accounts by number pairs on the two digits that tell them
+    apart and the number is in no mapping file.
+  - **`attach = "taxes_withheld"`**, folding a custodian's separate foreign-tax
+    line into the same-day income row on the same instrument as
+    `taxes_withheld` (`PORT-GIPS-A06`: tax, not a fee), carried as a skip
+    naming the row.
+  - **A reinvested distribution is one ledger row.** `TransactionType
+    .DIVIDEND_REINVEST` has a service path: the gross is the income earned
+    and the cost of the units, the row opens a lot, and no cash moves.
+    `pt income dividend --reinvest-units`, and the batch carries the type.
+  - A cash line the snapshot states as a balance with no share count takes
+    the balance as its quantity (ADR 0013); a cutover price the table lacks
+    is taken from the custodian's same-day in-kind receipt and recorded as
+    such on the seed row; and rows dated after the snapshot are set aside by
+    the roll-back and named, rather than subtracted from a state they are
+    not in.
 
 - **`pt import broker` — the extract stage, and the pipeline runs end to end.**
   ADR 0012's first stage, which turns a custodian's exports plus a cutover

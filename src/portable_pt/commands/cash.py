@@ -265,6 +265,7 @@ def _income(
     ref: str | None = None,
     withheld: str | None = None,
     reclaimable: str | None = None,
+    reinvest_units: str | None = None,
 ) -> None:
     def action() -> CommandResult:
         ctx = state.with_portfolio()
@@ -290,6 +291,9 @@ def _income(
                 money_arg(reclaimable, what="--reclaimable") if reclaimable else None
             ),
             is_qualified=qualified,
+            reinvested_units=(
+                money_arg(reinvest_units, what="--reinvest-units") if reinvest_units else None
+            ),
             note=note,
             external_ref=ref,
         )
@@ -303,6 +307,9 @@ def _income(
             "pay_date": pay.isoformat(),
             "qualified": qualified,
         }
+        if txn.quantity is not None:
+            payload["reinvested_units"] = txn.quantity
+            payload["price"] = txn.price
         if txn.taxes_withheld:
             # Both figures, because they answer different questions: the return
             # is earned on the gross and the cash balance moved by the net.
@@ -348,16 +355,31 @@ def dividend(
     ref: RefOpt = None,
     withheld: WithheldOpt = None,
     reclaimable: ReclaimableOpt = None,
+    reinvest_units: Annotated[
+        str | None,
+        typer.Option(
+            "--reinvest-units",
+            help=(
+                "Units bought with the distribution. The row is then income and a "
+                "lot in one, and moves no cash."
+            ),
+        ),
+    ] = None,
 ) -> None:
-    """Record a cash dividend.
+    """Record a cash dividend, or one reinvested into units.
 
     Both dates are recorded because they answer different questions:
     entitlement is fixed on the **ex-date**, cash arrives on the **pay-date**,
     and accruing on the wrong one shifts return across a period boundary
     (PORT-GIPS-A06).
+
+    With `--reinvest-units` the gross is the income earned and the cost of the
+    units, the row opens a lot, and the cash balance is untouched. That is
+    one event, recorded once: a dividend plus a buy would put a pair of
+    movements in the cash ledger that never happened.
     """
     _income(
-        TransactionType.DIVIDEND,
+        TransactionType.DIVIDEND_REINVEST if reinvest_units else TransactionType.DIVIDEND,
         symbol,
         account,
         amount,
@@ -368,6 +390,7 @@ def dividend(
         ref=ref,
         withheld=withheld,
         reclaimable=reclaimable,
+        reinvest_units=reinvest_units,
     )
 
 

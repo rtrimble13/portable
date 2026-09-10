@@ -8,6 +8,7 @@ reviewed batch file and writes the ledger.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -497,6 +498,7 @@ def import_broker(
             boundary = date.fromisoformat(cutover) if cutover else None
             result = reconstruct(report.holdings, report.transactions, cutover=boundary)
             prices = _cutover_prices(repos, result)
+            sources = _prices_from_receipts(prices, result, report.transactions)
             extract = build_batch(
                 broker=report.broker,
                 reconstruction=result,
@@ -505,6 +507,7 @@ def import_broker(
                 files=report.files,
                 capabilities=[c.value for c in report.capabilities.declared],
                 in_ledger=in_ledger,
+                price_sources=sources,
             )
         out.write_text(dump_batch(extract.batch), encoding="utf-8")
 
@@ -640,6 +643,31 @@ def _in_ledger(repos: Any) -> Any:
         return repos.transactions.with_external_ref(found.account_id, external_ref) is not None
 
     return check
+
+
+def _prices_from_receipts(
+    prices: dict[str, Decimal], result: Reconstruction, transactions: Sequence[Any]
+) -> dict[str, str]:
+    """Fill a missing cutover price from the custodian's own valuation.
+
+    An account funded in kind on the day the history begins has, for each
+    position received, a row on the cutover date stating the units and what
+    they were worth. That is a price with a source -- the custodian's transfer
+    valuation -- and it is exactly the market value the seed needs. Used only
+    where the portfolio's price table has nothing, recorded on the seed row as
+    where it came from, and never derived from a row that states no value.
+    """
+    sources: dict[str, str] = {}
+    for record in transactions:
+        if record.trade_date != result.cutover or record.identifier is None:
+            continue
+        if record.identifier in prices or not record.quantity or not record.amount:
+            continue
+        prices[record.identifier] = abs(record.amount) / abs(record.quantity)
+        sources[record.identifier] = (
+            f"the custodian's {record.activity!r} row on the cutover, amount over units"
+        )
+    return sources
 
 
 def _cutover_prices(repos: Any, result: Reconstruction) -> dict[str, Decimal]:

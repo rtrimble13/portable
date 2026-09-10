@@ -90,6 +90,7 @@ _IN_KIND: Final = frozenset({TransactionType.TRANSFER_IN, TransactionType.TRANSF
 _INCOME: Final = frozenset(
     {
         TransactionType.DIVIDEND,
+        TransactionType.DIVIDEND_REINVEST,
         TransactionType.COUPON,
         TransactionType.RETURN_OF_CAPITAL,
     }
@@ -679,6 +680,12 @@ class BatchImporter:
                 f"row {row.index}: an income row states its symbol and amount",
                 row=row.index,
             )
+        if row.txn_type is TransactionType.DIVIDEND_REINVEST and row.quantity is None:
+            raise _fail(
+                f"row {row.index}: a reinvested distribution states the units it "
+                f"bought; the amount is what they cost",
+                row=row.index,
+            )
         instrument = self.repos.instruments.resolve(row.symbol, on=row.trade_date)
         return self.trading.record_income(
             account,
@@ -690,6 +697,9 @@ class BatchImporter:
             taxes_withheld=row.taxes_withheld,
             withholding_reclaimable=row.withholding_reclaimable,
             is_qualified=row.is_qualified,
+            reinvested_units=(
+                row.quantity if row.txn_type is TransactionType.DIVIDEND_REINVEST else None
+            ),
             note=row.note,
             external_ref=row.external_ref,
             source=TransactionSource.IMPORT,

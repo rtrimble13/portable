@@ -118,6 +118,7 @@ def build_batch(
     files: Sequence[tuple[str, str]] = (),
     capabilities: Sequence[str] = (),
     in_ledger: InLedger = _nothing_in_ledger,
+    price_sources: Mapping[str, str] | None = None,
 ) -> ExtractResult:
     """Build the reviewable batch. Writes nothing.
 
@@ -134,6 +135,10 @@ def build_batch(
             its account. Such a row is written as a `skip` naming the reason,
             so an overlapping export shows its overlap in the file under
             review rather than refusing at commit (ADR 0012).
+        price_sources: where each cutover price came from, in words, for the
+            seed row's source. A price the portfolio's own table supplied
+            needs no note; one read off the custodian's same-day receipt is a
+            different provenance and the reviewer has to be able to see it.
 
     Raises:
         DataUnavailableError: when a seeded position has no cutover price. Exit
@@ -167,7 +172,15 @@ def build_batch(
 
     rows: list[BatchRow] = []
     for position in sorted(reconstruction.positions, key=lambda p: (p.account, p.identifier)):
-        rows.append(_seed_row(position, reconstruction.cutover, cutover_prices, len(rows) + 1))
+        rows.append(
+            _seed_row(
+                position,
+                reconstruction.cutover,
+                cutover_prices,
+                len(rows) + 1,
+                price_source=(price_sources or {}).get(position.identifier),
+            )
+        )
     for balance in reconstruction.cash:
         cash_row = _seed_cash_row(balance, reconstruction.cutover, len(rows) + 1)
         if cash_row is not None:
@@ -307,9 +320,12 @@ def _seed_row(
     cutover: date,
     prices: Mapping[str, Decimal],
     index: int,
+    *,
+    price_source: str | None = None,
 ) -> BatchRow:
     """One `transfer_in` for a position held before the ledger begins."""
     price = prices[position.identifier]
+    provenance = {"price_source": price_source} if price_source else {}
     return BatchRow(
         index=index,
         action="append",
@@ -325,6 +341,7 @@ def _seed_row(
             "disposed_after": str(position.disposed_after),
             "still_held": str(position.still_held),
             "assumption": position.assumption or "",
+            **provenance,
         },
         external_ref=_seed_ref(position, cutover),
         account=position.account,
@@ -526,9 +543,12 @@ def _history_row(
         symbol=record.identifier or None,
         quantity=abs(record.quantity) if record.quantity is not None else None,
         price=_unit_price(record),
-        amount=abs(record.amount) if record.amount else None,
+        # The batch states direction by type and carries a magnitude: the cash
+        # the account moved, or -- where none moved -- what the event was worth.
+        amount=_magnitude(record),
         fee_class=entry.fee_class,
         counter_account=entry.counter_account,
+        taxes_withheld=entry.taxes_withheld,
         # ADR 0017 §2a. The reconstruction solved every seeded basis under an
         # assumed FIFO relief; the ledger must relieve the same way or a block
         # solved for FIFO gets relieved spec-ID and yields a basis the solve
@@ -540,6 +560,15 @@ def _history_row(
     )
 
 
+def _magnitude(record: TransactionRecord) -> Decimal | None:
+    """The batch row's amount: cash moved, or the event's stated value."""
+    if record.amount:
+        return abs(record.amount)
+    if record.value:
+        return abs(record.value)
+    return None
+
+
 def _unit_price(record: TransactionRecord) -> Decimal | None:
     """Price per unit, where the row has both a quantity and an amount.
 
@@ -548,9 +577,10 @@ def _unit_price(record: TransactionRecord) -> Decimal | None:
     there is no price to state, and `None` says so rather than a zero saying
     the shares were free.
     """
-    if not record.quantity or record.amount == ZERO:
+    magnitude = _magnitude(record)
+    if not record.quantity or magnitude is None:
         return None
-    return abs(record.amount) / abs(record.quantity)
+    return magnitude / abs(record.quantity)
 
 
 def _history_ref(record: TransactionRecord, ordinals: _Ordinals) -> str:
