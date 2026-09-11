@@ -40,7 +40,7 @@ from decimal import Decimal
 
 from portable_core.domain.enums import FeeClass, TransactionType
 
-__all__ = ["HoldingRecord", "TransactionRecord"]
+__all__ = ["ClosedLotRecord", "HoldingRecord", "TransactionRecord"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +75,27 @@ class HoldingRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class ClosedLotRecord:
+    """One closed lot from a custodian's realized gain and loss report.
+
+    The optional third document. A custodian that reports gains at lot level
+    states, for every lot it closed, when it was acquired and what it cost --
+    which is exactly the basis a cutover reconstruction otherwise cannot
+    recover for a block disposed of after the cutover (ADR 0017 §2b). Here
+    the custodian asserts it, and the seeded block can say so.
+    """
+
+    account: str
+    identifier: str
+    acquired: date
+    disposed: date
+    quantity: Decimal
+    cost_basis: Decimal
+    source_row: Mapping[str, str]
+    proceeds: Decimal | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class TransactionRecord:
     """One line of a custodian's activity export.
 
@@ -93,6 +114,10 @@ class TransactionRecord:
     #: Signed cash effect: positive in, negative out.
     amount: Decimal
     source_row: Mapping[str, str]
+    #: What the event was worth where it moved no cash -- a distribution
+    #: reinvested into units, securities received in kind. ``None`` for an
+    #: event whose cash effect is the whole story. A magnitude.
+    value: Decimal | None = None
     #: ``ImportCapability.TRANSACTION_ID``. Absent means ADR 0012 synthesises
     #: an ``external_ref`` from row content instead.
     external_id: str | None = None
@@ -124,6 +149,15 @@ class MappedTransaction:
     txn_type: TransactionType | None = None
     fee_class: FeeClass | None = None
     reason: str | None = None
+    #: The receiving account of a ``transfer``, resolved by the adapter's
+    #: pairing rule (ADR 0014). The other leg of the same movement is carried
+    #: as a skipped row naming this one, so the batch shows both and the
+    #: ledger records one.
+    counter_account: str | None = None
+    #: Tax withheld at source on an income row, attached by the adapter from a
+    #: separate withholding line the custodian reported. The line itself is
+    #: carried as a skipped row naming this one. Never negative.
+    taxes_withheld: Decimal = Decimal("0")
 
     @property
     def is_skipped(self) -> bool:

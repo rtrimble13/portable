@@ -8,6 +8,7 @@ that would not — is worse than having none.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -171,3 +172,33 @@ def test_the_export_round_trip_still_works_under_its_new_verb(
     second = tmp_path / "b2.json"
     run_pt("--port", str(tmp_path / "copy.port"), "export", "-o", str(second)).ok()
     assert first.read_bytes() == second.read_bytes()
+
+
+def test_a_batch_carries_a_reinvested_distribution(
+    run_pt: CliRunner, ready: Path, tmp_path: Path
+) -> None:
+    """Format version 1 carries the income types with a service behind them;
+    a reinvestment now has one, and it is income plus a lot with no cash."""
+    reinvest = _append(
+        external_ref="ex:4",
+        account="B",
+        txn_type="dividend_reinvest",
+        trade_date="2024-03-15",
+        symbol="AAPL",
+        quantity="0.5",
+        amount="100.00",
+    )
+    batch = _write(tmp_path / "b.json", [BUY, reinvest])
+    before = run_pt("--port", str(ready), "account", "show", "B").ok().data["cash"]
+    run_pt("--port", str(ready), "import", "batch", str(batch)).ok()
+    rows = run_pt("--port", str(ready), "holdings").ok().data["rows"]
+    assert next(r for r in rows if r["symbol"] == "AAPL")["quantity"] == "100.5"
+    # The buy moved cash; the reinvestment did not.
+    after = run_pt("--port", str(ready), "account", "show", "B").ok().data["cash"]
+    assert Decimal(before) - Decimal(after) == Decimal("18500.00")
+
+    missing = _write(
+        tmp_path / "c.json", [{**reinvest, "external_ref": "ex:5", "quantity": None}]
+    )
+    result = run_pt("--port", str(ready), "import", "batch", str(missing), expect=4)
+    assert "states the units it bought" in result.json()["error"]["message"]

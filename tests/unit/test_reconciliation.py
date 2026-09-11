@@ -16,7 +16,8 @@ from decimal import Decimal
 
 import pytest
 
-from portable_core.domain.enums import InstrumentType, TransactionType
+from portable_core.domain.enums import BasisSource, InstrumentType, TransactionType
+from portable_core.domain.import_records import ClosedLotRecord
 from portable_core.domain.models import Account, Instrument
 from portable_core.errors import ValidationError
 from portable_core.persistence.repositories import Repositories
@@ -302,3 +303,189 @@ def test_tolerance_admits_sub_share_rounding(
         tolerance=TOL,
     )
     assert outcome.breaks == ()
+
+
+# ── realized gains, per sale, against the custodian's lot report ─────────────
+
+
+def _sell(
+    repos: Repositories, account: Account, instrument: Instrument, qty: str, price: str
+) -> None:
+    service = TradingService(repos)
+    service.commit(
+        service.plan(
+            TradeIntent(
+                account=account,
+                instrument=instrument,
+                txn_type=TransactionType.SELL,
+                quantity=D(qty),
+                price=D(price),
+                trade_date=SOLD,
+            )
+        )
+    )
+
+
+SOLD = date(2024, 6, 3)
+
+
+def _closed(
+    account: str,
+    symbol: str,
+    quantity: str,
+    cost: str,
+    proceeds: str | None,
+    *,
+    disposed: date = SOLD,
+) -> ClosedLotRecord:
+    return ClosedLotRecord(
+        account=account,
+        identifier=symbol,
+        acquired=ON,
+        disposed=disposed,
+        quantity=D(quantity),
+        cost_basis=D(cost),
+        proceeds=D(proceeds) if proceeds is not None else None,
+        source_row={},
+    )
+
+
+def test_a_sale_the_report_states_the_same_way_ties(
+    repos: Repositories, taxable_account: Account, aapl: Instrument
+) -> None:
+    _fund_and_buy(repos, taxable_account, aapl, "100")
+    _sell(repos, taxable_account, aapl, "40", "110.00")  # basis 4000, proceeds 4400
+    tie = ReconciliationService(repos).tie_realized(
+        [_closed("Brokerage", "AAPL", "40", "4000.00", "4400.00")],
+        [taxable_account],
+        tolerance=TOL,
+    )
+    (line,) = tie.lines
+    assert line.status == "tied"
+    assert line.compared == "gain"
+    assert line.ours_gain == D("400.00")
+    assert line.theirs_gain == D("400.00")
+    assert tie.breaks == ()
+
+
+def test_a_basis_the_custodian_adjusted_without_a_row_is_a_break(
+    repos: Repositories, taxable_account: Account, aapl: Instrument
+) -> None:
+    """Same lot, same proceeds, lower basis on their side: the signature of a
+    distribution reclassified as return of capital. The tie names it; nothing
+    here infers it."""
+    _fund_and_buy(repos, taxable_account, aapl, "100")
+    _sell(repos, taxable_account, aapl, "40", "110.00")
+    tie = ReconciliationService(repos).tie_realized(
+        [_closed("Brokerage", "AAPL", "40", "3900.00", "4400.00")],
+        [taxable_account],
+        tolerance=TOL,
+    )
+    (line,) = tie.lines
+    assert line.status == "break"
+    assert line.difference == D("-100.00")  # ours less theirs, on the gain
+
+
+def test_a_report_without_proceeds_is_compared_on_basis(
+    repos: Repositories, taxable_account: Account, aapl: Instrument
+) -> None:
+    _fund_and_buy(repos, taxable_account, aapl, "100")
+    _sell(repos, taxable_account, aapl, "40", "110.00")
+    tie = ReconciliationService(repos).tie_realized(
+        [_closed("Brokerage", "AAPL", "40", "4000.00", None)], [taxable_account], tolerance=TOL
+    )
+    (line,) = tie.lines
+    assert line.compared == "basis"
+    assert line.theirs_gain is None
+    assert line.status == "tied"
+
+
+def test_a_sale_only_the_custodian_reports_is_a_break(
+    repos: Repositories, taxable_account: Account, aapl: Instrument
+) -> None:
+    _fund_and_buy(repos, taxable_account, aapl, "100")
+    tie = ReconciliationService(repos).tie_realized(
+        [_closed("Brokerage", "AAPL", "40", "4000.00", "4400.00")],
+        [taxable_account],
+        tolerance=TOL,
+    )
+    (line,) = tie.lines
+    assert line.status == "break"
+    assert line.ours_gain == D("0.00")
+
+
+def test_a_disposition_that_realized_nothing_and_the_report_lacks_is_not_a_break(
+    repos: Repositories, taxable_account: Account, aapl: Instrument
+) -> None:
+    """A sweep redemption: the ledger disposes of it, the gain report has no
+    reason to carry it. Shown, so nothing is hidden; not a break, because a
+    gain of zero is nothing to report."""
+    _fund_and_buy(repos, taxable_account, aapl, "100")
+    _sell(repos, taxable_account, aapl, "40", "100.00")
+    tie = ReconciliationService(repos).tie_realized([], [taxable_account], tolerance=TOL)
+    (line,) = tie.lines
+    assert line.status == "portable_only"
+    assert tie.breaks == ()
+
+
+def test_a_disposition_with_a_gain_the_report_lacks_is_a_break(
+    repos: Repositories, taxable_account: Account, aapl: Instrument
+) -> None:
+    _fund_and_buy(repos, taxable_account, aapl, "100")
+    _sell(repos, taxable_account, aapl, "40", "110.00")
+    tie = ReconciliationService(repos).tie_realized([], [taxable_account], tolerance=TOL)
+    assert [line.status for line in tie.lines] == ["break"]
+
+
+def test_a_lot_with_unavailable_basis_is_unreportable_not_a_break(
+    repos: Repositories, taxable_account: Account, aapl: Instrument
+) -> None:
+    """ADR 0017: a seeded lot whose basis nobody can state has no gain to
+    compare. The line says so instead of breaking on a number portable never
+    claimed to know."""
+    append(
+        repos,
+        taxable_account.account_id,
+        TransactionType.DEPOSIT,
+        date(2024, 1, 2),
+        net_cash_effect=D("100000.00"),
+    )
+    service = TradingService(repos)
+    arrival = service.record_transfer_in(
+        taxable_account,
+        aapl,
+        D("100"),
+        ON,
+        value=D("10000.00"),
+        original_basis=None,
+        original_acquired_date=None,
+        basis_source=BasisSource.UNAVAILABLE,
+        basis_assumption="the block was sold out before the cutover; nothing anchors it",
+    )
+    repos.transactions.append(arrival)
+    ReplayEngine(repos).rebuild()
+    _sell(repos, taxable_account, aapl, "40", "110.00")
+    tie = ReconciliationService(repos).tie_realized(
+        [_closed("Brokerage", "AAPL", "40", "2500.00", "4400.00")],
+        [taxable_account],
+        tolerance=TOL,
+    )
+    (line,) = tie.lines
+    assert line.status == "unreportable"
+    assert tie.breaks == ()
+
+
+def test_report_rows_for_accounts_out_of_scope_are_ignored(
+    repos: Repositories, taxable_account: Account, ira_account: Account, aapl: Instrument
+) -> None:
+    _fund_and_buy(repos, taxable_account, aapl, "100")
+    _sell(repos, taxable_account, aapl, "40", "110.00")
+    tie = ReconciliationService(repos).tie_realized(
+        [
+            _closed("Brokerage", "AAPL", "40", "4000.00", "4400.00"),
+            _closed("IRA", "AAPL", "10", "1000.00", "1100.00"),
+        ],
+        [taxable_account],
+        tolerance=TOL,
+    )
+    assert [line.account for line in tie.lines] == ["Brokerage"]

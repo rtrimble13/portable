@@ -155,6 +155,8 @@ def classify(
         case (
             TransactionType.DIVIDEND
             | TransactionType.DIVIDEND_REINVEST
+            | TransactionType.CAPITAL_GAIN_LT
+            | TransactionType.CAPITAL_GAIN_ST
             | TransactionType.COUPON
             | TransactionType.INTEREST
             | TransactionType.RETURN_OF_CAPITAL

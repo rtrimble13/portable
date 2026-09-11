@@ -115,6 +115,8 @@ cpp/                     # CMake + pybind11 modules, Catch2 tests
 tests/unit/ integration/ property/ fixtures/
 schemas/                 # JSON Schema per command output
 docs/  docs/adr/         # architecture, domain model, tax methodology, GIPS, decisions
+scripts/                 # bootstrap, fixture generator, the spreadsheet-to-CSV step
+.claude/skills/          # runbooks for agents: broker-import is the one that exists
 ```
 
 **Placement rules:**
@@ -385,6 +387,11 @@ test that fails without your change.
   documents any import requires, the capabilities anything further unlocks, the
   batch format, the mapping files, the refusals, and the reconciliation that
   makes an import acceptable. Custodian-neutral, with one worked example
+- `.claude/skills/broker-import/SKILL.md` — the import runbook for an agent
+  working with the owner: mapping files by interview, the segmented first
+  import, the `--incremental` update loop, what each break means. Real exports
+  are read locally and no amount, position or account number from them goes
+  into a file under version control
 - `docs/output-formats.md` — JSON envelope, versioning, agent/MCP integration
 - `docs/roadmap.md` — what is coming and in which milestone
 - Prior art: [fafnir](https://github.com/rtrimble13/fafnir) (market data warehouse,

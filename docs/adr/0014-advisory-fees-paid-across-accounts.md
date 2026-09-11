@@ -1,6 +1,6 @@
 # ADR 0014 — Advisory fees paid by one account for another
 
-- **Status:** Proposed
+- **Status:** Accepted — implemented as the declarative `[activity.pair]` rule of the generic adapter (`docs/broker-import.md` §6): the two *Expense* rows are told apart by a note key, the legs pair on date, magnitude and the account named in the note, and a paying leg whose counterpart is outside the portfolio falls back to the declared `withdrawal`
 - **Date:** 2026-09-08
 - **Milestone:** v0.2
 - **Governs:** `PORT-GIPS-B02`, `PORT-GIPS-D01`; ADR 0007

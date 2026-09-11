@@ -14,6 +14,7 @@ import pytest
 from portable_core.decimals import money_context
 from portable_core.domain.enums import (
     BasisAdjustmentReason,
+    BasisSource,
     HoldingPeriod,
     LotStatus,
     ReliefMethod,
@@ -301,3 +302,70 @@ def test_a_fractional_share_an_account_cannot_hold_is_refused() -> None:
     CA.require_whole_shares(
         D("151"), allows_fractional=False, instrument_symbol="ACME", action="split"
     )
+
+
+# ── conversions ──────────────────────────────────────────────────────────────
+
+
+def test_a_conversion_carries_basis_date_and_provenance_lot_by_lot() -> None:
+    """A share-class exchange: the same claim under a new name and count.
+    Nothing is realised, and every lot keeps its basis, its acquisition date,
+    its holding period, and the rung its basis rests on."""
+    old = [
+        lot(1, open_date=date(2020, 5, 1), quantity="100", basis="1000.00"),
+        lot(2, open_date=date(2023, 1, 10), quantity="50", basis="750.00"),
+    ]
+    old[0] = replace_lot(old[0], BasisSource.ESTIMATED, "FIFO assumed")
+    result = CA.convert(
+        old,
+        target_units=D("146.25"),
+        ex_date=date(2024, 6, 1),
+        target_instrument_id=9,
+        target_leg_id=9,
+        target_position_id=9,
+        txn_id=77,
+    )
+    assert [c.status for c in result.closed_lots] == [LotStatus.CLOSED, LotStatus.CLOSED]
+    assert all(c.remaining_quantity == 0 for c in result.closed_lots)
+    new_a, new_b = result.new_lots
+    # Units in proportion, exact in total: the residue goes to the last lot.
+    assert new_a.remaining_quantity + new_b.remaining_quantity == D("146.25")
+    assert new_a.remaining_quantity == D("97.5")
+    assert (new_a.adjusted_cost_basis, new_b.adjusted_cost_basis) == (D("1000.00"), D("750.00"))
+    assert (new_a.open_date, new_a.holding_period_start) == (date(2020, 5, 1), date(2020, 5, 1))
+    assert new_a.basis_source is BasisSource.ESTIMATED
+    assert new_a.basis_assumption == "FIFO assumed"
+    assert new_b.basis_source is BasisSource.DERIVED
+    assert all(a.reason is BasisAdjustmentReason.MERGER for a in result.adjustments)
+    assert all(a.txn_id == 77 for a in result.adjustments)
+
+
+def replace_lot(base: Lot, source: BasisSource, assumption: str) -> Lot:
+    from dataclasses import replace
+
+    return replace(base, basis_source=source, basis_assumption=assumption)
+
+
+@pytest.mark.parametrize("units", ["0", "-1"])
+def test_a_conversion_delivers_a_positive_count(units: str) -> None:
+    with pytest.raises(ValidationError, match="positive number of units"):
+        CA.convert(
+            [lot()],
+            target_units=D(units),
+            ex_date=date(2024, 6, 1),
+            target_instrument_id=9,
+            target_leg_id=9,
+            target_position_id=9,
+        )
+
+
+def test_a_conversion_of_nothing_is_refused() -> None:
+    with pytest.raises(ValidationError, match="no open lots"):
+        CA.convert(
+            [],
+            target_units=D("1"),
+            ex_date=date(2024, 6, 1),
+            target_instrument_id=9,
+            target_leg_id=9,
+            target_position_id=9,
+        )

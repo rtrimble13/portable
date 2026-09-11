@@ -97,7 +97,7 @@ def test_it_reports_the_capability_set_and_writes_nothing(
     assert data["broker"] == "example-brokerage"
     assert data["accounts"] == ["Brokerage", "Roth IRA"]
     assert data["holdings"] == 5
-    assert data["transactions"] == 8
+    assert data["transactions"] == 11
     assert "cost_basis" in data["capabilities"]["declared"]
     # Nothing is created: this reads files and reports.
     assert not list(tmp_path.glob("*.port"))
@@ -189,7 +189,11 @@ def test_the_shipped_example_adapter_reads(run_pt: CliRunner) -> None:
     data = run_pt("import", "inspect", str(EXAMPLE)).ok().data
     assert data["as_of"] == "2026-06-30"
     assert data["period"] == ["2025-01-22", "2025-06-30"]
-    assert data["skipped"] == 1
-    assert data["skipped_rows"][0]["activity"] == "Position Memo"
-    assert data["skipped_rows"][0]["reason"]
+    assert data["skipped"] == 3
+    assert [r["activity"] for r in data["skipped_rows"]] == [
+        "Position Memo",  # a memo line
+        "MoneyTransfer",  # a sweep movement, cash either way (ADR 0013)
+        "Expense",  # the receiving leg of a paired transfer (ADR 0014)
+    ]
+    assert all(r["reason"] for r in data["skipped_rows"])
     assert len(data["files"]) == 2

@@ -28,15 +28,20 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 
-from portable_core.domain.models import Account
+from portable_core.domain.enums import BasisSource
+from portable_core.domain.import_records import ClosedLotRecord
+from portable_core.domain.models import Account, LotDisposition
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import E_USAGE
 from portable_core.persistence.repositories import Repositories
 
 __all__ = [
     "ExternalHolding",
+    "RealizedTieLine",
+    "RealizedTieResult",
     "ReconciliationLine",
     "ReconciliationResult",
     "ReconciliationService",
@@ -84,6 +89,55 @@ class ReconciliationResult:
         return tuple(line for line in self.lines if line.is_break)
 
 
+@dataclass(frozen=True, slots=True)
+class RealizedTieLine:
+    """One sale -- an account, an instrument, a day -- ours against theirs.
+
+    ``status`` says what the line is:
+
+    - ``tied``: the gains agree within tolerance;
+    - ``break``: they do not, or one side has a sale the other does not;
+    - ``unreportable``: a lot the sale relieved carries `unavailable` basis
+      (ADR 0017), so `portable` has no gain to compare. Shown, never a break
+      -- the report already says this basis is not known;
+    - ``portable_only``: a disposition the custodian's report does not
+      carry and that realized nothing, such as a sweep redemption. Shown,
+      not a break: a gain of zero is nothing to report.
+
+    ``theirs_proceeds`` is ``None`` where the report states cost but not
+    proceeds; the comparison is then on basis rather than gain, and the line
+    says so through ``compared``.
+    """
+
+    account: str
+    identifier: str
+    disposed: date
+    ours_proceeds: Decimal
+    ours_basis: Decimal
+    ours_gain: Decimal
+    theirs_proceeds: Decimal | None
+    theirs_basis: Decimal | None
+    theirs_gain: Decimal | None
+    #: ours less theirs, on whatever `compared` names.
+    difference: Decimal | None
+    compared: str
+    status: str
+
+    @property
+    def is_break(self) -> bool:
+        return self.status == "break"
+
+
+@dataclass(frozen=True, slots=True)
+class RealizedTieResult:
+    lines: tuple[RealizedTieLine, ...]
+    tolerance: Decimal
+
+    @property
+    def breaks(self) -> tuple[RealizedTieLine, ...]:
+        return tuple(line for line in self.lines if line.is_break)
+
+
 class ReconciliationService:
     """Compares held positions and cash against an external statement."""
 
@@ -122,6 +176,103 @@ class ReconciliationService:
             lines.extend(self._positions(account, rows, tolerance))
             lines.append(self._cash(account, rows, overrides.get(account.name), tolerance))
         return ReconciliationResult(lines=tuple(lines), tolerance=tolerance)
+
+    # ── realized gains, per sale ─────────────────────────────────────────────
+
+    def tie_realized(
+        self,
+        closed_lots: Sequence[ClosedLotRecord],
+        accounts: Sequence[Account],
+        *,
+        tolerance: Decimal,
+    ) -> RealizedTieResult:
+        """Tie every disposition to the custodian's own lot-level report.
+
+        `docs/broker-import.md` §9, check 2, as a comparison per sale rather
+        than per year: proceeds, basis and gain of what the ledger relieved
+        against the report's lots for the same account, instrument and day.
+        Per sale because a year that ties can hide two sales that are wrong
+        by offsetting amounts, and because a break named by day is one a
+        person can look up.
+
+        Args:
+            closed_lots: the report, as the adapter read it -- identifiers
+                already resolved through the crosswalk.
+            accounts: the accounts in scope. Report rows for other accounts
+                are ignored, as `reconcile` ignores statement rows for them.
+            tolerance: absolute, on the gain (or on basis where the report
+                states no proceeds).
+        """
+        names = {account.name for account in accounts}
+        theirs: dict[tuple[str, str, date], list[ClosedLotRecord]] = {}
+        for lot in closed_lots:
+            if lot.account in names:
+                theirs.setdefault((lot.account, lot.identifier, lot.disposed), []).append(lot)
+
+        ours: dict[tuple[str, str, date], list[LotDisposition]] = {}
+        unavailable: set[tuple[str, str, date]] = set()
+        for account in accounts:
+            for disposition in self.repos.lots.dispositions(account_id=account.account_id):
+                instrument = self.repos.instruments.get(disposition.instrument_id)
+                if instrument is None:
+                    continue
+                key = (account.name, instrument.symbol, disposition.disposition_date)
+                ours.setdefault(key, []).append(disposition)
+                relieved = self.repos.lots.get(disposition.lot_id)
+                if relieved is not None and relieved.basis_source is BasisSource.UNAVAILABLE:
+                    unavailable.add(key)
+
+        lines = [
+            self._tie_line(
+                key, ours.get(key, []), theirs.get(key), key in unavailable, tolerance
+            )
+            for key in sorted(set(ours) | set(theirs), key=lambda k: (k[0], k[2], k[1]))
+        ]
+        return RealizedTieResult(lines=tuple(lines), tolerance=tolerance)
+
+    @staticmethod
+    def _tie_line(
+        key: tuple[str, str, date],
+        mine: Sequence[LotDisposition],
+        report: Sequence[ClosedLotRecord] | None,
+        unavailable: bool,
+        tolerance: Decimal,
+    ) -> RealizedTieLine:
+        account, identifier, disposed = key
+        ours_proceeds = sum((d.proceeds for d in mine), ZERO)
+        ours_basis = sum((d.cost_basis_relieved for d in mine), ZERO)
+        ours_gain = sum((d.realized_gain for d in mine), ZERO)
+        if report is None:
+            status = "portable_only" if abs(ours_gain) <= tolerance else "break"
+            return RealizedTieLine(
+                account, identifier, disposed, ours_proceeds, ours_basis, ours_gain,
+                None, None, None, None, "gain", status,
+            )  # fmt: skip
+        theirs_basis = sum((lot.cost_basis for lot in report), ZERO)
+        stated_proceeds = [lot.proceeds for lot in report]
+        theirs_proceeds: Decimal | None = None
+        theirs_gain: Decimal | None = None
+        if all(p is not None for p in stated_proceeds):
+            proceeds_total = sum((p for p in stated_proceeds if p is not None), ZERO)
+            theirs_proceeds = proceeds_total
+            theirs_gain = proceeds_total - theirs_basis
+        if not mine:
+            return RealizedTieLine(
+                account, identifier, disposed, ZERO, ZERO, ZERO,
+                theirs_proceeds, theirs_basis, theirs_gain, None, "gain", "break",
+            )  # fmt: skip
+        if theirs_gain is not None:
+            compared, difference = "gain", ours_gain - theirs_gain
+        else:
+            compared, difference = "basis", ours_basis - theirs_basis
+        if unavailable:
+            status = "unreportable"
+        else:
+            status = "tied" if abs(difference) <= tolerance else "break"
+        return RealizedTieLine(
+            account, identifier, disposed, ours_proceeds, ours_basis, ours_gain,
+            theirs_proceeds, theirs_basis, theirs_gain, difference, compared, status,
+        )  # fmt: skip
 
     # ── attribution ──────────────────────────────────────────────────────────
 

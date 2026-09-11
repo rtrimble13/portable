@@ -207,6 +207,26 @@ def test_a_sweep_identifier_is_cash_for_the_account_that_declares_it(
     assert not by_symbol["AAPL"].is_cash_equivalent
 
 
+def test_a_cash_line_stated_as_a_balance_takes_it_as_its_quantity(tmp_path: Path) -> None:
+    """ADR 0013. Custodians state cash as a balance, not a share count; for a
+    par-priced vehicle the two are one number. A security line with no
+    quantity is still refused -- the fallback is for cash only."""
+    source = SOURCE.replace(
+        'cost_basis = "Cost Basis"', 'cost_basis = "Cost Basis"\nmarket_value = "MV"'
+    )
+    holdings = (
+        "As Of,Account,Symbol,Quantity,Cost Basis,MV\n"
+        "03/31/2026,Main,AAPL,100,15000.00,20000.00\n"
+        "03/31/2026,Main,SWEEP,,2500.00,2500.00\n"
+    )
+    report = _read(tmp_path, source=source, holdings=holdings)
+    sweep = next(h for h in report.holdings if h.identifier == "SWEEP")
+    assert sweep.quantity == Decimal("2500.00") and sweep.is_cash_equivalent
+
+    with pytest.raises(ValidationError, match="no quantity"):
+        _read(tmp_path, source=source, holdings=holdings.replace("AAPL,100,", "AAPL,,"))
+
+
 def test_a_spreadsheet_is_refused_by_name_with_the_remedy(tmp_path: Path) -> None:
     """Invariant 10: no half-support for a format the runtime cannot read."""
     root = _adapter(tmp_path)

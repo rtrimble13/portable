@@ -50,18 +50,24 @@ __all__ = [
 
 HOLDINGS: Final = "holdings"
 TRANSACTIONS: Final = "transactions"
+#: Optional: a realized gain and loss report at lot level, which lets a
+#: cutover block disposed of after the cutover carry the basis the custodian
+#: asserts for it rather than none (ADR 0017 §2b).
+REALIZED: Final = "realized"
 
 #: The minimum dataset, as columns. ADR 0018 §1 states it as two documents;
 #: this is the same statement at the field level, and it is what refuses.
 REQUIRED_COLUMNS: Final[dict[str, tuple[str, ...]]] = {
     HOLDINGS: ("account", "identifier", "quantity"),
     TRANSACTIONS: ("trade_date", "account", "activity", "amount"),
+    REALIZED: ("account", "identifier", "acquired", "disposed", "quantity", "cost_basis"),
 }
 
 #: Everything else a document may carry. Most map one-to-one onto a capability.
 OPTIONAL_COLUMNS: Final[dict[str, tuple[str, ...]]] = {
     HOLDINGS: ("as_of", "market_value", "cost_basis", "acquired", "lot_id"),
     TRANSACTIONS: ("identifier", "quantity", "settlement_date", "external_id", "note"),
+    REALIZED: ("proceeds", "term"),
 }
 
 
@@ -155,6 +161,11 @@ class DocumentSpec:
     columns: dict[str, str]
     #: For a snapshot whose as-of date is in a page header rather than a column.
     as_of: date | None = None
+    #: The crosswalk file, where this document's identifiers are security
+    #: *names* rather than symbols (``INSTRUMENT_SYMBOL`` absent). Every
+    #: identifier in the document is then resolved through it, and a name it
+    #: does not carry is a refusal. Relative to the adapter directory.
+    crosswalk: str | None = None
     #: Accounts the custodian's snapshot genuinely omits a cash line for. A
     #: declared exception, recorded in the file, rather than a silent pass:
     #: cash on the snapshot is required precisely because cash reconciliation
@@ -193,6 +204,12 @@ class SourceSpec:
     #: account name -> identifiers that are cash for that account. The empty
     #: string keys the default set (ADR 0013, generalised by ADR 0018).
     cash_equivalents: dict[str, frozenset[str]] = field(default_factory=dict)
+    #: A token a note uses for an account -> the account's name, folded. For
+    #: a custodian that refers to accounts by number in the note, so that a
+    #: pairing rule's counterpart can be resolved without the number appearing
+    #: in a mapping file: capture the part of it that distinguishes the
+    #: accounts and alias that.
+    account_aliases: dict[str, str] = field(default_factory=dict)
     checks: tuple[CapabilityCheck, ...] = ()
     root: Path | None = None
     note: str | None = None
@@ -242,6 +259,7 @@ def load_source(path: Path) -> SourceSpec:
     documents = _documents(spec_path, raw.get("documents"))
     numbers = _numbers(spec_path, raw.get("format", {}))
     cash = _cash_equivalents(spec_path, raw.get("cash_equivalents", {}))
+    aliases = _aliases(spec_path, raw.get("account_aliases", {}))
     checks = _checks(spec_path, raw.get("capability", []), documents)
 
     return SourceSpec(
@@ -250,6 +268,7 @@ def load_source(path: Path) -> SourceSpec:
         documents=documents,
         numbers=numbers,
         cash_equivalents=cash,
+        account_aliases=aliases,
         checks=checks,
         root=root,
         note=raw.get("note") if isinstance(raw.get("note"), str) else None,
@@ -267,13 +286,18 @@ def _documents(path: Path, raw: Any) -> dict[str, DocumentSpec]:
             f"the snapshot is the reconciliation anchor and the history is the "
             f"ledger, and neither substitutes for the other (ADR 0018 §1)",
         )
-    unknown = sorted(set(raw) - {HOLDINGS, TRANSACTIONS})
+    unknown = sorted(set(raw) - {HOLDINGS, TRANSACTIONS, REALIZED})
     if unknown:
         raise _invalid(
             path,
-            f"declares unknown document(s) {', '.join(unknown)}. The adapter reads exactly two",
+            f"declares unknown document(s) {', '.join(unknown)}. The adapter reads "
+            f"{HOLDINGS}, {TRANSACTIONS}, and optionally {REALIZED}",
         )
-    return {kind: _document(path, kind, raw[kind]) for kind in (HOLDINGS, TRANSACTIONS)}
+    return {
+        kind: _document(path, kind, raw[kind])
+        for kind in (HOLDINGS, TRANSACTIONS, REALIZED)
+        if kind in raw
+    }
 
 
 def _document(path: Path, kind: str, raw: Any) -> DocumentSpec:
@@ -317,11 +341,21 @@ def _document(path: Path, kind: str, raw: Any) -> DocumentSpec:
             path,
             f"[documents.{kind}.columns] is missing required field(s) {', '.join(missing)}",
         )
+    crosswalk = raw.get("crosswalk")
+    if crosswalk is not None and (not isinstance(crosswalk, str) or not crosswalk.strip()):
+        raise _invalid(path, f"[documents.{kind}] `crosswalk` must name a file")
+    if crosswalk is not None and "identifier" not in columns:
+        raise _invalid(
+            path,
+            f"[documents.{kind}] declares a crosswalk but maps no `identifier` "
+            f"column, so there is nothing to resolve through it",
+        )
     return DocumentSpec(
         kind=kind,
         file=file_name,
         columns=dict(columns),
         as_of=as_of,
+        crosswalk=crosswalk,
         allow_missing_cash=_strings(path, raw.get("allow_missing_cash", [])),
     )
 
@@ -407,6 +441,17 @@ def _cash_equivalents(path: Path, raw: Any) -> dict[str, frozenset[str]]:
         key = "" if account == "default" else account
         declared[key] = frozenset(i.strip().casefold() for i in _strings(path, identifiers))
     return declared
+
+
+def _aliases(path: Path, raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        raise _invalid(path, "[account_aliases] is not a table")
+    aliases: dict[str, str] = {}
+    for token, account in raw.items():
+        if not isinstance(account, str) or not account.strip():
+            raise _invalid(path, f"[account_aliases] {token!r} names no account")
+        aliases[" ".join(str(token).split()).casefold()] = account.strip()
+    return aliases
 
 
 def _checks(

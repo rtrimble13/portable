@@ -27,21 +27,26 @@ portfolio.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from typing import Final
 
 from portable_core.domain.enums import ReliefMethod, TransactionType
-from portable_core.domain.import_records import MappedTransaction, TransactionRecord
-from portable_core.errors import DataUnavailableError
-from portable_core.errors.kinds import E_PRICE_MISSING
+from portable_core.domain.import_records import (
+    ClosedLotRecord,
+    MappedTransaction,
+    TransactionRecord,
+)
+from portable_core.errors import DataUnavailableError, ValidationError
+from portable_core.errors.kinds import E_IMPORT_SOURCE_INVALID, E_PRICE_MISSING
 from portable_core.services.import_batch import (
     SUPPORTED_TYPES,
     BatchRow,
     BatchSource,
     ImportBatch,
+    LotDesignation,
 )
 from portable_core.services.reconstruction import (
     CutoverCash,
@@ -49,12 +54,27 @@ from portable_core.services.reconstruction import (
     Reconstruction,
 )
 
-__all__ = ["ExtractResult", "build_batch", "cutover_prices_needed"]
+__all__ = [
+    "ExtractResult",
+    "InLedger",
+    "build_batch",
+    "build_incremental_batch",
+    "cutover_prices_needed",
+]
 
 ZERO: Final = Decimal("0")
 
 #: How many characters of the digest an `external_ref` carries. ADR 0012.
 _REF_WIDTH: Final = 16
+
+#: Whether the ledger already holds ``(account, external_ref)``. Supplied by
+#: the command, which has the portfolio open; the service stays free of SQL.
+InLedger = Callable[[str, str], bool]
+
+
+def _nothing_in_ledger(_account: str, _external_ref: str) -> bool:
+    return False
+
 
 #: Trades that consume lots, and therefore need a relief method stated.
 _CLOSING: Final = frozenset(
@@ -102,6 +122,9 @@ def build_batch(
     cutover_prices: Mapping[str, Decimal],
     files: Sequence[tuple[str, str]] = (),
     capabilities: Sequence[str] = (),
+    in_ledger: InLedger = _nothing_in_ledger,
+    price_sources: Mapping[str, str] | None = None,
+    closed_lots: Sequence[ClosedLotRecord] = (),
 ) -> ExtractResult:
     """Build the reviewable batch. Writes nothing.
 
@@ -114,6 +137,18 @@ def build_batch(
         cutover_prices: market value per unit on the cutover date, per
             instrument. Required, never defaulted: see
             :func:`cutover_prices_needed`.
+        in_ledger: whether a history row's reference is already recorded in
+            its account. Such a row is written as a `skip` naming the reason,
+            so an overlapping export shows its overlap in the file under
+            review rather than refusing at commit (ADR 0012).
+        price_sources: where each cutover price came from, in words, for the
+            seed row's source. A price the portfolio's own table supplied
+            needs no note; one read off the custodian's same-day receipt is a
+            different provenance and the reviewer has to be able to see it.
+        closed_lots: the custodian's lot-level realized report, where there is
+            one. Each closing row it covers carries the lots the custodian
+            says that sale consumed, and relieves by specific identification
+            rather than by the assumed method (see :func:`_designations`).
 
     Raises:
         DataUnavailableError: when a seeded position has no cutover price. Exit
@@ -146,8 +181,20 @@ def build_batch(
         )
 
     rows: list[BatchRow] = []
-    for position in sorted(reconstruction.positions, key=lambda p: (p.account, p.identifier)):
-        rows.append(_seed_row(position, reconstruction.cutover, cutover_prices, len(rows) + 1))
+    # The accounted-for part of a block before its vanished part, so that FIFO
+    # relieves the lots the custodian's own report says were sold first.
+    for position in sorted(
+        reconstruction.positions, key=lambda p: (p.account, p.identifier, p.part)
+    ):
+        rows.append(
+            _seed_row(
+                position,
+                reconstruction.cutover,
+                cutover_prices,
+                len(rows) + 1,
+                price_source=(price_sources or {}).get(position.identifier),
+            )
+        )
     for balance in reconstruction.cash:
         cash_row = _seed_cash_row(balance, reconstruction.cutover, len(rows) + 1)
         if cash_row is not None:
@@ -157,8 +204,10 @@ def build_batch(
     unsupported: set[str] = set()
     appended = skipped = dropped = 0
     history = _after(mapped, reconstruction.cutover)
+    ordinals = _Ordinals()
+    designations = _designations(closed_lots)
     for entry in history:
-        row = _history_row(entry, len(rows) + 1, unsupported)
+        row = _history_row(entry, len(rows) + 1, unsupported, ordinals, in_ledger, designations)
         rows.append(row)
         if row.action == "append":
             appended += 1
@@ -190,6 +239,98 @@ def build_batch(
     )
 
 
+def build_incremental_batch(
+    *,
+    broker: str,
+    mapped: Sequence[MappedTransaction],
+    inception: Mapping[str, date],
+    in_ledger: InLedger,
+    files: Sequence[tuple[str, str]] = (),
+    capabilities: Sequence[str] = (),
+    closed_lots: Sequence[ClosedLotRecord] = (),
+) -> ExtractResult:
+    """Build the batch for a periodic update to accounts already in the ledger.
+
+    The other shape an extract takes, and the one every import after the first
+    takes. There is no seed: the accounts already hold their opening positions,
+    and seeding them again would double every one. What remains is the history,
+    with two kinds of row set aside and shown:
+
+    - a row **already recorded** -- the custodian's window overlaps the last
+      export, which is ordinary and on purpose -- is a `skip` naming the
+      reference the ledger already carries;
+    - a row **on or before the account's first ledger date** is inside the
+      seeded position from the initial extract, and appending it would count
+      it twice. Also a `skip`, saying so.
+
+    Args:
+        inception: each account's first ledger date, from the portfolio. An
+            account the export mentions that is not here is refused: an
+            incremental extract has nothing to extend for it, and the initial
+            extract is the command for that.
+    """
+    missing = sorted({m.record.account for m in mapped} - set(inception))
+    if missing:
+        raise ValidationError(
+            "the export mentions "
+            + ", ".join(missing)
+            + ", which carries no ledger rows. An incremental extract extends a "
+            "history that is already there; run the initial extract for an "
+            "account that has none",
+            code=E_IMPORT_SOURCE_INVALID,
+            accounts=missing,
+        )
+
+    rows: list[BatchRow] = []
+    unsupported: set[str] = set()
+    appended = skipped = dropped = 0
+    ordinals = _Ordinals()
+    designations = _designations(closed_lots)
+    for entry in sorted(mapped, key=lambda m: m.record.trade_date):
+        record = entry.record
+        if record.trade_date <= inception[record.account]:
+            row = BatchRow(
+                index=len(rows) + 1,
+                action="skip",
+                rule="ledger:before-inception",
+                source_row=dict(record.source_row),
+                note=(
+                    f"dated on or before {record.account}'s first ledger row "
+                    f"({inception[record.account].isoformat()}), so it is inside the "
+                    f"position seeded at the cutover and would be counted twice"
+                ),
+            )
+        else:
+            row = _history_row(
+                entry, len(rows) + 1, unsupported, ordinals, in_ledger, designations
+            )
+        rows.append(row)
+        if row.action == "append":
+            appended += 1
+        elif row.action == "skip":
+            skipped += 1
+        else:
+            dropped += 1
+
+    dates = [e.record.trade_date for e in mapped]
+    return ExtractResult(
+        batch=ImportBatch(
+            source=BatchSource(
+                broker=broker,
+                files=tuple(files),
+                capabilities=tuple(capabilities),
+                period=(min(dates), max(dates)) if dates else None,
+            ),
+            rows=tuple(rows),
+        ),
+        seeded=0,
+        appended=appended,
+        skipped=skipped,
+        dropped=dropped,
+        unsupported=tuple(sorted(unsupported)),
+    )
+
+
 # ── the seed ─────────────────────────────────────────────────────────────────
 
 
@@ -198,9 +339,14 @@ def _seed_row(
     cutover: date,
     prices: Mapping[str, Decimal],
     index: int,
+    *,
+    price_source: str | None = None,
 ) -> BatchRow:
     """One `transfer_in` for a position held before the ledger begins."""
     price = prices[position.identifier]
+    provenance = {"price_source": price_source} if price_source else {}
+    if position.part:
+        provenance["part"] = position.part
     return BatchRow(
         index=index,
         action="append",
@@ -216,6 +362,7 @@ def _seed_row(
             "disposed_after": str(position.disposed_after),
             "still_held": str(position.still_held),
             "assumption": position.assumption or "",
+            **provenance,
         },
         external_ref=_seed_ref(position, cutover),
         account=position.account,
@@ -227,11 +374,14 @@ def _seed_row(
         # The FLOW amount: market value on the cutover date. Not the basis.
         amount=price * position.quantity,
         original_basis=position.cost_basis,
-        # Absent where the reconstruction recovered none. The lot then dates at
-        # the cutover, which makes holding-period character conservative by
-        # construction -- everything seeded reads short-term until a year past
-        # it, which is the safe direction to be wrong in (ADR 0018).
-        original_acquired_date=None,
+        # The block's earliest acquisition where the custodian states one, and
+        # absent otherwise. Absent, the lot dates at the cutover, which makes
+        # holding-period character conservative by construction -- everything
+        # seeded reads short-term until a year past it, the safe direction to
+        # be wrong in (ADR 0018). Stated, it is the block's *earliest* date and
+        # biases the other way, which is why the reconstruction enumerates the
+        # dispositions within a year of the cutover for review (ADR 0017 §4).
+        original_acquired_date=position.acquired,
         basis_source=position.basis_source,
         basis_assumption=position.assumption,
         note=f"seeded at the cutover {cutover.isoformat()}",
@@ -314,7 +464,9 @@ def _seed_ref(position: CutoverPosition, cutover: date) -> str:
     duplicate rather than doubling the position -- which is the whole reason
     references are synthesized at all.
     """
-    material = "|".join([position.account, position.identifier, cutover.isoformat(), "cutover"])
+    material = "|".join(
+        [position.account, position.identifier, cutover.isoformat(), "cutover", position.part]
+    )
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:_REF_WIDTH]
     return f"cutover:{digest}"
 
@@ -333,7 +485,54 @@ def _after(mapped: Sequence[MappedTransaction], cutover: date) -> list[MappedTra
     return [m for m in mapped if m.record.trade_date > cutover]
 
 
-def _history_row(entry: MappedTransaction, index: int, unsupported: set[str]) -> BatchRow:
+class _Ordinals:
+    """ADR 0012's ordinal: a row's index among otherwise-identical rows.
+
+    Two identical dividends on one day are not hypothetical, and without an
+    ordinal the second would collide with the first and be refused as a
+    duplicate of it. Counted over the *identity material* rather than the
+    batch position, so that the same source row gets the same reference in an
+    initial extract and in every incremental one after it -- which is what
+    lets an overlapping export be recognised as an overlap.
+    """
+
+    def __init__(self) -> None:
+        self._seen: dict[str, int] = {}
+
+    def next(self, material: str) -> int:
+        ordinal = self._seen.get(material, 0)
+        self._seen[material] = ordinal + 1
+        return ordinal
+
+
+#: The custodian's closed lots, keyed by the sale they belong to.
+_Designations = Mapping[tuple[str, str, date], Sequence[ClosedLotRecord]]
+
+
+def _designations(closed_lots: Sequence[ClosedLotRecord]) -> _Designations:
+    """Group the realized report's lots by the sale that closed them.
+
+    A sale is one account, one instrument, one day. The activity export
+    identifies it the same way, which is how a closing row finds its lots
+    without the two documents sharing an identifier. Where the export has
+    two sales of one instrument on one day the grouping cannot tell them
+    apart, and :func:`_history_row` leaves both under the assumed method
+    rather than splitting the lots between them by guesswork.
+    """
+    grouped: dict[tuple[str, str, date], list[ClosedLotRecord]] = {}
+    for lot in closed_lots:
+        grouped.setdefault((lot.account, lot.identifier, lot.disposed), []).append(lot)
+    return grouped
+
+
+def _history_row(
+    entry: MappedTransaction,
+    index: int,
+    unsupported: set[str],
+    ordinals: _Ordinals,
+    in_ledger: InLedger,
+    designations: _Designations | None = None,
+) -> BatchRow:
     record = entry.record
     if entry.is_skipped:
         return BatchRow(
@@ -364,12 +563,27 @@ def _history_row(entry: MappedTransaction, index: int, unsupported: set[str]) ->
             ),
         )
 
+    external_ref = _history_ref(record, ordinals)
+    if in_ledger(record.account, external_ref):
+        # The overlap belongs in the artifact under review, not in a refusal
+        # at commit and not in a `--skip-duplicates` flag that would hide it.
+        return BatchRow(
+            index=index,
+            action="skip",
+            rule="ledger:already-recorded",
+            source_row=dict(record.source_row),
+            external_ref=external_ref,
+            account=record.account,
+            note=f"{record.account} already carries a row with reference {external_ref}",
+        )
+
+    lots, note = _designate(entry, designations or {})
     return BatchRow(
         index=index,
         action="append",
         rule=entry.rule,
         source_row=dict(record.source_row),
-        external_ref=_history_ref(record, index),
+        external_ref=external_ref,
         account=record.account,
         txn_type=entry.txn_type,
         trade_date=record.trade_date,
@@ -377,17 +591,78 @@ def _history_row(entry: MappedTransaction, index: int, unsupported: set[str]) ->
         symbol=record.identifier or None,
         quantity=abs(record.quantity) if record.quantity is not None else None,
         price=_unit_price(record),
-        amount=abs(record.amount) if record.amount else None,
+        # The batch states direction by type and carries a magnitude: the cash
+        # the account moved, or -- where none moved -- what the event was worth.
+        amount=_magnitude(record),
         fee_class=entry.fee_class,
-        # ADR 0017 §2a. The reconstruction solved every seeded basis under an
+        counter_account=entry.counter_account,
+        taxes_withheld=entry.taxes_withheld,
+        # ADR 0017 §2a. Without the custodian's word on which lots a sale
+        # consumed, the reconstruction solved every seeded basis under an
         # assumed FIFO relief; the ledger must relieve the same way or a block
         # solved for FIFO gets relieved spec-ID and yields a basis the solve
         # never computed. Written into the batch rather than left to the
         # account default so it is visible and a reviewer can change it -- and
-        # so that changing it here is understood to invalidate the solve.
-        relief_method=(ReliefMethod.FIFO if entry.txn_type in _CLOSING else None),
-        note=record.note,
+        # so that changing it here is understood to invalidate the solve. With
+        # the custodian's word (`lots`), the relief is specific identification
+        # of exactly those lots, and nothing is assumed.
+        relief_method=(
+            ReliefMethod.SPEC
+            if lots
+            else (ReliefMethod.FIFO if entry.txn_type in _CLOSING else None)
+        ),
+        lots=lots,
+        note=_join_notes(record.note, note),
     )
+
+
+def _designate(
+    entry: MappedTransaction, designations: _Designations
+) -> tuple[tuple[LotDesignation, ...], str | None]:
+    """The lots the custodian says this closing row consumed, or why not.
+
+    The report's lots for the sale must add up to the row's quantity: a
+    report that closes more or fewer units than the sale disposed of is
+    describing something else, and the row falls back to the assumed method
+    with the discrepancy written on it, where the reviewer reads it.
+    """
+    record = entry.record
+    if entry.txn_type not in _CLOSING or not record.identifier or not record.quantity:
+        return (), None
+    closed = designations.get((record.account, record.identifier, record.trade_date))
+    if not closed:
+        return (), None
+    quantity = abs(record.quantity)
+    reported = sum((lot.quantity for lot in closed), ZERO)
+    if reported != quantity:
+        return (), (
+            f"the realized report closes {reported} units of {record.identifier} on "
+            f"{record.trade_date.isoformat()} but this row disposes of {quantity}; "
+            f"the report is not used and the assumed relief method applies"
+        )
+    return (
+        tuple(
+            LotDesignation(
+                acquired=lot.acquired, quantity=lot.quantity, cost_basis=lot.cost_basis
+            )
+            for lot in sorted(closed, key=lambda lot: (lot.acquired, lot.quantity))
+        ),
+        None,
+    )
+
+
+def _join_notes(*notes: str | None) -> str | None:
+    present = [note for note in notes if note]
+    return "; ".join(present) if present else None
+
+
+def _magnitude(record: TransactionRecord) -> Decimal | None:
+    """The batch row's amount: cash moved, or the event's stated value."""
+    if record.amount:
+        return abs(record.amount)
+    if record.value:
+        return abs(record.value)
+    return None
 
 
 def _unit_price(record: TransactionRecord) -> Decimal | None:
@@ -398,12 +673,13 @@ def _unit_price(record: TransactionRecord) -> Decimal | None:
     there is no price to state, and `None` says so rather than a zero saying
     the shares were free.
     """
-    if not record.quantity or record.amount == ZERO:
+    magnitude = _magnitude(record)
+    if not record.quantity or magnitude is None:
         return None
-    return abs(record.amount) / abs(record.quantity)
+    return magnitude / abs(record.quantity)
 
 
-def _history_ref(record: TransactionRecord, index: int) -> str:
+def _history_ref(record: TransactionRecord, ordinals: _Ordinals) -> str:
     """ADR 0012's synthesized identity, over the source row's raw text.
 
     Raw text and not the mapped values, deliberately: a change to the activity
@@ -422,7 +698,7 @@ def _history_ref(record: TransactionRecord, index: int) -> str:
             record.trade_date.isoformat(),
             record.activity,
             *(f"{k}={v}" for k, v in sorted(record.source_row.items())),
-            str(index),
         ]
     )
+    material = f"{material}|{ordinals.next(material)}"
     return "row:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:_REF_WIDTH]

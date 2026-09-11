@@ -17,6 +17,7 @@ from portable_core.domain.import_records import HoldingRecord, TransactionRecord
 from portable_core.importers.activity import (
     ActivityMap,
     ActivityRule,
+    PairSpec,
     Sign,
     load_activity_map,
 )
@@ -27,6 +28,7 @@ from portable_core.importers.capabilities import (
     ImportCapability,
 )
 from portable_core.importers.checks import CHECKS
+from portable_core.importers.crosswalk import Crosswalk, CrosswalkEntry, load_crosswalk
 from portable_core.importers.source import CapabilityCheck, SourceSpec, load_source
 from portable_core.importers.tabular import AdapterReport, SkippedRow, TabularAdapter
 
@@ -39,13 +41,17 @@ __all__ = [
     "CapabilityCheck",
     "CapabilityFinding",
     "CapabilitySet",
+    "Crosswalk",
+    "CrosswalkEntry",
     "HoldingRecord",
     "ImportCapability",
+    "PairSpec",
     "Sign",
     "SkippedRow",
     "SourceSpec",
     "TabularAdapter",
     "TransactionRecord",
     "load_activity_map",
+    "load_crosswalk",
     "load_source",
 ]

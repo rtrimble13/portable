@@ -39,7 +39,9 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Final
 
+from portable_core.domain.enums import TransactionType
 from portable_core.domain.import_records import (
+    ClosedLotRecord,
     HoldingRecord,
     MappedTransaction,
     TransactionRecord,
@@ -61,8 +63,11 @@ from portable_core.importers.capabilities import (
     ImportCapability,
 )
 from portable_core.importers.checks import CHECKS, CheckInput, run_check
+from portable_core.importers.crosswalk import Crosswalk, load_crosswalk
+from portable_core.importers.pairing import Leg, pair_legs
 from portable_core.importers.source import (
     HOLDINGS,
+    REALIZED,
     TRANSACTIONS,
     DocumentSpec,
     SourceSpec,
@@ -86,10 +91,12 @@ _GUARDED: Final[dict[ImportCapability, tuple[str, str]]] = {
 _DATE_FIELDS: Final[dict[str, frozenset[str]]] = {
     HOLDINGS: frozenset({"as_of", "acquired"}),
     TRANSACTIONS: frozenset({"trade_date", "settlement_date"}),
+    REALIZED: frozenset({"acquired", "disposed"}),
 }
 _NUMBER_FIELDS: Final[dict[str, frozenset[str]]] = {
     HOLDINGS: frozenset({"quantity", "market_value", "cost_basis"}),
     TRANSACTIONS: frozenset({"quantity", "amount"}),
+    REALIZED: frozenset({"quantity", "cost_basis", "proceeds"}),
 }
 
 _SPREADSHEETS: Final = frozenset({".xlsx", ".xls", ".xlsm", ".ods"})
@@ -127,6 +134,8 @@ class AdapterReport:
     files: tuple[tuple[str, str], ...]
     as_of: date | None = None
     period: tuple[date, date] | None = None
+    #: From the optional realized document. Empty where none is declared.
+    closed_lots: tuple[ClosedLotRecord, ...] = ()
 
     @property
     def accounts(self) -> tuple[str, ...]:
@@ -137,10 +146,18 @@ class AdapterReport:
 class TabularAdapter:
     """Reads one custodian's delimited exports into canonical records."""
 
-    def __init__(self, spec: SourceSpec, activity: ActivityMap, root: Path) -> None:
+    def __init__(
+        self,
+        spec: SourceSpec,
+        activity: ActivityMap,
+        root: Path,
+        crosswalks: dict[str, Crosswalk] | None = None,
+    ) -> None:
         self.spec = spec
         self.activity = activity
         self.root = root
+        #: document kind -> the crosswalk its identifiers resolve through.
+        self.crosswalks = crosswalks or {}
         for check in spec.checks:
             if check.check not in CHECKS:
                 raise ValidationError(
@@ -150,13 +167,45 @@ class TabularAdapter:
                     capability=check.capability.value,
                     check=check.check,
                 )
+        self._check_map_against_columns()
+
+    def _check_map_against_columns(self) -> None:
+        """The map may only read columns the source actually maps.
+
+        Caught here, where both files are in hand, rather than on the first
+        row: a note-keyed rule over a document with no note column would match
+        nothing and refuse every row -- correctly, but six thousand rows into
+        an import instead of at the review.
+        """
+        transactions = self.spec.document(TRANSACTIONS)
+        if self.activity.uses_notes and transactions.column("note") is None:
+            raise ValidationError(
+                "the activity map keys rules on the note (a `note` pattern or a "
+                "pair `counterpart`), but source.toml maps no `note` column for the "
+                "transactions document. Map the column the patterns are meant to "
+                "read",
+                code=E_IMPORT_SOURCE_INVALID,
+            )
+        if self.activity.uses_identifiers and transactions.column("identifier") is None:
+            raise ValidationError(
+                "the activity map restricts a rule to cash-equivalent identifiers "
+                "(`identifiers`, or an `attach`), but source.toml maps no `identifier` "
+                "column for the transactions document, so there is nothing to check "
+                "against the declared set",
+                code=E_IMPORT_SOURCE_INVALID,
+            )
 
     @classmethod
     def load(cls, path: Path) -> TabularAdapter:
         """Load an adapter from its directory. Both mapping files are required."""
         root = path if path.is_dir() else path.parent
         spec = load_source(path)
-        return cls(spec, load_activity_map(root / "activity_map.toml"), root)
+        crosswalks = {
+            kind: load_crosswalk(root / document.crosswalk)
+            for kind, document in spec.documents.items()
+            if document.crosswalk is not None
+        }
+        return cls(spec, load_activity_map(root / "activity_map.toml"), root, crosswalks)
 
     # ── reading ──────────────────────────────────────────────────────────────
 
@@ -164,10 +213,22 @@ class TabularAdapter:
         """Read both documents, decide the capabilities, and emit records."""
         holdings_rows = self._rows(self.spec.document(HOLDINGS))
         transaction_rows = self._rows(self.spec.document(TRANSACTIONS))
+        realized_rows = (
+            self._rows(self.spec.document(REALIZED)) if REALIZED in self.spec.documents else []
+        )
 
         capabilities = self._capabilities(holdings_rows, transaction_rows)
         holdings = self._holdings(holdings_rows, capabilities)
-        transactions, skipped, mapped = self._transactions(transaction_rows, capabilities)
+        # Every account the export mentions: what a pairing rule's named
+        # counterpart is checked against, to tell a hole in the history from
+        # a movement across the portfolio boundary.
+        accounts = frozenset(
+            {h.account for h in holdings}
+            | {self._alias(str(r["account"])) for r in transaction_rows if r.get("account")}
+        )
+        transactions, skipped, mapped = self._transactions(
+            transaction_rows, capabilities, accounts
+        )
 
         self._check_cash_is_stated(holdings)
         as_of = self._one_as_of(holdings)
@@ -184,6 +245,7 @@ class TabularAdapter:
             files=self._digests(),
             as_of=as_of,
             period=(dates[0], dates[-1]) if dates else None,
+            closed_lots=self._closed_lots(realized_rows),
         )
 
     def _path(self, document: DocumentSpec) -> Path:
@@ -301,9 +363,18 @@ class TabularAdapter:
         records: list[HoldingRecord] = []
         for row in rows:
             index = row["_index"]
-            account = _required(row, "account", index)
-            identifier = _required(row, "identifier", index)
+            account = self._account(row, index)
+            identifier = self._resolve(HOLDINGS, _required(row, "identifier", index), index)
+            is_cash = self.spec.is_cash_equivalent(account, identifier)
             quantity = row.get("quantity")
+            market_value = row.get("market_value")
+            if quantity is None and is_cash and isinstance(market_value, Decimal):
+                # ADR 0013: a sweep vehicle is cash, and custodians state cash
+                # as a balance rather than a share count. The balance is the
+                # quantity of a par-priced vehicle, and the reconstruction and
+                # the reconciler already read a cash line's market value as its
+                # balance; this makes the record say the same thing.
+                quantity = market_value
             if not isinstance(quantity, Decimal):
                 raise _missing(index, "quantity", "a holdings line")
             as_of = row.get("as_of")
@@ -315,8 +386,8 @@ class TabularAdapter:
                     account=account,
                     identifier=identifier,
                     quantity=quantity,
-                    is_cash_equivalent=self.spec.is_cash_equivalent(account, identifier),
-                    market_value=row.get("market_value"),
+                    is_cash_equivalent=is_cash,
+                    market_value=market_value,
                     cost_basis=None if "cost_basis" in guarded else row.get("cost_basis"),
                     acquired=None if "acquired" in guarded else row.get("acquired"),
                     lot_id=None if "lot_id" in guarded else row.get("lot_id"),
@@ -324,8 +395,43 @@ class TabularAdapter:
             )
         return tuple(records)
 
+    def _closed_lots(self, rows: list[dict[str, Any]]) -> tuple[ClosedLotRecord, ...]:
+        """The realized document, as records. Nothing is derived from it here."""
+        records: list[ClosedLotRecord] = []
+        for row in rows:
+            index = row["_index"]
+            account = self._account(row, index)
+            identifier = self._resolve(REALIZED, _required(row, "identifier", index), index)
+            acquired, disposed = row.get("acquired"), row.get("disposed")
+            if not isinstance(acquired, date):
+                raise _missing(index, "acquired", "a closed lot")
+            if not isinstance(disposed, date):
+                raise _missing(index, "disposed", "a closed lot")
+            quantity, basis = row.get("quantity"), row.get("cost_basis")
+            if not isinstance(quantity, Decimal):
+                raise _missing(index, "quantity", "a closed lot")
+            if not isinstance(basis, Decimal):
+                raise _missing(index, "cost_basis", "a closed lot")
+            proceeds = row.get("proceeds")
+            records.append(
+                ClosedLotRecord(
+                    account=account,
+                    identifier=identifier,
+                    acquired=acquired,
+                    disposed=disposed,
+                    quantity=abs(quantity),
+                    cost_basis=basis,
+                    source_row=row["_raw"],
+                    proceeds=proceeds if isinstance(proceeds, Decimal) else None,
+                )
+            )
+        return tuple(records)
+
     def _transactions(
-        self, rows: list[dict[str, Any]], capabilities: CapabilitySet
+        self,
+        rows: list[dict[str, Any]],
+        capabilities: CapabilitySet,
+        accounts: frozenset[str],
     ) -> tuple[
         tuple[TransactionRecord, ...],
         tuple[SkippedRow, ...],
@@ -343,39 +449,88 @@ class TabularAdapter:
         records: list[TransactionRecord] = []
         skipped: list[SkippedRow] = []
         mapped: list[MappedTransaction] = []
+        indices: list[int] = []
+        legs: list[Leg] = []
+
+        attachments: list[Leg] = []
 
         for row in rows:
             index = row["_index"]
+            indices.append(index)
             activity = _required(row, "activity", index)
-            rule = self.activity.rule_for(activity, row=index)
+            account = self._account(row, index)
+            raw_identifier = row.get("identifier")
+            identifier = (
+                self._resolve(TRANSACTIONS, raw_identifier, index)
+                if isinstance(raw_identifier, str)
+                else None
+            )
+            rule = self.activity.rule_for(
+                activity,
+                note=row.get("note"),
+                cash_equivalent=(
+                    self.spec.is_cash_equivalent(account, identifier)
+                    if identifier is not None
+                    else None
+                ),
+                row=index,
+            )
             # Built leniently for a skipped row: it will never become a
             # ledger row, so holding it to a ledger row's completeness
             # would refuse the import over a blank in a memo line -- which
             # is frequently the very reason the map skips it.
-            record = self._record(row, rule, activity, guarded, index, strict=not rule.skip)
+            record = self._record(
+                row, rule, activity, identifier, guarded, index, strict=not rule.skip
+            )
 
             if rule.skip:
                 skipped.append(
                     SkippedRow(index=index, activity=activity, reason=rule.reason or "")
                 )
                 mapped.append(
-                    MappedTransaction(
-                        record=record,
-                        rule=f"activity:{rule.match}",
-                        reason=rule.reason,
-                    )
+                    MappedTransaction(record=record, rule=rule.label, reason=rule.reason)
                 )
                 continue
 
             records.append(record)
+            if rule.pair is not None:
+                # Decided once every row is read: a leg's meaning depends on
+                # whether its other half is in the file.
+                legs.append(Leg(index=index, record=record, rule=rule))
+                mapped.append(MappedTransaction(record=record, rule=rule.label))
+                continue
+            if rule.attach is not None:
+                attachments.append(Leg(index=index, record=record, rule=rule))
+                mapped.append(MappedTransaction(record=record, rule=rule.label))
+                continue
             mapped.append(
                 MappedTransaction(
                     record=record,
-                    rule=f"activity:{rule.match}",
+                    rule=rule.label,
                     txn_type=rule.txn_type,
                     fee_class=rule.fee_class,
                 )
             )
+
+        if legs:
+            paired = pair_legs(legs, accounts, self.spec.account_aliases)
+            mapped = [paired.get(i, m) for i, m in zip(indices, mapped, strict=True)]
+            skipped.extend(
+                SkippedRow(index=leg.index, activity=leg.record.activity, reason=reason)
+                for leg in legs
+                if (reason := paired[leg.index].reason) is not None
+            )
+        if attachments:
+            mapped = _attach(attachments, indices, mapped)
+            skipped.extend(
+                SkippedRow(
+                    index=leg.index,
+                    activity=leg.record.activity,
+                    reason=mapped[indices.index(leg.index)].reason or "",
+                )
+                for leg in attachments
+            )
+        skipped.sort(key=lambda entry: entry.index)
         return tuple(records), tuple(skipped), tuple(mapped)
 
     def _record(
@@ -383,6 +538,7 @@ class TabularAdapter:
         row: dict[str, Any],
         rule: ActivityRule,
         activity: str,
+        identifier: str | None,
         guarded: frozenset[str],
         index: int,
         *,
@@ -398,9 +554,11 @@ class TabularAdapter:
         traded = row.get("trade_date")
         if not isinstance(traded, date):
             raise _missing(index, "trade_date", "a transaction")
+        value: Decimal | None = None
         if strict:
             quantity = _apply(rule.quantity, row.get("quantity"), index, "quantity")
             amount = _apply(rule.cash, row.get("amount"), index, "amount")
+            value = _apply(rule.value, row.get("amount"), index, "amount")
         else:
             raw_quantity = row.get("quantity")
             raw_amount = row.get("amount")
@@ -408,20 +566,50 @@ class TabularAdapter:
             amount = raw_amount if isinstance(raw_amount, Decimal) else None
         return TransactionRecord(
             trade_date=traded,
-            account=_required(row, "account", index),
+            account=self._account(row, index),
             activity=activity,
-            identifier=row.get("identifier"),
+            identifier=identifier,
             quantity=quantity,
             # `Sign.NONE` is the map asserting this activity moves no cash --
             # a stated zero, not an unstated one.
             amount=amount if amount is not None else Decimal("0"),
             source_row=row["_raw"],
+            value=value,
             external_id=(None if "external_id" in guarded else row.get("external_id")),
             settlement_date=(
                 None if "settlement_date" in guarded else row.get("settlement_date")
             ),
             note=row.get("note"),
         )
+
+    def _account(self, row: dict[str, Any], index: int) -> str:
+        """The account a row belongs to, in the portfolio's own name.
+
+        A custodian writes the account as it likes -- upper-cased in one
+        export and mixed-case in another, or by number in a note -- and
+        `[account_aliases]` is the one place that maps its spellings to the
+        portfolio's name. Applied to the account column of every document, so
+        the three documents agree on who holds what before anything is
+        compared.
+        """
+        return self._alias(_required(row, "account", index))
+
+    def _alias(self, name: str) -> str:
+        return self.spec.account_aliases.get(" ".join(name.split()).casefold(), name.strip())
+
+    def _resolve(self, document: str, identifier: str, index: int) -> str:
+        """The identifier as the ledger will know it.
+
+        Through the document's crosswalk where one is declared -- the custodian
+        wrote a name, and a name it does not carry is a refusal -- and verbatim
+        otherwise. The cash-equivalent set is checked against the *resolved*
+        identifier, so an adapter declares its sweep vehicles by symbol once
+        rather than by every spelling the custodian uses for them.
+        """
+        crosswalk = self.crosswalks.get(document)
+        if crosswalk is None:
+            return identifier
+        return crosswalk.resolve(identifier, row=index)
 
     def _cleared(self, document: str, capabilities: CapabilitySet) -> frozenset[str]:
         """Fields whose capability was withheld, and which are therefore unread."""
@@ -487,11 +675,95 @@ class TabularAdapter:
         """sha256 per document, so a batch can name what it was built from."""
         return tuple(
             (document.file, _sha256(self.root / document.file))
-            for document in (
-                self.spec.document(HOLDINGS),
-                self.spec.document(TRANSACTIONS),
-            )
+            for kind, document in self.spec.documents.items()
         )
+
+
+#: Income rows a withholding line may attach to.
+_ATTACHABLE: Final = frozenset(
+    {
+        TransactionType.DIVIDEND,
+        TransactionType.DIVIDEND_REINVEST,
+        TransactionType.COUPON,
+        TransactionType.RETURN_OF_CAPITAL,
+        TransactionType.INTEREST,
+    }
+)
+
+
+def _attach(
+    attachments: Sequence[Leg], indices: Sequence[int], mapped: list[MappedTransaction]
+) -> list[MappedTransaction]:
+    """Fold each withholding line into the income row it belongs to.
+
+    PORT-GIPS-A06: withholding is tax, not a fee, and the return is earned on
+    the gross while the cash moved by the net. A custodian that reports the
+    tax as its own line has reported one event in two rows; the ledger wants
+    the income row with `taxes_withheld` on it, and the tax line carried as a
+    skip naming the row it went to. The target is the one income row on the
+    same day, in the same account, on the same instrument -- none or two is a
+    refusal, never a guess.
+    """
+    position = {index: i for i, index in enumerate(indices)}
+    result = list(mapped)
+    for line in attachments:
+        record = line.record
+        targets = [
+            (i, m)
+            for i, m in enumerate(result)
+            if m.txn_type in _ATTACHABLE
+            and m.record.trade_date == record.trade_date
+            and m.record.account == record.account
+            and m.record.identifier == record.identifier
+        ]
+        where = (
+            f"row {line.index}: {line.rule.match!r} on {record.identifier!r} in "
+            f"{record.account} on {record.trade_date.isoformat()}"
+        )
+        if not targets:
+            raise ValidationError(
+                f"{where} has no income row to attach to. A withholding line "
+                f"belongs to a same-day income row on the same instrument; add "
+                f"the missing row to the history, or map this one as an event of "
+                f"its own",
+                code=E_IMPORT_SOURCE_INVALID,
+                row=line.index,
+            )
+        if len(targets) > 1:
+            raise ValidationError(
+                f"{where} could attach to rows "
+                + ", ".join(str(indices[i]) for i, _ in targets)
+                + ". Two income rows on one day for one instrument leave nothing to "
+                "decide by; nothing here guesses",
+                code=E_IMPORT_SOURCE_INVALID,
+                row=line.index,
+                candidates=[indices[i] for i, _ in targets],
+            )
+        i, target = targets[0]
+        withheld = abs(record.amount)
+        if withheld == Decimal("0"):
+            raise ValidationError(
+                f"{where} withholds nothing. Check the `cash` convention on the rule",
+                code=E_IMPORT_SOURCE_INVALID,
+                row=line.index,
+            )
+        result[i] = MappedTransaction(
+            record=target.record,
+            rule=f"{target.rule} (+ withholding from row {line.index})",
+            txn_type=target.txn_type,
+            fee_class=target.fee_class,
+            counter_account=target.counter_account,
+            taxes_withheld=target.taxes_withheld + withheld,
+        )
+        result[position[line.index]] = MappedTransaction(
+            record=record,
+            rule=f"{line.rule.label} (attached to row {indices[i]})",
+            reason=(
+                f"withholding on the income recorded on row {indices[i]}; carried "
+                f"there as taxes_withheld, not as a fee (PORT-GIPS-A06)"
+            ),
+        )
+    return result
 
 
 def _apply(sign: Sign, value: Any, index: int, field: str) -> Decimal | None:
@@ -501,9 +773,11 @@ def _apply(sign: Sign, value: Any, index: int, field: str) -> Decimal | None:
         raise _missing(index, field, f"an activity mapped with {field} = {sign.value!r}")
     if not isinstance(value, Decimal):  # pragma: no cover -- parsing guarantees it
         raise _missing(index, field, "a transaction")
-    magnitude = abs(value)
     if sign is Sign.AS_STATED:
         return value
+    if sign is Sign.INVERTED:
+        return -value
+    magnitude = abs(value)
     return magnitude if sign is Sign.POSITIVE else -magnitude
 
 

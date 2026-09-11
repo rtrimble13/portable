@@ -22,14 +22,17 @@ from portable_core.domain.enums import (
     TransactionType,
 )
 from portable_core.domain.import_records import (
+    ClosedLotRecord,
     HoldingRecord,
     MappedTransaction,
     TransactionRecord,
 )
-from portable_core.errors import DataUnavailableError
+from portable_core.errors import DataUnavailableError, ValidationError
+from portable_core.services.import_batch import LotDesignation
 from portable_core.services.import_extract import (
     ExtractResult,
     build_batch,
+    build_incremental_batch,
     cutover_prices_needed,
 )
 from portable_core.services.reconstruction import reconstruct
@@ -98,6 +101,8 @@ def _extract(
     transactions: Sequence[TransactionRecord],
     mapped: Sequence[MappedTransaction],
     prices: Mapping[str, Decimal] | None = None,
+    *,
+    closed_lots: Sequence[ClosedLotRecord] = (),
 ) -> ExtractResult:
     result = reconstruct(holdings, transactions, cutover=CUTOVER)
     return build_batch(
@@ -105,6 +110,19 @@ def _extract(
         reconstruction=result,
         mapped=mapped,
         cutover_prices=PRICES if prices is None else prices,
+        closed_lots=closed_lots,
+    )
+
+
+def _closed(acquired: date, disposed: date, quantity: str, cost: str) -> ClosedLotRecord:
+    return ClosedLotRecord(
+        account="Main",
+        identifier="AAPL",
+        acquired=acquired,
+        disposed=disposed,
+        quantity=Decimal(quantity),
+        cost_basis=Decimal(cost),
+        source_row={},
     )
 
 
@@ -261,6 +279,79 @@ def test_a_closing_trade_states_fifo_relief() -> None:
     assert row.relief_method is ReliefMethod.FIFO
 
 
+def test_a_sale_the_realized_report_covers_designates_its_lots() -> None:
+    """The custodian's lot report says which lots a sale consumed. That is a
+    spec-ID designation in everything but the lot id, so the row carries it
+    and assumes nothing."""
+    buy = _txn(date(2025, 3, 3), "AAPL", "10", "-1500.00")
+    sale = _txn(date(2025, 6, 1), "AAPL", "-10", "2000.00", "Sold")
+    extract = _extract(
+        [_hold("AAPL", "30"), SWEEP],
+        [buy, sale],
+        [_mapped(buy), _mapped(sale, TransactionType.SELL)],
+        closed_lots=[_closed(date(2025, 3, 3), date(2025, 6, 1), "10", "1500.00")],
+    )
+    row = next(r for r in extract.batch.rows if r.txn_type is TransactionType.SELL)
+    assert row.relief_method is ReliefMethod.SPEC
+    assert row.lots == (
+        LotDesignation(
+            acquired=date(2025, 3, 3), quantity=Decimal("10"), cost_basis=Decimal("1500.00")
+        ),
+    )
+    assert row.note is None
+
+
+def test_a_report_that_does_not_add_up_to_the_sale_is_noted_and_fifo_applies() -> None:
+    """Lots that total something other than the sale describe a different
+    sale. The row says so and falls back to the assumed method, in the file
+    the reviewer reads -- not silently either way."""
+    sale = _txn(date(2025, 6, 1), "AAPL", "-10", "2000.00", "Sold")
+    extract = _extract(
+        [_hold("AAPL", "30"), SWEEP],
+        [sale],
+        [_mapped(sale, TransactionType.SELL)],
+        closed_lots=[_closed(date(2024, 3, 3), date(2025, 6, 1), "7", "1000.00")],
+    )
+    row = next(r for r in extract.batch.rows if r.txn_type is TransactionType.SELL)
+    assert row.relief_method is ReliefMethod.FIFO
+    assert row.lots == ()
+    assert row.note is not None
+    assert "closes 7 units" in row.note and "disposes of 10" in row.note
+
+
+def test_a_report_for_another_day_designates_nothing() -> None:
+    sale = _txn(date(2025, 6, 1), "AAPL", "-10", "2000.00", "Sold")
+    extract = _extract(
+        [_hold("AAPL", "30"), SWEEP],
+        [sale],
+        [_mapped(sale, TransactionType.SELL)],
+        closed_lots=[_closed(date(2024, 3, 3), date(2025, 6, 2), "10", "1000.00")],
+    )
+    row = next(r for r in extract.batch.rows if r.txn_type is TransactionType.SELL)
+    assert row.relief_method is ReliefMethod.FIFO
+    assert row.lots == ()
+
+
+def test_an_incremental_extract_designates_lots_too() -> None:
+    sale = _txn(date(2025, 6, 1), "AAPL", "-10", "2000.00", "Sold")
+    extract = build_incremental_batch(
+        broker="acme",
+        mapped=[_mapped(sale, TransactionType.SELL)],
+        inception={"Main": CUTOVER},
+        in_ledger=lambda account, ref: False,
+        closed_lots=[
+            _closed(date(2021, 3, 3), date(2025, 6, 1), "4", "400.00"),
+            _closed(date(2025, 3, 3), date(2025, 6, 1), "6", "900.00"),
+        ],
+    )
+    row = next(r for r in extract.batch.rows if r.txn_type is TransactionType.SELL)
+    assert row.relief_method is ReliefMethod.SPEC
+    assert [(lot.acquired, lot.quantity) for lot in row.lots] == [
+        (date(2021, 3, 3), Decimal("4")),
+        (date(2025, 3, 3), Decimal("6")),
+    ]
+
+
 def test_an_opening_trade_states_no_relief_method() -> None:
     buy = _txn(date(2025, 6, 1), "AAPL", "10", "-2000.00")
     extract = _extract([_hold("AAPL", "40"), SWEEP], [buy], [_mapped(buy)])
@@ -345,3 +436,195 @@ def test_the_batch_period_spans_the_cutover_to_the_last_row() -> None:
     last = _txn(date(2025, 6, 1), "AAPL", "10", "-2000.00")
     extract = _extract([_hold("AAPL", "40"), SWEEP], [last], [_mapped(last)])
     assert extract.batch.source.period == (CUTOVER, date(2025, 6, 1))
+
+
+# ── identity, and the overlap ────────────────────────────────────────────────
+
+
+def _hashed(day: date, amount: str, activity: str = "Dividend") -> TransactionRecord:
+    """A row with no custodian identifier, so the reference is synthesized."""
+    return TransactionRecord(
+        trade_date=day,
+        account="Main",
+        activity=activity,
+        identifier="AAPL",
+        quantity=None,
+        amount=Decimal(amount),
+        source_row={"Date": day.isoformat(), "Activity": activity, "Amount": amount},
+    )
+
+
+def _refs(*records: TransactionRecord) -> list[str]:
+    extract = _extract(
+        [_hold("AAPL", "30"), SWEEP],
+        list(records),
+        [_mapped(r, TransactionType.DIVIDEND) for r in records],
+    )
+    return [r.external_ref or "" for r in extract.batch.rows if r.action == "append"]
+
+
+def test_two_identical_rows_on_one_day_get_distinct_references() -> None:
+    """ADR 0012's ordinal. Two identical dividends on one day are not
+    hypothetical, and without it the second would be refused as a duplicate
+    of the first."""
+    twin = _hashed(date(2025, 6, 1), "10.00")
+    rows = [ref for ref in _refs(twin, twin) if ref.startswith("row:")]
+    assert len(rows) == 2 and len(set(rows)) == 2
+
+
+def test_a_reference_does_not_depend_on_where_the_row_sits_in_the_batch() -> None:
+    """The same source row gets the same reference in the initial extract and
+    in every incremental one after it. That is what lets an overlapping export
+    be recognised as an overlap rather than refused as a duplicate."""
+    later = _hashed(date(2025, 6, 1), "10.00")
+    earlier = _hashed(date(2025, 3, 1), "7.00")
+    alone = _refs(later)
+    with_company = _refs(earlier, later)
+    assert alone[-1] == with_company[-1]
+
+
+def test_a_row_the_ledger_already_carries_is_a_skip_naming_the_reference() -> None:
+    """Resolved at extract, where the reviewer sees it, not at commit and not
+    by a flag that would hide it."""
+    row = _hashed(date(2025, 6, 1), "10.00")
+    result = reconstruct([_hold("AAPL", "30"), SWEEP], [row], cutover=CUTOVER)
+    extract = build_batch(
+        broker="acme",
+        reconstruction=result,
+        mapped=[_mapped(row, TransactionType.DIVIDEND)],
+        cutover_prices=PRICES,
+        in_ledger=lambda account, ref: ref.startswith("row:"),
+    )
+    skipped = next(r for r in extract.batch.rows if r.rule == "ledger:already-recorded")
+    assert skipped.action == "skip"
+    assert skipped.external_ref and skipped.external_ref.startswith("row:")
+    assert skipped.external_ref in (skipped.note or "")
+    assert extract.appended == 0
+
+
+def test_a_transfer_carries_its_counter_account_into_the_batch() -> None:
+    """ADR 0014: one ledger row, with the receiving account on it."""
+    leg = _txn(date(2025, 6, 1), None, None, "-150.00", "Journal")
+    extract = _extract(
+        [_hold("AAPL", "30"), SWEEP],
+        [leg],
+        [
+            MappedTransaction(
+                record=leg,
+                rule="activity:Journal (paired with row 2)",
+                txn_type=TransactionType.TRANSFER,
+                counter_account="IRA",
+            )
+        ],
+    )
+    row = next(r for r in extract.batch.rows if r.txn_type is TransactionType.TRANSFER)
+    assert row.counter_account == "IRA"
+    assert row.amount == Decimal("150.00")
+
+
+# ── the incremental extract ──────────────────────────────────────────────────
+
+
+def _incremental(
+    mapped: Sequence[MappedTransaction],
+    *,
+    inception: Mapping[str, date] | None = None,
+    known: frozenset[str] = frozenset(),
+) -> ExtractResult:
+    return build_incremental_batch(
+        broker="acme",
+        mapped=mapped,
+        inception={"Main": CUTOVER} if inception is None else inception,
+        in_ledger=lambda account, ref: ref in known,
+    )
+
+
+def test_an_incremental_extract_seeds_nothing() -> None:
+    row = _hashed(date(2025, 6, 1), "10.00")
+    extract = _incremental([_mapped(row, TransactionType.DIVIDEND)])
+    assert extract.seeded == 0
+    assert extract.appended == 1
+    assert all("cutover" not in r.rule for r in extract.batch.rows)
+
+
+def test_an_incremental_extract_skips_what_the_ledger_already_carries() -> None:
+    row = TransactionRecord(
+        trade_date=date(2025, 6, 1),
+        account="Main",
+        activity="Dividend",
+        identifier="AAPL",
+        quantity=None,
+        amount=Decimal("10.00"),
+        source_row={},
+        external_id="C-1",
+    )
+    extract = _incremental([_mapped(row, TransactionType.DIVIDEND)], known=frozenset({"C-1"}))
+    assert extract.appended == 0 and extract.skipped == 1
+    assert extract.batch.rows[0].rule == "ledger:already-recorded"
+
+
+def test_a_row_on_or_before_the_accounts_first_ledger_date_is_inside_the_seed() -> None:
+    """A later export whose window reaches back past the cutover would
+    otherwise append rows the seeded position already contains."""
+    at = _hashed(CUTOVER, "10.00")
+    before = _hashed(date(2025, 1, 2), "10.00")
+    after = _hashed(date(2025, 2, 1), "10.00")
+    extract = _incremental([_mapped(r, TransactionType.DIVIDEND) for r in (at, before, after)])
+    rules = [r.rule for r in extract.batch.rows]
+    assert rules == [
+        "ledger:before-inception",
+        "ledger:before-inception",
+        "activity:Dividend",
+    ]
+    assert "2025-01-31" in (extract.batch.rows[0].note or "")
+
+
+def test_an_account_with_no_ledger_rows_is_refused_by_an_incremental_extract() -> None:
+    row = _hashed(date(2025, 6, 1), "10.00")
+    with pytest.raises(ValidationError) as excinfo:
+        _incremental([_mapped(row, TransactionType.DIVIDEND)], inception={"Other": CUTOVER})
+    assert excinfo.value.context["accounts"] == ["Main"]
+    assert "run the initial extract" in str(excinfo.value)
+
+
+def test_an_incremental_batch_states_the_period_it_covers() -> None:
+    rows = [_hashed(date(2025, 6, 1), "1"), _hashed(date(2025, 3, 1), "2")]
+    extract = _incremental([_mapped(r, TransactionType.DIVIDEND) for r in rows])
+    assert extract.batch.source.period == (date(2025, 3, 1), date(2025, 6, 1))
+
+
+def test_the_seed_carries_the_blocks_earliest_acquisition_date() -> None:
+    """Stated where the custodian states one; the lot then ages from it."""
+    held = HoldingRecord(
+        as_of=date(2026, 6, 30),
+        account="Main",
+        identifier="AAPL",
+        quantity=Decimal("30"),
+        is_cash_equivalent=False,
+        cost_basis=Decimal("6000.00"),
+        acquired=date(2018, 6, 14),
+    )
+    extract = _extract([held, SWEEP], [_txn(date(2025, 6, 1), None, None, "1.00")], [])
+    seed = next(r for r in extract.batch.rows if r.symbol == "AAPL")
+    assert seed.original_acquired_date == date(2018, 6, 14)
+
+
+def test_the_two_parts_of_a_block_get_distinct_references_and_the_accounted_part_first() -> (
+    None
+):
+    receipt = TransactionRecord(
+        trade_date=CUTOVER,
+        account="Main",
+        activity="Receipt",
+        identifier="AAPL",
+        quantity=Decimal("100"),
+        amount=Decimal("0"),
+        source_row={},
+        value=Decimal("20000.00"),
+    )
+    sale = _txn(date(2025, 3, 1), "AAPL", "-30", "6600.00", "Sold")
+    extract = _extract([SWEEP], [receipt, sale], [_mapped(sale, TransactionType.SELL)])
+    seeds = [r for r in extract.batch.rows if r.symbol == "AAPL" and "cutover" in r.rule]
+    assert [s.quantity for s in seeds] == [Decimal("30"), Decimal("70")]
+    assert seeds[0].external_ref != seeds[1].external_ref
+    assert seeds[1].source_row["part"] == "vanished"

@@ -44,7 +44,7 @@ REBUILD_MARKER: Final = "-- portable:rebuild"
 #: The schema version this build of `portable` writes and understands. Bumped
 #: by every migration, in the same commit as the migration and its CHANGELOG
 #: entry.
-CURRENT_SCHEMA_VERSION: Final[int] = 3
+CURRENT_SCHEMA_VERSION: Final[int] = 4
 
 
 @dataclass(frozen=True, slots=True)

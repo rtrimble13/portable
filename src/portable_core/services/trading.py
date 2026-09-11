@@ -19,7 +19,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from portable_core.decimals import is_whole, money_context, quantize_money
+from portable_core.decimals import is_whole, money_context, quantize_money, quantize_quantity
 from portable_core.domain.enums import (
     AccountStatus,
     BasisSource,
@@ -407,6 +407,7 @@ class TradingService:
         taxes_withheld: Decimal = ZERO,
         withholding_reclaimable: Decimal | None = None,
         is_qualified: bool | None = None,
+        reinvested_units: Decimal | None = None,
         note: str | None = None,
         external_ref: str | None = None,
         source: TransactionSource = TransactionSource.MANUAL,
@@ -415,6 +416,15 @@ class TradingService:
 
         Recognition is on the pay date; the ex-date drives the accrual
         `ValuationEngine` picks up between the two (`PORT-GIPS-A06`).
+
+        **A reinvested distribution is income and a lot, in one row.** With
+        ``txn_type`` `DIVIDEND_REINVEST` and ``reinvested_units``, the gross is
+        the income earned and also the cost of the units bought with it, so
+        the row opens a lot (`ReplayEngine` treats it as an opening) and moves
+        no cash. Two rows -- a dividend and a buy -- would say the same thing
+        and put an external-flow-shaped pair in the cash ledger that never
+        happened. Withholding on a reinvestment is refused rather than netted:
+        a fund that withholds does not also reinvest the gross.
 
         **Withholding is tax, not a fee.** `gross_amount` stays the income the
         instrument paid and `net_cash_effect` is what actually landed, because
@@ -447,8 +457,44 @@ class TradingService:
         self.check_external_ref(account, external_ref)
         self._check_withholding(gross, taxes_withheld, withholding_reclaimable)
 
+        # A dividend taken in units is its own type; a capital-gain
+        # distribution keeps its type (the character is the type) and carries
+        # the units on the row.
+        may_reinvest = txn_type in {
+            TransactionType.DIVIDEND_REINVEST,
+            TransactionType.CAPITAL_GAIN_LT,
+            TransactionType.CAPITAL_GAIN_ST,
+        }
+        reinvested = txn_type is TransactionType.DIVIDEND_REINVEST or (
+            may_reinvest and reinvested_units is not None
+        )
+        if reinvested and (reinvested_units is None or reinvested_units <= 0):
+            raise ValidationError(
+                "a reinvested distribution states the units it bought",
+                remedy="Pass the units received; the gross is what they cost.",
+                amount=str(gross),
+            )
+        if not may_reinvest and reinvested_units is not None:
+            raise ValidationError(
+                f"units are stated on a {txn_type.value}, which reinvests nothing",
+                remedy="Use dividend_reinvest for a distribution taken in units.",
+            )
+        if reinvested and taxes_withheld:
+            raise ValidationError(
+                "a reinvested distribution cannot also have tax withheld from it",
+                remedy=(
+                    "Record the gross as a dividend with --withheld and the units "
+                    "as a buy, if that is what the custodian did."
+                ),
+            )
+
         with money_context():
-            net = quantize_money(gross - taxes_withheld)
+            net = ZERO if reinvested else quantize_money(gross - taxes_withheld)
+            price = (
+                quantize_quantity(gross / reinvested_units)
+                if reinvested and reinvested_units
+                else None
+            )
 
         return Transaction(
             txn_id=0,
@@ -458,6 +504,8 @@ class TradingService:
             txn_type=txn_type,
             net_cash_effect=net,
             instrument_id=instrument.instrument_id,
+            quantity=reinvested_units if reinvested else None,
+            price=price,
             gross_amount=quantize_money(gross),
             taxes_withheld=quantize_money(taxes_withheld),
             withholding_reclaimable=(

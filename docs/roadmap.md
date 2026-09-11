@@ -87,9 +87,32 @@ fixtures has been validated against the easy case. Designed in
    absence costs. Six named checks earn a capability, and a capability that
    fails its check does not merely go unreported — the data behind it is not
    read.
+4a. **The grammar the first custodian needed** — *done*. Measured against the
+   reference custodian's traps, the mapping files could not express four of
+   them without Python: transaction rows carrying names rather than symbols, one
+   activity word naming several events, sweep bookkeeping that had to be dropped
+   by a rule which could not also swallow a real movement, and both legs of an
+   internal transfer reported once per account. Each is general, so each became
+   grammar (`docs/broker-import.md` §6): a crosswalk, a note key, a
+   cash-equivalent whitelist, and a pairing rule. Alongside them, the two
+   things a periodic update needs: rows already in the ledger are skipped at
+   extract and shown as such, and `pt import broker --incremental` extends an
+   account rather than seeding it twice.
+4b. **The maintenance loop, and the skill that runs it** — *done*. A sale
+   the custodian's lot report covers relieves exactly the lots it names
+   (`lots` on the batch row); `pt reconcile --realized` ties every
+   disposition to that report per sale; `scripts/xlsx_to_csv.py` opens a
+   spreadsheet export at the CSV boundary; and
+   `.claude/skills/broker-import/SKILL.md` is the runbook an agent follows
+   with the owner — authoring the mapping files by interview, importing in
+   segments around corporate actions, updating `--incremental`, and
+   explaining every break before accepting. No custodian-specific Python
+   anywhere.
 5. **The first custodian**, as an instance of that adapter, accepted on
-   reconciliation rather than on parser tests. **A second custodian is the only
-   real test of item 4** — the first one always fits.
+   reconciliation rather than on parser tests — *done*: the William Blair
+   adapter, three accounts, four years of history, positions and cash
+   reconciled and realized gains tied per sale. **A second custodian is the
+   only real test of item 4** — the first one always fits.
 
 Then:
 

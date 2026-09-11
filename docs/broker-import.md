@@ -4,11 +4,13 @@ How a custodian's exports become ledger rows: what `portable` requires of any
 custodian, what it does with more when more is available, and what it refuses to
 guess.
 
-**Status:** partly built. The prerequisites, the batch format and its commit
-stage, and the generic tabular adapter with its capability model are
-implemented; the extract stage that turns canonical records into a batch, and
-the cutover reconstruction it depends on, are not. §1 says which command is
-which. The decisions are ADRs
+**Status:** built, end to end, for the initial load and for every update after
+it. The prerequisites, the batch format and its commit stage, the generic
+tabular adapter with its capability model, the cutover reconstruction, the
+extract stage, and the incremental extract are all implemented; the mapping
+grammar covers every trap the reference custodian (§12) presented without a
+line of custodian-specific Python. §1 says which command is which. The
+decisions are ADRs
 [0012](adr/0012-broker-import-pipeline.md) (the pipeline),
 [0013](adr/0013-cash-sweep-is-cash.md) (sweep vehicles),
 [0014](adr/0014-advisory-fees-paid-across-accounts.md) (adviser fees),
@@ -39,6 +41,8 @@ $EDITOR batch.json                       # the review is the point
 pt import batch batch.json --dry-run
 pt import batch batch.json
 pt reconcile --account <acct> --against holdings.csv --as-of <date>
+
+pt import broker adapters/<name>/ -o update.json --incremental   # every import after the first
 ```
 
 **The pipeline is complete.** `inspect` and `reconstruct` read and report;
@@ -74,6 +78,17 @@ the errors that leave every quantity right and the money wrong.
 
 Any custodian can produce both. If yours cannot, the problem is upstream of
 `portable`.
+
+A third document is optional and worth asking for: a **realized gain and loss
+report at lot level** (`[documents.realized]` — account · instrument ·
+acquired · disposed · quantity · cost basis, optionally proceeds and term).
+For every lot the custodian closed since the cutover it states when the lot
+was acquired and what it cost, which is exactly the basis a reconstruction
+cannot otherwise recover for a block disposed of after the cutover (§7). With
+it, such a block is `custodian_asserted` rather than `unavailable`, and no
+relief method is assumed anywhere, because the report says which lots went —
+and every sale the report covers relieves exactly those lots, by designation
+rather than by an assumed method (§5, *the lots a sale consumed*).
 
 ---
 
@@ -243,17 +258,39 @@ needs.
 
 **Re-importing an overlapping period** is ordinary, not an error: you pull
 Jan–Jun, then Apr–Dec. That is resolved at **extract**, where rows already in
-the ledger are written to the batch as `action: "skip"` with the reason, so the
+the ledger are written to the batch as `action: "skip"` under the rule
+`ledger:already-recorded`, naming the reference the ledger carries, so the
 overlap is visible in the artifact you review. It is deliberately *not* a
 `--skip-duplicates` flag at commit: a commit-time skip makes the decision
 invisible, and cannot be told apart from an adapter that failed to emit the row.
 A duplicate reaching commit is therefore unexpected, and refuses.
 
+**Every import after the first is `--incremental`.** The initial extract seeds
+each account's opening positions (§7) and then appends the history; run again
+on the same portfolio it would seed them twice, so it refuses by name once an
+account already carries ledger rows. `--incremental` is the other shape: no
+seed, the overlap skipped as above, and any row dated on or before the
+account's first ledger date skipped under `ledger:before-inception`, because
+such a row is inside the seeded position already. Run against an account with
+no rows, it refuses too — there is nothing to extend, and leaving the opening
+positions out would be a silently short portfolio. Neither shape is inferred.
+
+**Corporate actions are imported in segments.** Format version 1 refuses a
+split or a conversion, and a sale after one depends on it, so the history is
+extracted `--until` the day before each such action and committed, the action
+is recorded with its typed command (`pt ca split`, `pt ca convert`,
+`pt ca spinoff`), and the next segment is extracted `--incremental`. Rows left
+for a later segment are counted in the extract's report, never silently
+absent, and every segment is its own reviewed batch.
+
 **Identity.** Where the custodian supplies `TRANSACTION_ID`, that is the
 `external_ref`. Where it does not, `external_ref` is `sha256` over the source
 row's raw text plus an ordinal distinguishing otherwise-identical rows in the
 same export. Components are the *source* text, not mapped values, so revising the
-activity map never changes the identity of a row already committed.
+activity map never changes the identity of a row already committed; and the
+ordinal counts identical rows, not batch positions, so the same source row gets
+the same reference in the initial extract and in every incremental one after it
+— which is what lets an overlap be recognised as one.
 `UNIQUE (account_id, external_ref)` enforces it; a collision is a refusal, never
 a silent skip.
 
@@ -268,7 +305,8 @@ runs it and reports. A worked example lives in
 mappings, run `pt import inspect` against your own export.
 
 Two data files, reviewed as data (a built-in custodian lives under
-`src/portable_core/importers/<name>/`; your own can live anywhere):
+`src/portable_core/importers/<name>/`; your own can live anywhere), and a third
+where the custodian writes names instead of symbols:
 
 **`source.toml`** — which file is which, the column map per document, date and
 number formats, the account's cash-equivalent identifier set (ADR 0013), and the
@@ -279,16 +317,102 @@ declared capabilities with the checks that justify each.
 fee, and whether the amount's sign is authoritative or derived. No default arm:
 an unmapped string stops the import and names the row.
 
-A custodian whose exports are plain tabular files needs **no Python** — two
-mapping files and a fixture. That is the common case and the point of the design.
+**`instruments.toml`** — the name-to-symbol crosswalk, where `INSTRUMENT_SYMBOL`
+is absent. Declared per document (`crosswalk = "instruments.toml"` under
+`[documents.transactions]`); every identifier in that document then resolves
+through it and a name it does not carry is a refusal naming the row. No fuzzy
+matching: a name resolved to a *plausible* wrong symbol — one share class for
+another — reconciles at the quantity level and is wrong at every other. The
+cash-equivalent set is checked against the *resolved* identifier, so a sweep
+vehicle is declared once, by symbol, whatever the custodian calls it.
+
+A custodian whose exports are plain tabular files needs **no Python** — the
+mapping files and a fixture. That is the common case and the point of the
+design, and the reference custodian of §12 is now fully expressed in it.
 
 Python is written only where the data needs logic a mapping cannot express: a
 split ratio embedded in prose, a reorganisation whose outgoing side is missing
-from the file, a fee settled from a different account. Those live in a
-per-custodian post-pass and each is a documented deviation, not the norm.
+from the file. Those are corporate actions, which the batch refuses by name in
+any case (§5), and the typed commands record them with the position context
+they need. A per-custodian post-pass remains a documented deviation, not the
+norm, and nothing currently needs one.
 
-A crosswalk file (`instruments.toml`) is additionally required where
-`INSTRUMENT_SYMBOL` is absent.
+### Six things a rule can say beyond its type
+
+Each was forced by the reference custodian and each is general, so each is
+grammar rather than a post-pass.
+
+**A second key on the note.** One activity word frequently names several events
+— *Credit* for a symbol change and for a share-class conversion, *Expense* for a
+fee and for the transfer that funds another account's fee. A rule may carry
+`note = "<regex>"`, searched case-insensitively against the row's mapped `note`
+column, and then applies only where it matches. The no-default-arm principle
+holds one level down: once any rule for an activity is keyed on the note,
+**every** rule for it must be, so a row matching none of the patterns is a
+refusal naming the patterns tried, never a fall-through; a row matching two is a
+refusal naming the map. A map that keys on notes over a source that maps no
+`note` column is refused when the adapter loads.
+
+**A third key on the identifier's class.** `identifiers = "cash_equivalents"`
+or `"securities"` restricts a rule to rows whose identifier is, or is not, in
+the account's declared cash-equivalent set, and the same all-or-none rule
+binds: once one rule for an activity and note is class-keyed, its siblings
+must be. Two uses. A `skip` rule for the custodian's *MoneyTransfer* keyed to
+`cash_equivalents` discards a movement between the cash ledger and the sweep
+fund and **stops the import** on a *MoneyTransfer* naming anything else — the
+one thing that must never happen is a real movement discarded by a rule
+written for bookkeeping noise, and a blanket skip on the activity word is
+exactly that. And one word for two events: a distribution *reinvested* into
+the sweep is income into cash, while the same word on a fund is income and a
+lot (`dividend_reinvest`), and only the identifier's class tells them apart.
+
+**A value, where no cash moved.** `amount` on a record is the cash the
+account's balance moved. A reinvested distribution and an in-kind receipt move
+none, and are still worth something: `value = "positive"` reads the amount
+column as the event's stated value instead (a magnitude), and a rule may read
+the column as one or the other, never both. The cash roll-back reads the cash;
+the batch carries the value as the row's amount and derives the unit price
+from it.
+
+**A pairing rule.** A custodian that reports both legs of an internal transfer,
+once per account, has reported one event twice; `portable` records a transfer
+once, as one row with a counter account (ADR 0007). A rule with
+`txn_type = "transfer"` must carry an `[activity.pair]` table, and the adapter
+pairs its rows on magnitude, opposite direction, different accounts, and a
+trade date within `window_days` of each other (default zero, meaning the same
+day; the reference custodian dates the receiving leg three days before the
+paying one). The nearest date wins and a tie refuses. The outbound leg becomes
+the `transfer`; the inbound leg is carried as a skip naming it.
+`counterpart = '<regex with (?P<account>...)>'` reads the other account from
+the note, so two IRAs funded with the same amount in the same week are not a
+guess — and a leg naming an account that *is* in the export but has no
+matching row is a hole in the history and refuses, whatever else the rule
+says. Where the note names accounts by number, capture only the part that
+tells them apart and resolve it through `[account_aliases]` in `source.toml`
+(`"48" = "IRA"`), so the number is in no mapping file. The same table resolves
+the account column of every document, so a custodian that upper-cases the
+account in one export and not in another (`"BROKERAGE" = "Brokerage"`) needs
+no edit to its files. `unpaired_out =
+"withdrawal"` and `unpaired_in = "deposit"` declare what a leg with no
+counterpart becomes when the other side is outside the portfolio; absent, an
+unpaired leg is a refusal. Direction is the leg's direction and the fallbacks
+are checked against it at load.
+
+**An attachment.** A custodian that reports tax withheld at source as its own
+line — one per foreign dividend, same day, same security — has reported one
+event in two rows. Withholding is tax, not a fee, and the return is earned on
+the gross while the cash moves by the net (`PORT-GIPS-A06`), so the ledger wants
+the income row with `taxes_withheld` on it. A rule with
+`attach = "taxes_withheld"` (and no `txn_type`) folds its row's amount into the
+one income row on the same day, in the same account, on the same instrument,
+and is carried as a skip naming it; none or two such rows refuse. Whether any
+of the withholding is reclaimable is a separate fact the batch carries per row.
+
+**An inverted sign.** `cash = "inverted"` for a column whose sign is
+authoritative and backwards — the custodian signs from its own side of the
+ledger, so a positive is money out. The reference custodian's transfer-to-cover
+rows are the case: positive in the paying account, negative in the receiving
+one, unsigned everywhere else in the export.
 
 ### The checks a capability can name
 
@@ -322,6 +446,7 @@ convention — positive is in, negative is out.
 | Convention | Means |
 |---|---|
 | `as_stated` | the column's own sign is authoritative; use only where it was checked |
+| `inverted` | the column's sign is authoritative and backwards: positive is money out |
 | `positive` | a magnitude that always means an increase for this activity |
 | `negative` | a magnitude that always means a decrease for this activity |
 | `none` | this activity carries no value in that column at all — a stated absence, not a zero |
@@ -333,16 +458,29 @@ is reviewed once and used for every row after: an unmapped activity string, two
 rules for one string, a fee with no `fee_class`, a skip with no reason, an
 unknown transaction type or check name, a capability declared twice, a date
 pattern that is invalid *or that carries only part of a date* (`%Y-%m` parses
-happily and silently returns the first of the month).
+happily and silently returns the first of the month), a note pattern or
+counterpart pattern that is not a valid regex, an un-keyed rule beside
+note-keyed or class-keyed rules for the same activity, an unknown identifier
+class, a rule reading the amount column as both `cash` and `value`, a transfer
+with no pairing table, a pairing table on anything but a transfer, a
+counterpart pattern with no `account` group, a negative window, a fallback
+pointing the wrong way, an attachment that also names a type or a skip, a
+crosswalk name mapped twice, and a map that reads a column (`note`,
+`identifier`) the source does not map.
 
 Everything wrong with the *data* is refused with the row quoted: a mapped column
 the file does not have (the error lists the headers it does have), a cell that is
 not a number in the declared format, a date matching no declared pattern, a blank
-where the map expects a value, a snapshot carrying two as-of dates, and a
-snapshot stating no cash for an account — which is refusable rather than
-tolerable because cash reconciliation is the only check that catches a sign
-error or a dropped row. An account whose custodian genuinely reports no cash
-line is listed in `allow_missing_cash`, so the exception is on the record.
+where the map expects a value, a note matching none or two of an activity's
+patterns, an identifier of a class no rule for its activity names, an
+instrument name the crosswalk does not carry, a transfer leg with two candidate
+counterparts at the same distance or with a named counterpart that is in the
+export but has no matching row, a withholding line with no single same-day
+income row to attach to, a snapshot carrying two as-of dates, and a snapshot
+stating no cash for an account — which is refusable rather than tolerable
+because cash reconciliation is the only check that catches a sign error or a
+dropped row. An account whose custodian genuinely reports no cash line is listed
+in `allow_missing_cash`, so the exception is on the record.
 
 Spreadsheets are refused by name with the remedy. `portable`'s runtime
 dependencies are Typer and Rich; adding a workbook parser for a file the
@@ -373,7 +511,17 @@ a cutover price is missing and names the instruments. There is no honest
 substitute, and the basis — the number to hand — is exactly the one that must
 not be used: the value establishes the account's beginning market value, so
 substituting the basis would make the first period's return wrong by the whole
-unrealized gain at cutover.
+unrealized gain at cutover. One source other than the price table is accepted:
+an account funded in kind on the day the history begins has, for each position
+received, a row on the cutover date stating the units and what they were worth,
+and that valuation — the custodian's own — is used where the table has nothing,
+and recorded on the seed row as where the price came from.
+
+**A snapshot dated before the history ends** is ordinary: the position
+statement is pulled one day and the history the next. Rows dated after the
+snapshot are not in the state being rolled back and are set aside, named in a
+finding, and appended as history like any other; reconcile as of the snapshot
+date rather than the history's end.
 
 **The cash held at the cutover.** Seeded as a `deposit` on the cutover date —
 or a `withdrawal` where the rolled-back balance is negative, which is a margin
@@ -386,13 +534,34 @@ beginning market value rather than a flow into the period, and the cutover
 return engine and is not yet implemented; until it is, no first-period return
 is computed and nothing reads the classification.
 
-**A relief method on every closing trade.** The seeded basis was solved under
-an assumed FIFO relief (ADR 0017 §2a), so the ledger has to relieve the same
-way: a block solved for FIFO and then relieved spec-ID yields a basis the solve
-never computed. `pt import broker` writes `relief_method: "fifo"` on each
-closing row rather than leaving it to the account default — visible in the
-file, changeable by the reviewer, and understood to invalidate the solve if
-changed.
+**A relief method on every closing trade.** Without the custodian's word on
+which lots a sale consumed, the seeded basis was solved under an assumed FIFO
+relief (ADR 0017 §2a), so the ledger has to relieve the same way: a block
+solved for FIFO and then relieved spec-ID yields a basis the solve never
+computed. `pt import broker` writes `relief_method: "fifo"` on each closing
+row rather than leaving it to the account default — visible in the file,
+changeable by the reviewer, and understood to invalidate the solve if changed.
+
+**The lots a sale consumed, where the custodian states them.** With the
+realized document (§2), every closing row it covers carries `lots`: the
+acquired date, units and cost of each lot the custodian says that sale
+consumed, and `relief_method: "spec"`. That is specific identification in
+everything but the lot id, which only the ledger knows. At commit each entry
+resolves to the ledger's lot opened on that day — where two were, to the one
+whose original basis is what the custodian says the lot cost — and a lot
+acquired before the ledger begins resolves to the seed carrying its block.
+Anything else is refused as `PT-E-LOT-SELECTION-INVALID` naming the lots that
+do exist: designating a lot the ledger cannot find and relieving something
+else instead is the substitution specific identification exists to prevent.
+The report's lots for a sale must total the sale's units; where they do not,
+the row falls back to the assumed method with the discrepancy written on it.
+
+One limit to know. A block seeded at the cutover is **one** ledger lot at the
+block's aggregate basis, however many lots the custodian holds inside it, so a
+sale that takes part of such a block relieves the block's average and the
+custodian's report relieves the specific lot. The totals agree; the per-sale
+split can differ until the block is gone. Seeding one lot per custodian lot
+would close that gap and is not done yet.
 
 **The opening position set is derived, not read.** Apply the transaction history
 **in reverse** to the holdings snapshot to obtain the holding of every instrument
@@ -414,7 +583,7 @@ to take on trust.
 | Position untouched since the cutover: basis today less every subsequent addition | `reconstructed` |
 | Block partly survives: solved backwards under the account's assumed relief method | `estimated` |
 | Nothing of the block survives — sold out, or fully consumed | `unavailable` |
-| Read from a lot-detail report, where `LOT_DETAIL` is present | `custodian_asserted` |
+| The custodian's realized report closes the block's lots and states their cost (§2, the optional third document) | `custodian_asserted` |
 
 One formula serves the first two rows. The custodian's present basis is
 `surviving_block * unit_cost + cost of every surviving addition`, so the block's
@@ -464,8 +633,18 @@ An import is accepted when it reconciles, not when it parses.
    The statement needs `quantity` plus one of `symbol`, `cusip` or `isin`, an
    `account` column once more than one account is in scope, and a `cash` column
    marking the cash line and any sweep vehicle.
-2. **Per closed tax year:** realized gains tie to the custodian's tax reporting,
-   excluding dispositions marked `unavailable`.
+2. **Per sale:** realized gains tie to the custodian's own lot-level report.
+   `pt reconcile --realized <adapter>` compares proceeds, basis and gain of
+   every disposition against the report's lots for the same account,
+   instrument and day, and exits **6** on a break. Per sale rather than per
+   year, because a year that ties can hide two sales wrong by offsetting
+   amounts. A disposition of a lot whose basis is `unavailable` is shown as
+   unreportable, not a break; a disposition the report lacks that realized
+   nothing (a sweep redemption) is shown, not a break. A break with the lots
+   agreeing is a basis the custodian adjusted and the activity export never
+   showed — a distribution reclassified as return of capital is the usual
+   one — and is the owner's to record with `pt income roc`, not the importer's
+   to infer.
 3. `pt validate` passes — which, after ADR 0016, means stored derived state
    actually equals replayed state.
 4. `pt export` → `pt import` → `pt export` is byte-identical.
@@ -519,31 +698,60 @@ at the end.
   covered including the corporate-action and options commands that build rows
   directly. `pt import` scans an export's ledger before its first insert.
 
+- ~~Fund capital-gain distributions have no transaction type.~~ `capital_gain_lt`
+  and `capital_gain_st` (schema 0004): income for flow purposes, the character
+  is the type, and either may carry reinvested units. `pt income capital-gain`.
+
 **Open.**
 
-- **Fund capital-gain distributions have no transaction type.** Income for flow
-  purposes, taxed by character.
 - **Wash sales are not detected** until `v0.2`; `pt tax` says so on its face.
 
 ---
 
 ## 11. Runbook
 
+`.claude/skills/broker-import/SKILL.md` is this section written for an agent
+running it with the owner: the interview that produces the mapping files, the
+segmented first import, the update loop, and what each kind of break means.
+
+0. A spreadsheet export goes through `scripts/xlsx_to_csv.py` first: every cell
+   as text, numeric columns named and held to a no-noise rule, files with one
+   header concatenated, a report's total line dropped only when asked
+   (`--require`). `pt` reads delimited text and nothing else (§2).
 1. `pt init`; `pt account add` per account with its true `opened_date`, `--type`,
-   relief method, and `--allows-fractional` where funds are held.
+   relief method, and `--allows-fractional` where funds are held;
+   `pt instrument add` for every symbol the crosswalk and the holdings name.
 2. Tax rate schedules on taxable accounts, and a `return_policy`
    (`PORT-GIPS-B03`).
-3. Extract with `--dry-run` first and **read the declared capability set**. It
-   tells you what this portfolio will and will not be able to claim.
-4. Run the cutover reconstruction; review its exceptions and any dispositions
-   falling within a year of the cutover, then seed each opening position as a
-   `transfer_in` with its `basis_source`.
-5. Import the transaction history, oldest period first, one account at a time.
-6. `pt reconcile` per account. Do not proceed past a break.
+3. `pt import inspect` and **read the declared capability set**. It tells you
+   what this portfolio will and will not be able to claim. Every unmapped
+   activity string is a rule to write (§6), never a default arm.
+4. `pt import reconstruct --cutover`; review its findings, the basis ladder per
+   block, and any dispositions falling within a year of the cutover.
+5. Import the history **in segments around its corporate actions**: extract
+   `--until` the day before each one (`--cutover` the first time,
+   `--incremental` after), `pt import batch --dry-run`, read it, commit; record
+   the action with its typed command, cross-checked against the ledger (a
+   split's added units against the holding the day before, a conversion's
+   outgoing units against what is held); continue. A sale designated to a lot
+   the ledger does not yet have refuses as `PT-E-LOT-SELECTION-INVALID`, and
+   the usual reason is an action not yet recorded.
+6. `pt reconcile --against <positions.csv> --realized <adapter>`. Do not
+   proceed past a break you cannot explain (§9).
 7. Backfill prices, then `pt value` across the period. Watch for snapshots marked
    incomplete: a position that cannot be priced makes the return unanswerable
    rather than approximate.
 8. `pt validate`, `pt rebuild`, `pt validate` again.
+
+**Every update after that** is the same loop with one flag: convert the
+custodian's current exports, `pt import broker <adapter> -o update.json
+--incremental`, read the batch — the overlap with the last export appears as
+`ledger:already-recorded` skips and the new rows as appends — then `pt import
+batch --dry-run`, `pt import batch`, and `pt reconcile` against the new
+snapshot and the lot report. A corporate action in the window is a `skip` row:
+record it as in step 5 and re-extract. A second custodian is its own adapter
+directory and its own initial extract; its accounts seed with their own
+cutover, and reconcile on their own.
 
 Step 7 stalls most often. A complete daily valuation history needs prices for
 every instrument ever held, including under symbols that no longer exist. Because
@@ -599,19 +807,21 @@ reconstruction enumerates them for review.
 
 **Sweep echoes — 35% of the file.** Every `MoneyTransfer` row moves money between
 the cash ledger and two cash-equivalent vehicles, in pairs with the event that
-caused it. Recording both halves counts every dividend twice. *Generalises:* the
-drop rule is a **whitelist** of the account's declared cash-equivalent
-identifiers, and a transfer naming anything outside that set is a refusal — the
-one thing that must never happen is a real movement discarded by a rule written
-for bookkeeping noise.
+caused it. Recording both halves counts every dividend twice. *Generalises, and is
+grammar:* the drop rule is a **whitelist** of the account's declared
+cash-equivalent identifiers (`identifiers = "cash_equivalents"`, §6), and a transfer naming
+anything outside that set is a refusal — the one thing that must never happen is
+a real movement discarded by a rule written for bookkeeping noise.
 
 **Cross-account fee settlement.** The brokerage pays the IRA's and Roth's
 advisory fees; each fee therefore appears twice, once as the funding transfer and
 once as the fee, both under an activity word meaning *Expense*. Two further
 settlements go to accounts outside the portfolio and are **withdrawals**, not
 fees. The amount's sign inverts between paying and receiving accounts while every
-other row in the export is unsigned. *Custodian-specific* — a declarative pairing
-rule most custodians will not need (ADR 0014).
+other row in the export is unsigned. *Custodian-specific in its
+arrangement, general as a primitive* — the pairing rule of §6 with
+`cash = "inverted"`, a `counterpart` pattern reading the account from the note,
+and `unpaired_out = "withdrawal"` for the two outside accounts (ADR 0014).
 
 **Settlement dates corrupted.** 304 of 529 populated cells hold a date earlier
 than their own trade date; the column mixes text and spreadsheet-date cells, so a
@@ -619,16 +829,23 @@ subset was coerced under an ambiguous day/month reading. *Generalises:* read eve
 cell as text, never let a spreadsheet library infer a date (invariant 6), and
 validate before declaring the capability.
 
-**One activity word, several events.** `Credit` is a symbol change in three rows
-and a share-class conversion in a fourth, both lot-preserving, both with **no
-matching debit anywhere in the file**, both emitted one row per existing lot.
-*Generalises:* the activity map keys on the activity **and** a note pattern, and
-the adapter matches incoming quantities against open lots, refusing when they do
-not reconcile.
+**One activity word, several events.** `Credit` is a per-lot basis memo, a
+rename, the incoming side of a share-class conversion, a tender, and a contra
+receipt — the conversions with **no matching debit anywhere in the file**, and
+the memos emitted one row per existing lot beside the row that carries the
+total. *Generalises, and is grammar:* the activity map keys on the activity
+**and** a note pattern (§6); the memo rows are skips with a reason and the
+renames are skips because the crosswalk already resolves both names to one
+symbol. The conversions themselves are corporate actions, refused by the batch
+and recorded with `pt ca convert`, which exchanges every open lot for the
+stated units with basis, acquisition date and holding period carried.
 
 **Split ratios in prose.** `… SHARE-RATIO: 1:4.0`, with `Quantity` holding the
-shares *added*. Parsed from the note and cross-checked: `held × (ratio − 1)` must
-equal the stated quantity. *Custodian-specific.*
+shares *added*. A split is a corporate action, which the batch refuses by name
+and lists as `unsupported`; it is recorded with `pt ca split`, which has the
+position context to cross-check `held × (ratio − 1)` against the stated
+quantity. The ratio is read by a person, not parsed. *Custodian-specific in
+form, and deliberately not automated.*
 
 **The capital-flows report contains rows that are not capital flows.** Of 46 rows,
 13 are genuine external flows; the rest are in-kind funding at inception and
@@ -664,6 +881,8 @@ an acquisition, with a genuine basis of zero.
   export. It does not affect what `portable` computes; it affects what the
   custodian is obliged to report, and is worth carrying where a 1099-B
   establishes it.
-- **The second adapter.** Adding a custodian should be a fixture plus two TOML
-  files plus a reconciliation. That is the test of whether §§2–6 worked, and it is
-  untested until a second custodian exists — the first one always fits.
+- **The second adapter.** Adding a custodian should be a fixture plus the
+  mapping files plus a reconciliation. The grammar of §6 was widened until the
+  first custodian fit without Python; whether it was widened in the right
+  directions is untested until a second custodian exists — the first one always
+  fits.

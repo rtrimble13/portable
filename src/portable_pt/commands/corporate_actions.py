@@ -22,7 +22,7 @@ from typing import Annotated
 
 import typer
 
-from portable_core.decimals import from_text
+from portable_core.decimals import from_text, money_context
 from portable_core.domain.enums import (
     InstrumentType,
     LegRole,
@@ -425,6 +425,201 @@ def spinoff(
             portfolio=ctx.portfolio_name(),
         )
         return maybe_dry_run(result_obj) if ctx.dry_run else result_obj
+
+    dispatch(action)
+
+
+@app.command()
+def convert(
+    symbol: Annotated[str, typer.Argument(help="The instrument being given up.")],
+    to: Annotated[str, typer.Option("--to", help="The instrument received.")],
+    units: Annotated[
+        str, typer.Option("--units", help="Units of the new instrument received, in total.")
+    ],
+    account: Annotated[str, typer.Option("--account", "-a")],
+    ex_date: Annotated[str | None, typer.Option("--date", "-d")] = None,
+    ref: RefOpt = None,
+) -> None:
+    """Exchange every open lot of one instrument for units of another.
+
+    A share-class conversion, a fund merger, a stock-for-stock exchange: the
+    same claim under a new name and a new unit count. Nothing is realised.
+    **Basis carries over lot by lot, and so do the acquisition date and the
+    holding period** -- a conversion of a five-year-old lot is long-term on
+    day one, and its provenance rung is unchanged.
+
+    The units received are what the custodian states, in total; they are
+    allocated across the old lots in proportion, so the exchange ratio is
+    derived from the two counts and never assumed. One account per
+    invocation, because the count is per account.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        on = resolve_date(ex_date, ctx, what="--date")
+        source = repos.instruments.resolve(symbol, on=on)
+        target = repos.instruments.resolve(to, on=on)
+        if source.instrument_id == target.instrument_id:
+            raise ValidationError(
+                f"{source.symbol} cannot be converted into itself",
+                remedy="For a rename, use `pt ca symbol-change`.",
+            )
+        received = from_text(units)
+        if received <= 0:
+            raise ValidationError(f"--units must be positive, got {units!r}")
+        found = repos.accounts.resolve(account)
+        if not found.allows_fractional and received != received.to_integral_value():
+            raise ValidationError(
+                f"{found.name} does not hold fractional shares, and {received} is fractional",
+                remedy="Set --allows-fractional on the account if it holds funds.",
+            )
+
+        lots = _held_lots(repos, found.account_id, source.instrument_id, on)
+        if not lots:
+            raise ValidationError(
+                f"{found.name} holds no open lots of {source.symbol} on {on.isoformat()}",
+                remedy="Nothing to convert. Check the date and the account.",
+            )
+
+        if ctx.dry_run:
+            position_id, leg_id = 0, 0
+        else:
+            with db_transaction(repos.con):
+                leg = repos.positions.leg_for(found.account_id, target.instrument_id)
+                if leg is not None:
+                    position_id, leg_id = leg.position_id, leg.leg_id
+                else:
+                    position_id = repos.positions.add(
+                        Position(
+                            position_id=0,
+                            account_id=found.account_id,
+                            strategy_type=StrategyType.SINGLE,
+                            opened_date=on,
+                            status=PositionStatus.OPEN,
+                            note=f"converted from {source.symbol}",
+                        )
+                    )
+                    leg_id = repos.positions.add_leg(
+                        PositionLeg(
+                            leg_id=0,
+                            position_id=position_id,
+                            instrument_id=target.instrument_id,
+                            role=LegRole.LONG_STOCK,
+                            sign=1,
+                            quantity=Decimal(0),
+                            opened_date=on,
+                        )
+                    )
+
+        outcome = ENGINE.convert(
+            lots,
+            target_units=received,
+            ex_date=on,
+            target_instrument_id=target.instrument_id,
+            target_leg_id=leg_id,
+            target_position_id=position_id,
+        )
+
+        rows: list[dict[str, object]] = []
+        for before, after in zip(lots, outcome.new_lots, strict=True):
+            rows.append(
+                {
+                    "lot_id": before.lot_id,
+                    "from_quantity": before.remaining_quantity,
+                    "to_quantity": after.remaining_quantity,
+                    "basis": after.adjusted_cost_basis,
+                    "holding_period_start": after.holding_period_start.isoformat(),
+                    "basis_source": after.basis_source.value,
+                }
+            )
+
+        with money_context():
+            converted = sum((lot.remaining_quantity for lot in lots), Decimal(0))
+            ratio = received / converted
+
+        payload: dict[str, object] = {
+            "from": source.symbol,
+            "to": target.symbol,
+            "account": found.name,
+            "date": on.isoformat(),
+            "converted": converted,
+            "received": received,
+            "ratio": ratio,
+            "lots": rows,
+        }
+        table = Table(
+            columns=(
+                Column("lot_id", "Lot", ColumnKind.INTEGER),
+                Column("from_quantity", f"{source.symbol} out", ColumnKind.QUANTITY),
+                Column("to_quantity", f"{target.symbol} in", ColumnKind.QUANTITY),
+                Column("basis", "Basis", ColumnKind.MONEY),
+                Column("holding_period_start", "HP Start", ColumnKind.DATE),
+                Column("basis_source", "Basis Source"),
+            ),
+            rows=tuple(rows),
+            title=f"{source.symbol} → {target.symbol} in {found.name}, {on.isoformat()}",
+            footnotes=(
+                "Nothing is realised: each lot's basis, acquisition date, holding "
+                "period and provenance carry to the units it became.",
+            ),
+        )
+        if ctx.dry_run:
+            return maybe_dry_run(CommandResult(command="ca convert", data=payload, table=table))
+
+        with db_transaction(repos.con):
+            txn_id = repos.transactions.append(
+                Transaction(
+                    txn_id=0,
+                    account_id=found.account_id,
+                    trade_date=on,
+                    seq=repos.transactions.next_seq(on),
+                    txn_type=TransactionType.MERGER_STOCK,
+                    net_cash_effect=ZERO,
+                    instrument_id=source.instrument_id,
+                    # The delivered count, exactly as stated; the ratio on the
+                    # reference row is its derivation.
+                    quantity=received,
+                    ex_date=on,
+                    note=f"converted into {received} {target.symbol}",
+                    external_ref=ref,
+                    source=TransactionSource.DERIVED,
+                    created_at=_now(),
+                )
+            )
+            repos.corporate_actions.add(
+                CorporateAction(
+                    instrument_id=source.instrument_id,
+                    action_type="merger",
+                    ex_date=on,
+                    target_instrument_id=target.instrument_id,
+                    target_ratio=ratio,
+                    applied_txn_id=txn_id,
+                )
+            )
+            for closed, adjustment in zip(
+                outcome.closed_lots, outcome.adjustments, strict=True
+            ):
+                repos.lots.update_after_disposition(closed)
+                repos.lots.add_adjustment(replace(adjustment, adjustment_id=0, txn_id=txn_id))
+            for opened in outcome.new_lots:
+                repos.lots.add(replace(opened, lot_id=0, open_txn_id=txn_id))
+            repos.positions.update_leg_quantity(
+                leg_id,
+                sum((lot.remaining_quantity for lot in repos.lots.by_leg(leg_id)), Decimal(0)),
+            )
+            for old_leg in {lot.leg_id for lot in lots}:
+                repos.positions.close_leg(old_leg, on)
+                old_position = repos.positions.position_id_for_leg(old_leg)
+                if old_position is not None and all(
+                    leg.status is PositionStatus.CLOSED
+                    for leg in repos.positions.legs(old_position)
+                ):
+                    repos.positions.close_position(old_position, on)
+
+        return CommandResult(
+            command="ca convert", data=payload, table=table, portfolio=ctx.portfolio_name()
+        )
 
     dispatch(action)
 

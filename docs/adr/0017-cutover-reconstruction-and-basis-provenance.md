@@ -81,7 +81,7 @@ a lot without answering the question:
 | `reconstructed` | Cutover block, basis obtained by subtracting subsequent additions from the custodian's stated current basis. Exact **as an aggregate**, averaged within the block. |
 | `estimated` | Cutover block partly consumed since the cutover; solved backwards under the FIFO assumption below, anchored to the surviving remainder. |
 | `unavailable` | Cutover block with nothing surviving to anchor to. No basis can be derived from the available evidence. |
-| `custodian_asserted` | Taken directly from a custodian lot-detail report. Reserved; nothing supplies it today. |
+| `custodian_asserted` | Taken from the custodian's lot-level realized gain report: the closed lots acquired on or before the cutover state what the disposed part of the block cost, and the surviving part carries the custodian's present basis less additions. Supplied by the optional `realized` document (`docs/broker-import.md` §2). |
 
 `reconstructed`, `estimated`, and `unavailable` lots additionally carry the
 assumption that produced them, so the arithmetic can be re-derived and re-argued

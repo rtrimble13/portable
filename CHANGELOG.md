@@ -16,6 +16,109 @@ Two rules specific to this repository:
 
 ### Added
 
+- **The mapping grammar the first custodian actually needed, and the
+  incremental import.** Measured against the reference custodian's traps
+  (`docs/broker-import.md` §12), the two mapping files of ADR 0018 could not
+  express four of them without per-custodian Python. Each is general, so each
+  is now grammar rather than a post-pass:
+  - **`instruments.toml`, the crosswalk.** Declared per document
+    (`crosswalk = "instruments.toml"`); every identifier in that document
+    resolves through it and a name it does not carry is refused as
+    `PT-E-INSTRUMENT-UNMAPPED` naming the row. No fuzzy matching. The
+    cash-equivalent set is checked against the resolved identifier, so a sweep
+    vehicle is declared once, by symbol.
+  - **A second key on the note.** A rule may carry `note = "<regex>"` and then
+    applies only where the row's note matches. Once any rule for an activity is
+    keyed on the note, every rule for it must be — an un-keyed rule beside keyed
+    ones would be a default arm — and a row matching none or two of the
+    patterns is refused naming them.
+  - **`cash_equivalent_only`.** A rule restricted to the account's declared
+    cash-equivalent identifiers; anything else under that activity stops the
+    import. This is how sweep bookkeeping is dropped without a blanket rule
+    that could swallow a real movement (ADR 0013).
+  - **`[activity.pair]`, on a `transfer`.** Both legs of an internal transfer,
+    reported once per account, become one ledger row with a counter account
+    and one skip naming it (ADR 0014). Legs pair on date, magnitude, opposite
+    direction and different accounts; `counterpart` reads the other account
+    from the note; `unpaired_out` / `unpaired_in` declare what a leg with no
+    counterpart becomes when the other side is outside the portfolio, and a
+    leg naming an account that *is* in the export but has no matching row
+    refuses as a hole in the history. ADR 0014 is accepted as implemented.
+  - **`cash = "inverted"`**, for a column whose sign is authoritative and
+    backwards.
+  - **`pt import broker --incremental`.** Every import after the first. No
+    seed; a row the ledger already carries is written as a
+    `ledger:already-recorded` skip naming the reference (the overlap that
+    `docs/broker-import.md` §5 designed and nothing implemented); a row on or
+    before the account's first ledger date is a `ledger:before-inception`
+    skip. An initial extract into an account that already has rows, and an
+    incremental one into an account that has none, are both refused by name.
+  - The example adapter exercises all of it and still reconciles to zero
+    breaks, before and after an incremental update.
+- **What the reference custodian's real exports then needed.** Read against
+  the actual files rather than the description of them, the grammar above
+  needed five more things, each general:
+  - **`identifiers`**, a third rule key on the identifier's class
+    (`cash_equivalents` or `securities`), replacing the boolean whitelist. One
+    activity word means income into cash on the sweep and income plus a lot
+    on a fund, and only the class tells them apart. All-or-none, like the
+    note key.
+  - **`value = "positive"`**, reading the amount column as what an event was
+    worth where it moved no cash — a reinvested distribution, an in-kind
+    receipt — and never as both cash and value.
+  - **`window_days`** on a pairing rule, because the receiving leg of a
+    cross-account fee is dated three days before the paying one; nearest date
+    wins, a tie refuses. **`[account_aliases]`** in `source.toml`, so a note
+    that names accounts by number pairs on the two digits that tell them
+    apart and the number is in no mapping file.
+  - **`attach = "taxes_withheld"`**, folding a custodian's separate foreign-tax
+    line into the same-day income row on the same instrument as
+    `taxes_withheld` (`PORT-GIPS-A06`: tax, not a fee), carried as a skip
+    naming the row.
+  - **A reinvested distribution is one ledger row.** `TransactionType
+    .DIVIDEND_REINVEST` has a service path: the gross is the income earned
+    and the cost of the units, the row opens a lot, and no cash moves.
+    `pt income dividend --reinvest-units`, and the batch carries the type.
+  - **The lots a sale consumed, from the custodian's own report.** Where the
+    realized document covers a sale, the batch row carries `lots` — acquired
+    date, units and cost of each lot the custodian says went — and relieves
+    by specific identification of exactly those. The commit resolves each to
+    the ledger's lot opened that day (two on one day are told apart by what
+    they cost; a lot acquired before the ledger begins resolves to its seed)
+    and refuses `PT-E-LOT-SELECTION-INVALID` rather than relieve something
+    else. Found by tying the first real import's realized gains to the
+    custodian's lot report: the sums agreed and twelve sales did not, every
+    one a FIFO pick where the adviser had designated a different lot.
+  - A cash line the snapshot states as a balance with no share count takes
+    the balance as its quantity (ADR 0013); a cutover price the table lacks
+    is taken from the custodian's same-day in-kind receipt and recorded as
+    such on the seed row; and rows dated after the snapshot are set aside by
+    the roll-back and named, rather than subtracted from a state they are
+    not in.
+
+- **`pt reconcile --realized <adapter>`: realized gains tied per sale.**
+  Acceptance check 2 (`docs/broker-import.md` §9) as a command: every
+  disposition's proceeds, basis and gain against the custodian's lot-level
+  report for the same account, instrument and day, read through the adapter
+  so the crosswalk applies. Exit 6 on a break; a disposition of a lot with
+  `unavailable` basis is shown as unreportable, a disposition the report
+  lacks that realized nothing is shown and not a break. Either flag alone is
+  a complete run; with `--against` too, breaks from both count.
+- **`[account_aliases]` resolves the account column of every document**, not
+  only the token a note uses. The reference custodian upper-cases account
+  names in its holdings export and not in its activity export; the same
+  table maps both spellings, and no file is edited.
+- **`scripts/xlsx_to_csv.py`**, the step that opens a spreadsheet export at
+  the CSV boundary: every cell as text, numeric columns named and refused if
+  they carry binary noise, files with one header concatenated, a report's
+  total line dropped only when asked. Nothing interpreted; a numeric date is
+  carried as written because day-first or month-first is the custodian's
+  convention, declared in `source.toml`.
+- **`.claude/skills/broker-import/SKILL.md`**, the runbook written for an
+  agent working with the owner: the interview that produces mapping files
+  rather than code, the segmented first import, the update loop, what each
+  kind of break means, and the rule that no amount from the exports reaches
+  a file under version control.
 - **`pt import broker` — the extract stage, and the pipeline runs end to end.**
   ADR 0012's first stage, which turns a custodian's exports plus a cutover
   reconstruction into the reviewable batch the other two stages already
@@ -90,6 +193,56 @@ Two rules specific to this repository:
     Report issuance is its own feature (`PORT-GIPS-J01`/`J02`) and nothing
     writes that table yet; the incompleteness is carried in the output instead.
   - 22 tests.
+
+- **`pt import broker --until DATE`**, so a history with corporate actions is
+  imported in segments: extract through the day before a split or a
+  conversion, commit, record the action with its typed command, and continue
+  `--incremental`. Rows left for a later segment are counted in the report.
+- **The optional third document: a realized gain and loss report at lot
+  level.** `[documents.realized]` in `source.toml`. For every lot the
+  custodian closed since the cutover it states the acquisition date and the
+  cost, so a cutover block disposed of after the cutover is seeded
+  `custodian_asserted` with the custodian's own basis rather than
+  `unavailable` with none (ADR 0017 §2b, now supplied), and a block whose
+  post-cutover sales the report attributes entirely to later purchases is
+  proved untouched rather than assumed consumed under FIFO. A report that
+  does not cover what the history disposed of is named in a finding and not
+  used. The seed row now carries the block's earliest acquisition date where
+  the custodian states one (the snapshot's open date, or the report's).
+- **Fund capital-gain distributions.** `TransactionType.CAPITAL_GAIN_LT` and
+  `CAPITAL_GAIN_ST`: income for flow purposes (never external,
+  `PORT-GIPS-B02`), and the character is the type, because a distribution
+  summed into dividends is a wrong number in a taxable account's tax year.
+  Either may carry reinvested units, as a reinvested dividend does.
+  `pt income capital-gain SYMBOL --term long|short`, and the batch carries
+  both. Closes the open item in `docs/broker-import.md` §10.
+
+- **`pt ca convert SYMBOL --to NEW --units N -a ACCOUNT`** — a share-class
+  conversion, a fund merger, a stock-for-stock exchange the custodian reports
+  as one incoming row. Every open lot becomes one new lot carrying exactly its
+  basis, its acquisition date, its holding period and its provenance rung;
+  nothing is realised. The units received are what the custodian stated, in
+  total, allocated across the old lots in proportion, so the exchange ratio is
+  derived from the two counts and never assumed. Recorded as a `merger_stock`
+  ledger row plus a `merger` reference row, and reproduced by `pt rebuild`.
+
+### Schema
+
+- **`schema_version` 3 → 4**, migration `0004_capital_gain_distributions`.
+  A rebuild of `"transaction"` (ADR 0019) that changes only the `txn_type`
+  CHECK, admitting `capital_gain_lt` and `capital_gain_st`. Every row is
+  preserved and nothing else moves.
+
+### Changed
+
+- **A synthesized `external_ref` no longer depends on the row's position in
+  the batch.** ADR 0012's ordinal is now counted among identical source rows
+  rather than taken from the batch index, so the same custodian row gets the
+  same reference in the initial extract and in every incremental one — which is
+  what lets an overlapping export be recognised as an overlap rather than
+  refused as a duplicate. References synthesized by the previous extract differ
+  from these; no portfolio built from a real export exists yet, and a portfolio
+  built from the example fixture should be re-extracted.
 
 ### Fixed
 
