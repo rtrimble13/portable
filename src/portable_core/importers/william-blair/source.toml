@@ -37,6 +37,10 @@ default = ["CASH", "FDRXX", "QWBSQ", "QWBLQ", "SPAXX"]
 "48" = "IRA"
 "49" = "Roth IRA"
 "46" = "Brokerage"
+# The holdings export upper-cases the account names the activity export writes
+# in mixed case; the same table maps both spellings to the portfolio's.
+"BROKERAGE" = "Brokerage"
+"ROTH IRA" = "Roth IRA"
 
 [documents.holdings]
 file = "holdings.csv"

@@ -142,3 +142,63 @@ def test_the_pipeline_runs_on_the_fixture(run_pt: CliRunner, tmp_path: Path) -> 
     assert sale["lots"] == [
         {"acquired": "2022-10-17", "quantity": "60", "cost_basis": "600"},
     ]
+
+
+def test_the_history_commits_in_segments_and_the_gains_tie(
+    run_pt: CliRunner, tmp_path: Path
+) -> None:
+    """The runbook's loop (docs/broker-import.md §11), end to end on the
+    fixture: extract up to the day before a corporate action, commit, record
+    the action with its typed command, extract `--incremental`, commit, then
+    tie every realized gain to the custodian's own lot report.
+
+    The FZAMX shares arrive by a share-class conversion the batch cannot
+    carry. Committed in one go, the sale's designated lot would not exist and
+    the commit would refuse -- which is the right answer, and why the loop
+    runs in segments."""
+    path = tmp_path / "wb.port"
+    pt = ["--port", str(path)]
+    run_pt("init", str(path), "--name", "WB", "--inception", "2022-05-18").ok()
+    for account, kind in (
+        ("Brokerage", "taxable"),
+        ("IRA", "tax-deferred"),
+        ("Roth IRA", "tax-exempt"),
+    ):
+        run_pt(
+            *pt, "account", "add", "--name", account, "--type", kind,
+            "--opened", "2022-05-18", "--allows-fractional",
+        ).ok()  # fmt: skip
+    for symbol in ("PIMIX", "GSIYX", "GOOGL", "P", "LCGJX", "FDRXX", "FZAMX", "WSMDX",
+                   "WSMRX", "ASML", "003CVR016"):  # fmt: skip
+        run_pt(*pt, "instrument", "add", symbol, "--type", "equity").ok()
+
+    first = tmp_path / "segment-1.json"
+    run_pt(
+        *pt, "import", "broker", str(ADAPTER), "--cutover", "2022-05-18",
+        "--until", "2022-10-16", "-o", str(first),
+    ).ok()  # fmt: skip
+    run_pt(*pt, "import", "batch", str(first)).ok()
+
+    # The conversion in, recorded on its day with the typed command.
+    run_pt(
+        *pt, "--as-of", "2022-10-17", "transfer", "in", "FZAMX", "-a", "IRA",
+        "--qty", "60", "--value", "600", "--basis", "600",
+        "--basis-source", "custodian_asserted", "--acquired", "2022-10-17",
+        "--note", "share-class conversion in",
+    ).ok()  # fmt: skip
+
+    second = tmp_path / "segment-2.json"
+    extract = (
+        run_pt(*pt, "import", "broker", str(ADAPTER), "--incremental", "-o", str(second))
+        .ok()
+        .data
+    )
+    assert extract["seeded"] == 0
+    run_pt(*pt, "import", "batch", str(second)).ok()
+
+    tie = run_pt(*pt, "reconcile", "--realized", str(ADAPTER)).ok().data["realized"]
+    assert tie["sales"] == 1
+    assert tie["tied"] == 1
+    assert tie["break"] == 0
+    (line,) = tie["lines"]
+    assert (line["identifier"], line["status"], line["difference"]) == ("FZAMX", "tied", "0.00")

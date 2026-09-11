@@ -223,3 +223,23 @@ def test_a_missing_statement_is_a_clean_refusal(
         "B",
         expect=4,
     )
+
+
+def test_nothing_to_reconcile_against_is_refused(run_pt: CliRunner, two_accounts: Path) -> None:
+    result = run_pt("--port", str(two_accounts), "reconcile", expect=4)
+    assert "nothing to reconcile against" in result.json()["error"]["message"]
+
+
+def test_realized_needs_an_adapter_with_a_realized_document(
+    run_pt: CliRunner, two_accounts: Path, tmp_path: Path
+) -> None:
+    nowhere = str(tmp_path / "nowhere")
+    result = run_pt("--port", str(two_accounts), "reconcile", "--realized", nowhere, expect=4)
+    assert "adapter directory not found" in result.json()["error"]["message"]
+    example = (
+        Path(__file__).resolve().parents[2] / "examples" / "importers" / "example-brokerage"
+    )
+    result = run_pt(
+        "--port", str(two_accounts), "reconcile", "--realized", str(example), expect=4
+    )
+    assert "declares no realized document" in result.json()["error"]["message"]

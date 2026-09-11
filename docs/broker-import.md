@@ -389,7 +389,10 @@ guess — and a leg naming an account that *is* in the export but has no
 matching row is a hole in the history and refuses, whatever else the rule
 says. Where the note names accounts by number, capture only the part that
 tells them apart and resolve it through `[account_aliases]` in `source.toml`
-(`"48" = "IRA"`), so the number is in no mapping file. `unpaired_out =
+(`"48" = "IRA"`), so the number is in no mapping file. The same table resolves
+the account column of every document, so a custodian that upper-cases the
+account in one export and not in another (`"BROKERAGE" = "Brokerage"`) needs
+no edit to its files. `unpaired_out =
 "withdrawal"` and `unpaired_in = "deposit"` declare what a leg with no
 counterpart becomes when the other side is outside the portfolio; absent, an
 unpaired leg is a refusal. Direction is the leg's direction and the fallbacks
@@ -630,13 +633,18 @@ An import is accepted when it reconciles, not when it parses.
    The statement needs `quantity` plus one of `symbol`, `cusip` or `isin`, an
    `account` column once more than one account is in scope, and a `cash` column
    marking the cash line and any sweep vehicle.
-2. **Per closed tax year:** realized gains tie to the custodian's tax reporting,
-   excluding dispositions marked `unavailable`. With the realized document
-   the tie is per sale: proceeds, basis and gain of every disposition against
-   the report's lots for the same account, instrument and day. A break there
-   with the lots agreeing is a basis the custodian adjusted and the activity
-   export never showed — a distribution reclassified as return of capital is
-   the usual one — and is the owner's to record, not the importer's to infer.
+2. **Per sale:** realized gains tie to the custodian's own lot-level report.
+   `pt reconcile --realized <adapter>` compares proceeds, basis and gain of
+   every disposition against the report's lots for the same account,
+   instrument and day, and exits **6** on a break. Per sale rather than per
+   year, because a year that ties can hide two sales wrong by offsetting
+   amounts. A disposition of a lot whose basis is `unavailable` is shown as
+   unreportable, not a break; a disposition the report lacks that realized
+   nothing (a sweep redemption) is shown, not a break. A break with the lots
+   agreeing is a basis the custodian adjusted and the activity export never
+   showed — a distribution reclassified as return of capital is the usual
+   one — and is the owner's to record with `pt income roc`, not the importer's
+   to infer.
 3. `pt validate` passes — which, after ADR 0016, means stored derived state
    actually equals replayed state.
 4. `pt export` → `pt import` → `pt export` is byte-identical.
@@ -702,33 +710,48 @@ at the end.
 
 ## 11. Runbook
 
+`.claude/skills/broker-import/SKILL.md` is this section written for an agent
+running it with the owner: the interview that produces the mapping files, the
+segmented first import, the update loop, and what each kind of break means.
+
+0. A spreadsheet export goes through `scripts/xlsx_to_csv.py` first: every cell
+   as text, numeric columns named and held to a no-noise rule, files with one
+   header concatenated, a report's total line dropped only when asked
+   (`--require`). `pt` reads delimited text and nothing else (§2).
 1. `pt init`; `pt account add` per account with its true `opened_date`, `--type`,
-   relief method, and `--allows-fractional` where funds are held.
+   relief method, and `--allows-fractional` where funds are held;
+   `pt instrument add` for every symbol the crosswalk and the holdings name.
 2. Tax rate schedules on taxable accounts, and a `return_policy`
    (`PORT-GIPS-B03`).
-3. Extract with `--dry-run` first and **read the declared capability set**. It
-   tells you what this portfolio will and will not be able to claim.
-4. Run the cutover reconstruction; review its exceptions and any dispositions
-   falling within a year of the cutover, then seed each opening position as a
-   `transfer_in` with its `basis_source`.
-5. Import the transaction history, oldest period first, one account at a time.
-6. `pt reconcile` per account. Do not proceed past a break.
+3. `pt import inspect` and **read the declared capability set**. It tells you
+   what this portfolio will and will not be able to claim. Every unmapped
+   activity string is a rule to write (§6), never a default arm.
+4. `pt import reconstruct --cutover`; review its findings, the basis ladder per
+   block, and any dispositions falling within a year of the cutover.
+5. Import the history **in segments around its corporate actions**: extract
+   `--until` the day before each one (`--cutover` the first time,
+   `--incremental` after), `pt import batch --dry-run`, read it, commit; record
+   the action with its typed command, cross-checked against the ledger (a
+   split's added units against the holding the day before, a conversion's
+   outgoing units against what is held); continue. A sale designated to a lot
+   the ledger does not yet have refuses as `PT-E-LOT-SELECTION-INVALID`, and
+   the usual reason is an action not yet recorded.
+6. `pt reconcile --against <positions.csv> --realized <adapter>`. Do not
+   proceed past a break you cannot explain (§9).
 7. Backfill prices, then `pt value` across the period. Watch for snapshots marked
    incomplete: a position that cannot be priced makes the return unanswerable
    rather than approximate.
 8. `pt validate`, `pt rebuild`, `pt validate` again.
 
-Where the history contains corporate actions, step 5 runs in segments: extract
-`--until` the day before each one, commit, record the action with its typed
-command, and continue `--incremental` (§5).
-
-**Every update after that** is the same loop with one flag: export the
-custodian's current window, `pt import broker <adapter> -o update.json
+**Every update after that** is the same loop with one flag: convert the
+custodian's current exports, `pt import broker <adapter> -o update.json
 --incremental`, read the batch — the overlap with the last export appears as
 `ledger:already-recorded` skips and the new rows as appends — then `pt import
 batch --dry-run`, `pt import batch`, and `pt reconcile` against the new
-snapshot. A second custodian is its own adapter directory and its own initial
-extract; its accounts seed with their own cutover, and reconcile on their own.
+snapshot and the lot report. A corporate action in the window is a `skip` row:
+record it as in step 5 and re-extract. A second custodian is its own adapter
+directory and its own initial extract; its accounts seed with their own
+cutover, and reconcile on their own.
 
 Step 7 stalls most often. A complete daily valuation history needs prices for
 every instrument ever held, including under symbols that no longer exist. Because

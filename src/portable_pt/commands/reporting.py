@@ -13,14 +13,18 @@ import typer
 from portable_core.decimals import from_text, money_context, quantize_money
 from portable_core.disclaimer import TAX_DISCLAIMER
 from portable_core.domain.enums import BasisSource, FlowLevel, TransactionType
+from portable_core.domain.import_records import ClosedLotRecord
 from portable_core.domain.models import RealizedGain, ReturnPolicy
 from portable_core.errors import GipsRefusalError, ReconciliationBreakError, ValidationError
 from portable_core.errors.kinds import E_GIPS_NO_FLOW_POLICY, E_RECONCILE_BREAK
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
+from portable_core.importers import TabularAdapter
+from portable_core.importers.source import REALIZED
 from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.services import cash_flow
 from portable_core.services.reconciliation import (
     ExternalHolding,
+    RealizedTieLine,
     ReconciliationService,
 )
 from portable_core.services.tax import TaxEngine, TaxSummary
@@ -727,8 +731,19 @@ def cash_flows(
 
 def reconcile(
     against: Annotated[
-        Path, typer.Option("--against", help="The custodian's position statement, CSV.")
-    ],
+        Path | None,
+        typer.Option("--against", help="The custodian's position statement, CSV."),
+    ] = None,
+    realized: Annotated[
+        Path | None,
+        typer.Option(
+            "--realized",
+            help=(
+                "An adapter directory whose realized document (the custodian's lot-level "
+                "gain report) to tie every disposition to, per sale."
+            ),
+        ),
+    ] = None,
     account: Annotated[
         str | None,
         typer.Option("--account", "-a", help="Reconcile one account. Default: all of them."),
@@ -762,6 +777,15 @@ def reconcile(
     Cash equivalents are folded into cash before comparing, because a custodian
     reports its sweep as a position and `portable` holds it as cash (ADR 0013).
 
+    **`--realized`** ties realized gains as well, per sale: every disposition's
+    proceeds, basis and gain against the lots the custodian's own report
+    closed on the same day for the same instrument in the same account. Per
+    sale because a year that ties can hide two sales wrong by offsetting
+    amounts. A disposition of a lot whose basis is `unavailable` is shown as
+    unreportable, not a break; a disposition the report lacks that realized
+    nothing (a sweep redemption) is shown, not a break. Either flag alone is
+    a complete run; both together count breaks from both.
+
     A break beyond tolerance exits **6** -- a distinct code, because a
     reconciliation break is not a bug in portable and not a bad argument: it
     means the book and the custodian disagree, which needs a person.
@@ -771,6 +795,14 @@ def reconcile(
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
         limit = money_arg(tolerance, what="--tolerance")
+        if against is None and realized is None:
+            raise ValidationError(
+                "nothing to reconcile against",
+                remedy=(
+                    "Give --against <statement.csv> for positions and cash, --realized "
+                    "<adapter-dir> for realized gains, or both."
+                ),
+            )
 
         if state.current_options().as_of is not None:
             # Reconciliation compares what the portfolio holds *now* against the
@@ -785,14 +817,13 @@ def reconcile(
                 ),
             )
 
-        if not against.is_file():
+        if against is not None and not against.is_file():
             raise ValidationError(
                 f"statement not found: {against}",
                 remedy="Point --against at a CSV with quantity and an identifier column.",
                 path=str(against),
             )
 
-        external = _read_statement(against)
         targets = [repos.accounts.resolve(account)] if account else list(repos.accounts.all())
         if not targets:
             raise ValidationError(
@@ -812,25 +843,20 @@ def reconcile(
                 )
             overrides[targets[0].name] = money_arg(cash, what="--cash")
 
-        outcome = ReconciliationService(repos).reconcile(
-            external, targets, tolerance=limit, cash_override=overrides
-        )
+        service = ReconciliationService(repos)
+        breaks: list[str] = []
+        data: dict[str, object] = {
+            "tolerance": limit,
+            "accounts": [target.name for target in targets],
+        }
+        table: Table | None = None
 
-        rows = [
-            {
-                "account": line.account,
-                "kind": line.kind,
-                "identifier": line.identifier,
-                "portable": line.ours,
-                "custodian": line.theirs,
-                "difference": line.difference,
-                "break": line.is_break,
-            }
-            for line in outcome.lines
-        ]
-        result = CommandResult(
-            command="reconcile",
-            table=Table(
+        if against is not None:
+            external = _read_statement(against)
+            outcome = service.reconcile(
+                external, targets, tolerance=limit, cash_override=overrides
+            )
+            table = Table(
                 columns=(
                     Column("account", "Account"),
                     Column("kind", "Kind"),
@@ -840,34 +866,94 @@ def reconcile(
                     Column("difference", "Difference", ColumnKind.QUANTITY),
                     Column("break", "Break", ColumnKind.BOOL),
                 ),
-                rows=tuple(rows),
+                rows=tuple(
+                    {
+                        "account": line.account,
+                        "kind": line.kind,
+                        "identifier": line.identifier,
+                        "portable": line.ours,
+                        "custodian": line.theirs,
+                        "difference": line.difference,
+                        "break": line.is_break,
+                    }
+                    for line in outcome.lines
+                ),
                 title=f"Reconciliation against {against.name}",
-            ),
-            data={
-                "breaks": len(outcome.breaks),
-                "tolerance": limit,
-                "lines": len(outcome.lines),
-                "accounts": [target.name for target in targets],
-            },
-            portfolio=ctx.portfolio_name(),
+            )
+            data["breaks"] = len(outcome.breaks)
+            data["lines"] = len(outcome.lines)
+            breaks.extend(
+                f"{line.account} {line.kind} {line.identifier}: "
+                f"portable {line.ours} vs custodian {line.theirs}"
+                for line in outcome.breaks
+            )
+
+        if realized is not None:
+            tie = service.tie_realized(_read_closed_lots(realized), targets, tolerance=limit)
+            tie_rows = tuple(
+                {
+                    "account": line.account,
+                    "disposed": line.disposed,
+                    "identifier": line.identifier,
+                    "portable_gain": line.ours_gain,
+                    "custodian_gain": line.theirs_gain,
+                    "portable_basis": line.ours_basis,
+                    "custodian_basis": line.theirs_basis,
+                    "difference": line.difference,
+                    "compared": line.compared,
+                    "status": line.status,
+                }
+                for line in tie.lines
+            )
+            tie_table = Table(
+                columns=(
+                    Column("account", "Account"),
+                    Column("disposed", "Disposed", ColumnKind.DATE),
+                    Column("identifier", "Identifier"),
+                    Column("portable_gain", "portable gain", ColumnKind.MONEY),
+                    Column("custodian_gain", "Custodian gain", ColumnKind.MONEY),
+                    Column("difference", "Difference", ColumnKind.MONEY),
+                    Column("compared", "On"),
+                    Column("status", "Status"),
+                ),
+                rows=tie_rows,
+                title=f"Realized gains against {realized.name}, per sale",
+                footnotes=(
+                    "unreportable: a relieved lot carries unavailable basis (ADR 0017); "
+                    "no gain to compare.",
+                    "portable_only: a disposition the report lacks that realized "
+                    "nothing, such as a sweep redemption.",
+                ),
+            )
+            statuses = dict.fromkeys(("tied", "break", "unreportable", "portable_only"), 0)
+            for line in tie.lines:
+                statuses[line.status] += 1
+            data["realized"] = {
+                "sales": len(tie.lines),
+                **statuses,
+                "lines": [dict(row) for row in tie_rows],
+            }
+            breaks.extend(_describe_tie_break(line) for line in tie.breaks)
+            table = table or tie_table
+
+        result = CommandResult(
+            command="reconcile", table=table, data=data, portfolio=ctx.portfolio_name()
         )
 
-        if outcome.breaks:
+        if breaks:
             raise ReconciliationBreakError(
-                f"{len(outcome.breaks)} reconciliation break(s) beyond a tolerance of {limit}",
+                f"{len(breaks)} reconciliation break(s) beyond a tolerance of {limit}",
                 code=E_RECONCILE_BREAK,
                 remedy=(
                     "Compare the ledger with the custodian's activity for the period. "
                     "A missing transaction is the usual cause; correct it with a new "
                     "entry rather than by editing history. A cash break with clean "
                     "quantities usually means a sign convention or a transfer counted "
-                    "twice."
+                    "twice. A realized break with the lots agreeing is a basis the "
+                    "custodian adjusted without a row -- a distribution reclassified as "
+                    "return of capital is the usual one -- and is yours to record."
                 ),
-                breaks=[
-                    f"{line.account} {line.kind} {line.identifier}: "
-                    f"portable {line.ours} vs custodian {line.theirs}"
-                    for line in outcome.breaks
-                ],
+                breaks=breaks,
             )
         return result
 
@@ -875,6 +961,43 @@ def reconcile(
 
 
 _TRUE = frozenset({"1", "true", "yes", "y", "t"})
+
+
+def _describe_tie_break(line: RealizedTieLine) -> str:
+    head = f"{line.account} {line.identifier} sold {line.disposed.isoformat()}: "
+    if line.theirs_basis is None:
+        return head + f"not in the custodian's report, portable gain {line.ours_gain}"
+    if line.compared == "gain":
+        return head + f"portable gain {line.ours_gain} vs custodian {line.theirs_gain}"
+    return head + f"portable basis {line.ours_basis} vs custodian {line.theirs_basis}"
+
+
+def _read_closed_lots(adapter: Path) -> tuple[ClosedLotRecord, ...]:
+    """The custodian's lot report, read through its adapter.
+
+    Through the adapter and not from a bare CSV, because the report names
+    instruments the way the custodian does and the adapter's crosswalk is
+    the one place that mapping lives. An adapter with no realized document
+    is refused: there is nothing to tie to, and an empty tie would read as
+    agreement.
+    """
+    if not adapter.is_dir():
+        raise ValidationError(
+            f"adapter directory not found: {adapter}",
+            remedy="Point --realized at an adapter directory declaring `[documents.realized]`.",
+            path=str(adapter),
+        )
+    loaded = TabularAdapter.load(adapter)
+    if REALIZED not in loaded.spec.documents:
+        raise ValidationError(
+            f"the adapter at {adapter} declares no realized document",
+            remedy=(
+                "Add `[documents.realized]` to its source.toml (docs/broker-import.md §2) "
+                "and point it at the custodian's lot-level gain report."
+            ),
+            path=str(adapter),
+        )
+    return loaded.read().closed_lots
 
 
 def _read_statement(path: Path) -> list[ExternalHolding]:

@@ -986,3 +986,22 @@ def test_the_value_is_what_the_batch_carries_when_no_cash_moved() -> None:
     assert row.amount == Decimal("100.00")
     assert row.quantity == Decimal("0.5")
     assert row.price == Decimal("200")
+
+
+def test_an_alias_resolves_a_custodian_spelling_of_an_account_in_any_document(
+    tmp_path: Path,
+) -> None:
+    """The reference custodian upper-cases account names in one export and
+    writes them mixed-case in another. The same table maps both to the
+    portfolio's name, so the documents agree before anything is compared."""
+    holdings = HOLDINGS.replace("Main,", "MAIN,")
+    assert "MAIN," in holdings
+    report = _read(
+        tmp_path,
+        source=SOURCE + '\n[account_aliases]\n"MAIN" = "Main"\n',
+        activity=WINDOW_ACTIVITY,
+        holdings=holdings,
+        transactions=TRANSACTIONS,
+    )
+    assert {h.account for h in report.holdings} == {"IRA", "Main"}
+    assert "MAIN" not in report.accounts

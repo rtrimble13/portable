@@ -224,7 +224,7 @@ class TabularAdapter:
         # a movement across the portfolio boundary.
         accounts = frozenset(
             {h.account for h in holdings}
-            | {str(r["account"]) for r in transaction_rows if r.get("account")}
+            | {self._alias(str(r["account"])) for r in transaction_rows if r.get("account")}
         )
         transactions, skipped, mapped = self._transactions(
             transaction_rows, capabilities, accounts
@@ -363,7 +363,7 @@ class TabularAdapter:
         records: list[HoldingRecord] = []
         for row in rows:
             index = row["_index"]
-            account = _required(row, "account", index)
+            account = self._account(row, index)
             identifier = self._resolve(HOLDINGS, _required(row, "identifier", index), index)
             is_cash = self.spec.is_cash_equivalent(account, identifier)
             quantity = row.get("quantity")
@@ -400,7 +400,7 @@ class TabularAdapter:
         records: list[ClosedLotRecord] = []
         for row in rows:
             index = row["_index"]
-            account = _required(row, "account", index)
+            account = self._account(row, index)
             identifier = self._resolve(REALIZED, _required(row, "identifier", index), index)
             acquired, disposed = row.get("acquired"), row.get("disposed")
             if not isinstance(acquired, date):
@@ -458,7 +458,7 @@ class TabularAdapter:
             index = row["_index"]
             indices.append(index)
             activity = _required(row, "activity", index)
-            account = _required(row, "account", index)
+            account = self._account(row, index)
             raw_identifier = row.get("identifier")
             identifier = (
                 self._resolve(TRANSACTIONS, raw_identifier, index)
@@ -566,7 +566,7 @@ class TabularAdapter:
             amount = raw_amount if isinstance(raw_amount, Decimal) else None
         return TransactionRecord(
             trade_date=traded,
-            account=_required(row, "account", index),
+            account=self._account(row, index),
             activity=activity,
             identifier=identifier,
             quantity=quantity,
@@ -581,6 +581,21 @@ class TabularAdapter:
             ),
             note=row.get("note"),
         )
+
+    def _account(self, row: dict[str, Any], index: int) -> str:
+        """The account a row belongs to, in the portfolio's own name.
+
+        A custodian writes the account as it likes -- upper-cased in one
+        export and mixed-case in another, or by number in a note -- and
+        `[account_aliases]` is the one place that maps its spellings to the
+        portfolio's name. Applied to the account column of every document, so
+        the three documents agree on who holds what before anything is
+        compared.
+        """
+        return self._alias(_required(row, "account", index))
+
+    def _alias(self, name: str) -> str:
+        return self.spec.account_aliases.get(" ".join(name.split()).casefold(), name.strip())
 
     def _resolve(self, document: str, identifier: str, index: int) -> str:
         """The identifier as the ledger will know it.

@@ -96,6 +96,29 @@ Two rules specific to this repository:
     the roll-back and named, rather than subtracted from a state they are
     not in.
 
+- **`pt reconcile --realized <adapter>`: realized gains tied per sale.**
+  Acceptance check 2 (`docs/broker-import.md` §9) as a command: every
+  disposition's proceeds, basis and gain against the custodian's lot-level
+  report for the same account, instrument and day, read through the adapter
+  so the crosswalk applies. Exit 6 on a break; a disposition of a lot with
+  `unavailable` basis is shown as unreportable, a disposition the report
+  lacks that realized nothing is shown and not a break. Either flag alone is
+  a complete run; with `--against` too, breaks from both count.
+- **`[account_aliases]` resolves the account column of every document**, not
+  only the token a note uses. The reference custodian upper-cases account
+  names in its holdings export and not in its activity export; the same
+  table maps both spellings, and no file is edited.
+- **`scripts/xlsx_to_csv.py`**, the step that opens a spreadsheet export at
+  the CSV boundary: every cell as text, numeric columns named and refused if
+  they carry binary noise, files with one header concatenated, a report's
+  total line dropped only when asked. Nothing interpreted; a numeric date is
+  carried as written because day-first or month-first is the custodian's
+  convention, declared in `source.toml`.
+- **`.claude/skills/broker-import/SKILL.md`**, the runbook written for an
+  agent working with the owner: the interview that produces mapping files
+  rather than code, the segmented first import, the update loop, what each
+  kind of break means, and the rule that no amount from the exports reaches
+  a file under version control.
 - **`pt import broker` — the extract stage, and the pipeline runs end to end.**
   ADR 0012's first stage, which turns a custodian's exports plus a cutover
   reconstruction into the reviewable batch the other two stages already
