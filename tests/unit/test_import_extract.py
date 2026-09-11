@@ -22,11 +22,13 @@ from portable_core.domain.enums import (
     TransactionType,
 )
 from portable_core.domain.import_records import (
+    ClosedLotRecord,
     HoldingRecord,
     MappedTransaction,
     TransactionRecord,
 )
 from portable_core.errors import DataUnavailableError, ValidationError
+from portable_core.services.import_batch import LotDesignation
 from portable_core.services.import_extract import (
     ExtractResult,
     build_batch,
@@ -99,6 +101,8 @@ def _extract(
     transactions: Sequence[TransactionRecord],
     mapped: Sequence[MappedTransaction],
     prices: Mapping[str, Decimal] | None = None,
+    *,
+    closed_lots: Sequence[ClosedLotRecord] = (),
 ) -> ExtractResult:
     result = reconstruct(holdings, transactions, cutover=CUTOVER)
     return build_batch(
@@ -106,6 +110,19 @@ def _extract(
         reconstruction=result,
         mapped=mapped,
         cutover_prices=PRICES if prices is None else prices,
+        closed_lots=closed_lots,
+    )
+
+
+def _closed(acquired: date, disposed: date, quantity: str, cost: str) -> ClosedLotRecord:
+    return ClosedLotRecord(
+        account="Main",
+        identifier="AAPL",
+        acquired=acquired,
+        disposed=disposed,
+        quantity=Decimal(quantity),
+        cost_basis=Decimal(cost),
+        source_row={},
     )
 
 
@@ -260,6 +277,79 @@ def test_a_closing_trade_states_fifo_relief() -> None:
     )
     row = next(r for r in extract.batch.rows if r.txn_type is TransactionType.SELL)
     assert row.relief_method is ReliefMethod.FIFO
+
+
+def test_a_sale_the_realized_report_covers_designates_its_lots() -> None:
+    """The custodian's lot report says which lots a sale consumed. That is a
+    spec-ID designation in everything but the lot id, so the row carries it
+    and assumes nothing."""
+    buy = _txn(date(2025, 3, 3), "AAPL", "10", "-1500.00")
+    sale = _txn(date(2025, 6, 1), "AAPL", "-10", "2000.00", "Sold")
+    extract = _extract(
+        [_hold("AAPL", "30"), SWEEP],
+        [buy, sale],
+        [_mapped(buy), _mapped(sale, TransactionType.SELL)],
+        closed_lots=[_closed(date(2025, 3, 3), date(2025, 6, 1), "10", "1500.00")],
+    )
+    row = next(r for r in extract.batch.rows if r.txn_type is TransactionType.SELL)
+    assert row.relief_method is ReliefMethod.SPEC
+    assert row.lots == (
+        LotDesignation(
+            acquired=date(2025, 3, 3), quantity=Decimal("10"), cost_basis=Decimal("1500.00")
+        ),
+    )
+    assert row.note is None
+
+
+def test_a_report_that_does_not_add_up_to_the_sale_is_noted_and_fifo_applies() -> None:
+    """Lots that total something other than the sale describe a different
+    sale. The row says so and falls back to the assumed method, in the file
+    the reviewer reads -- not silently either way."""
+    sale = _txn(date(2025, 6, 1), "AAPL", "-10", "2000.00", "Sold")
+    extract = _extract(
+        [_hold("AAPL", "30"), SWEEP],
+        [sale],
+        [_mapped(sale, TransactionType.SELL)],
+        closed_lots=[_closed(date(2024, 3, 3), date(2025, 6, 1), "7", "1000.00")],
+    )
+    row = next(r for r in extract.batch.rows if r.txn_type is TransactionType.SELL)
+    assert row.relief_method is ReliefMethod.FIFO
+    assert row.lots == ()
+    assert row.note is not None
+    assert "closes 7 units" in row.note and "disposes of 10" in row.note
+
+
+def test_a_report_for_another_day_designates_nothing() -> None:
+    sale = _txn(date(2025, 6, 1), "AAPL", "-10", "2000.00", "Sold")
+    extract = _extract(
+        [_hold("AAPL", "30"), SWEEP],
+        [sale],
+        [_mapped(sale, TransactionType.SELL)],
+        closed_lots=[_closed(date(2024, 3, 3), date(2025, 6, 2), "10", "1000.00")],
+    )
+    row = next(r for r in extract.batch.rows if r.txn_type is TransactionType.SELL)
+    assert row.relief_method is ReliefMethod.FIFO
+    assert row.lots == ()
+
+
+def test_an_incremental_extract_designates_lots_too() -> None:
+    sale = _txn(date(2025, 6, 1), "AAPL", "-10", "2000.00", "Sold")
+    extract = build_incremental_batch(
+        broker="acme",
+        mapped=[_mapped(sale, TransactionType.SELL)],
+        inception={"Main": CUTOVER},
+        in_ledger=lambda account, ref: False,
+        closed_lots=[
+            _closed(date(2021, 3, 3), date(2025, 6, 1), "4", "400.00"),
+            _closed(date(2025, 3, 3), date(2025, 6, 1), "6", "900.00"),
+        ],
+    )
+    row = next(r for r in extract.batch.rows if r.txn_type is TransactionType.SELL)
+    assert row.relief_method is ReliefMethod.SPEC
+    assert [(lot.acquired, lot.quantity) for lot in row.lots] == [
+        (date(2021, 3, 3), Decimal("4")),
+        (date(2025, 3, 3), Decimal("6")),
+    ]
 
 
 def test_an_opening_trade_states_no_relief_method() -> None:

@@ -37,7 +37,7 @@ from portable_core.domain.enums import (
 )
 from portable_core.domain.models import Transaction
 from portable_core.errors import ValidationError
-from portable_core.errors.kinds import E_USAGE
+from portable_core.errors.kinds import E_LOT_SELECTION_INVALID, E_USAGE
 from portable_core.persistence.repositories import Repositories
 from portable_core.services.replay import ReplayEngine
 from portable_core.services.trading import TradeIntent, TradingService
@@ -109,6 +109,16 @@ SUPPORTED_TYPES: Final[frozenset[TransactionType]] = _TRADES | _CASH | _INCOME |
 
 _ACTIONS: Final = frozenset({"append", "drop", "skip"})
 
+#: How far a lot's original basis may sit from what the custodian says it cost
+#: and still be the lot the custodian means, when two lots share an open date.
+_BASIS_TIE: Final = Decimal("0.01")
+
+_DESIGNATION_REMEDY: Final = (
+    "Check the custodian's realized report against the ledger's lots for this sale "
+    "(`pt lot list`). Remove `lots` from the row to relieve under `relief_method` "
+    "instead, or record the sale with `pt sell --lots` naming lot ids."
+)
+
 
 @dataclass(frozen=True, slots=True)
 class BatchSource:
@@ -118,6 +128,27 @@ class BatchSource:
     files: tuple[tuple[str, str], ...]
     capabilities: tuple[str, ...] = ()
     period: tuple[date, date] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LotDesignation:
+    """One lot a closing row consumes, as the custodian's own report states it.
+
+    A custodian that reports gains at lot level says, for every sale, which
+    lots went: when each was acquired, how many units, and what they cost.
+    That is a specific-identification designation in everything but the lot
+    id, which only the ledger knows. The batch carries the custodian's terms
+    and the commit resolves them to a lot -- or refuses, never picks.
+
+    ``cost_basis`` is what the custodian says the lot cost. It settles a tie
+    between two lots opened on the same day and is otherwise evidence for the
+    reviewer; the reconciliation of realized gains is where a basis that
+    disagrees with the ledger's is caught.
+    """
+
+    acquired: date
+    quantity: Decimal
+    cost_basis: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +185,12 @@ class BatchRow:
     #: the solve never computed. Visible in the file, so a reviewer can change
     #: it, which is what the review is for.
     relief_method: ReliefMethod | None = None
+    #: The lots a closing row consumes, where the custodian's lot-level report
+    #: states them. Present, the relief is specific identification and the
+    #: commit resolves each entry to a ledger lot; absent, `relief_method`
+    #: applies. The two cannot disagree: `lots` with a method other than
+    #: `spec` is refused at load.
+    lots: tuple[LotDesignation, ...] = ()
     ex_date: date | None = None
     is_qualified: bool | None = None
     note: str | None = None
@@ -204,11 +241,14 @@ class ImportResult:
 # ── loading ──────────────────────────────────────────────────────────────────
 
 
-def _fail(message: str, **context: Any) -> ValidationError:
+def _fail(
+    message: str, *, code: str = E_USAGE, remedy: str | None = None, **context: Any
+) -> ValidationError:
     return ValidationError(
         message,
-        code=E_USAGE,
-        remedy=(
+        code=code,
+        remedy=remedy
+        or (
             "See schemas/import-batch-1.0.json for the contract, or regenerate the "
             "batch with `pt import broker`."
         ),
@@ -307,6 +347,15 @@ def _row_json(row: BatchRow) -> dict[str, Any]:
         "withholding_reclaimable": _text(row.withholding_reclaimable),
         "counter_account": row.counter_account,
         "relief_method": str(row.relief_method) if row.relief_method else None,
+        "lots": [
+            {
+                "acquired": lot.acquired.isoformat(),
+                "quantity": to_text(lot.quantity),
+                "cost_basis": _text(lot.cost_basis),
+            }
+            for lot in row.lots
+        ]
+        or None,
         "ex_date": row.ex_date.isoformat() if row.ex_date else None,
         "is_qualified": row.is_qualified,
         "original_basis": _text(row.original_basis),
@@ -453,6 +502,7 @@ def _row(raw: Any, index: int) -> BatchRow:
         or ZERO,
         fee_class=FeeClass(raw_class) if raw_class else None,
         relief_method=_relief(raw.get("relief_method"), index=index),
+        lots=_lots(raw.get("lots"), index=index, relief=raw.get("relief_method")),
         original_basis=_decimal(
             raw.get("original_basis"), index=index, field_name="original_basis"
         ),
@@ -477,6 +527,53 @@ def _row(raw: Any, index: int) -> BatchRow:
         is_qualified=raw.get("is_qualified"),
         note=raw.get("note") or None,
     )
+
+
+def _lots(value: Any, *, index: int, relief: Any) -> tuple[LotDesignation, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not value:
+        raise _fail(
+            f"row {index}: `lots` is a non-empty list of the lots the row consumes",
+            row=index,
+            field="lots",
+        )
+    if relief not in (None, str(ReliefMethod.SPEC)):
+        raise _fail(
+            f"row {index}: `lots` designates the lots consumed, which is specific "
+            f"identification; it cannot be combined with relief_method {relief!r}",
+            row=index,
+            field="lots",
+            relief_method=str(relief),
+        )
+    designations: list[LotDesignation] = []
+    for n, item in enumerate(value, start=1):
+        if not isinstance(item, dict) or not item.get("acquired") or not item.get("quantity"):
+            raise _fail(
+                f"row {index}: lots[{n}] states `acquired` and `quantity`",
+                row=index,
+                field="lots",
+            )
+        quantity = _decimal(item["quantity"], index=index, field_name=f"lots[{n}].quantity")
+        assert quantity is not None
+        if quantity <= ZERO:
+            raise _fail(
+                f"row {index}: lots[{n}] quantity must be positive",
+                row=index,
+                field="lots",
+            )
+        acquired = _date(item["acquired"], index=index, field_name=f"lots[{n}].acquired")
+        assert acquired is not None
+        designations.append(
+            LotDesignation(
+                acquired=acquired,
+                quantity=quantity,
+                cost_basis=_decimal(
+                    item.get("cost_basis"), index=index, field_name=f"lots[{n}].cost_basis"
+                ),
+            )
+        )
+    return tuple(designations)
 
 
 # ── committing ───────────────────────────────────────────────────────────────
@@ -639,6 +736,7 @@ class BatchImporter:
                 row=row.index,
             )
         instrument = self.repos.instruments.resolve(row.symbol, on=row.trade_date)
+        selection = self._designate(row, account, instrument) if row.lots else None
         plan = self.trading.plan(
             TradeIntent(
                 account=account,
@@ -650,7 +748,8 @@ class BatchImporter:
                 fees=row.fees,
                 commissions=row.commissions,
                 fee_class=row.fee_class,
-                relief_method=row.relief_method,
+                relief_method=ReliefMethod.SPEC if selection else row.relief_method,
+                lot_selection=selection,
                 settlement_date=row.settlement_date,
                 note=row.note,
                 external_ref=row.external_ref,
@@ -658,6 +757,95 @@ class BatchImporter:
             )
         )
         return plan.transaction
+
+    def _designate(self, row: BatchRow, account: Any, instrument: Any) -> str:
+        """Resolve the custodian's lot terms to the ledger's lot ids.
+
+        A designation names a lot by the day it was acquired. The ledger's lot
+        opened that day is the one -- and where two were, the one whose
+        original basis is what the custodian says the lot cost. A day the
+        ledger has no lot for is one of two things: a lot the custodian holds
+        inside a block seeded at the cutover, which the ledger carries as the
+        seed's own lot; or a lot the ledger does not have at all. The first
+        resolves to the seed (the seed's basis is the block's, so the sale's
+        basis is the block's average, which the extract said when it seeded);
+        the second is refused, because designating a lot the ledger cannot
+        find and relieving something else instead is exactly the silent
+        substitution specific identification exists to prevent.
+        """
+        assert row.quantity is not None
+        designated = sum((lot.quantity for lot in row.lots), Decimal("0"))
+        if designated != row.quantity:
+            raise _fail(
+                f"row {row.index}: the designated lots total {designated} units but "
+                f"the row closes {row.quantity}",
+                row=row.index,
+                code=E_LOT_SELECTION_INVALID,
+                remedy=_DESIGNATION_REMEDY,
+                designated=str(designated),
+                quantity=str(row.quantity),
+            )
+        open_lots = self.repos.lots.open_lots(account.account_id, instrument.instrument_id)
+        inception = self.repos.transactions.first_trade_date(account.account_id)
+        taken: dict[int, Decimal] = {}
+        for designation in row.lots:
+            lot_id = self._resolve_lot(row, designation, open_lots, inception, taken)
+            taken[lot_id] = taken.get(lot_id, ZERO) + designation.quantity
+        return ";".join(f"{lot_id}:{to_text(qty)}" for lot_id, qty in taken.items())
+
+    def _resolve_lot(
+        self,
+        row: BatchRow,
+        designation: LotDesignation,
+        open_lots: list[Any],
+        inception: date | None,
+        taken: dict[int, Decimal],
+    ) -> int:
+        def free(lot: Any) -> Decimal:
+            return Decimal(lot.remaining_quantity) - taken.get(lot.lot_id, ZERO)
+
+        same_day = [lot for lot in open_lots if lot.open_date == designation.acquired]
+        if len(same_day) > 1 and designation.cost_basis is not None:
+            same_day = [
+                lot
+                for lot in same_day
+                if abs(lot.original_cost_basis - designation.cost_basis) <= _BASIS_TIE
+            ] or same_day
+        if len(same_day) > 1:
+            raise _fail(
+                f"row {row.index}: {len(same_day)} open lots of {row.symbol} were acquired "
+                f"on {designation.acquired.isoformat()} and the custodian's cost does not "
+                f"single one out; designate by lot id with `pt sell --lots`",
+                row=row.index,
+                code=E_LOT_SELECTION_INVALID,
+                remedy=_DESIGNATION_REMEDY,
+                acquired=designation.acquired.isoformat(),
+                candidates=[lot.lot_id for lot in same_day],
+            )
+        candidates = same_day
+        if not candidates and inception is not None and designation.acquired <= inception:
+            # Acquired before the ledger begins: inside a block the cutover
+            # seeded. The seeds are the lots dated at the inception, in the
+            # order the extract wrote them -- the accounted-for part of a
+            # block before its vanished part.
+            candidates = [lot for lot in open_lots if lot.open_date <= inception]
+        with_room = [lot for lot in candidates if free(lot) >= designation.quantity]
+        if not with_room:
+            raise _fail(
+                f"row {row.index}: no open lot of {row.symbol} in {row.account} was acquired "
+                f"on {designation.acquired.isoformat()} with {designation.quantity} units "
+                f"left; the custodian's report and the ledger disagree about this sale",
+                row=row.index,
+                code=E_LOT_SELECTION_INVALID,
+                remedy=_DESIGNATION_REMEDY,
+                acquired=designation.acquired.isoformat(),
+                quantity=str(designation.quantity),
+                open_lots=[
+                    {"lot_id": lot.lot_id, "open_date": lot.open_date.isoformat()}
+                    for lot in open_lots
+                ],
+            )
+        return int(with_room[0].lot_id)
 
     def _cash(self, row: BatchRow, account: Any) -> Transaction:
         if row.amount is None:

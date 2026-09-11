@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -80,6 +81,26 @@ SELL = _append(
     symbol="AAPL",
     quantity="40",
     price="210.00",
+)
+BUY_LATER = _append(
+    external_ref="ex:4",
+    account="Brokerage",
+    txn_type="buy",
+    trade_date="2024-02-10",
+    symbol="AAPL",
+    quantity="100",
+    price="190.00",
+)
+SELL_DESIGNATED = _append(
+    external_ref="ex:5",
+    account="Brokerage",
+    txn_type="sell",
+    trade_date="2024-06-03",
+    symbol="AAPL",
+    quantity="40",
+    price="210.00",
+    relief_method="spec",
+    lots=[{"acquired": "2024-02-10", "quantity": "40", "cost_basis": "7600.00"}],
 )
 
 
@@ -175,6 +196,7 @@ def test_a_json_number_is_refused_rather_than_coerced(tmp_path: Path) -> None:
     [
         _document([]),
         _document([DEPOSIT, BUY, SELL]),
+        _document([DEPOSIT, BUY, BUY_LATER, SELL_DESIGNATED]),
         _document(
             [
                 {"action": "drop", "rule": "sweep:x", "source_row": {"a": "b"}},
@@ -405,3 +427,117 @@ def test_a_withdrawal_below_zero_is_recorded_rather_than_refused(
         load_batch(_write(tmp_path / "b.json", _document([row])))
     )
     assert outcome.appended == 1
+
+
+# ── designated lots ──────────────────────────────────────────────────────────
+
+
+def test_a_designation_relieves_the_lot_the_custodian_named(
+    tmp_path: Path, ready: Repositories
+) -> None:
+    """FIFO would take the January lot at 185. The custodian says the
+    February lot at 190 went, and the ledger relieves that one."""
+    batch = load_batch(
+        _write(tmp_path / "b.json", _document([DEPOSIT, BUY, BUY_LATER, SELL_DESIGNATED]))
+    )
+    BatchImporter(ready).commit(batch)
+    gains = ready.lots.realized_gains()
+    assert len(gains) == 1
+    assert gains[0].gain == D("800.00")  # 40 x (210 - 190)
+    dispositions = ready.lots.dispositions()
+    assert {d.relief_method for d in dispositions} == {"spec"}
+
+
+def test_a_designation_is_carried_through_the_file_intact(tmp_path: Path) -> None:
+    from portable_core.services.import_batch import LotDesignation, dump_batch
+
+    batch = load_batch(_write(tmp_path / "b.json", _document([SELL_DESIGNATED])))
+    (row,) = batch.rows
+    assert row.lots == (
+        LotDesignation(acquired=date(2024, 2, 10), quantity=D("40"), cost_basis=D("7600.00")),
+    )
+    again = json.loads(dump_batch(batch))
+    assert again["rows"][0]["lots"] == SELL_DESIGNATED["lots"]
+
+
+def test_a_designation_with_another_relief_method_is_refused(tmp_path: Path) -> None:
+    row = {**SELL_DESIGNATED, "relief_method": "fifo"}
+    with pytest.raises(ValidationError, match="specific identification"):
+        load_batch(_write(tmp_path / "b.json", _document([row])))
+
+
+def test_a_designation_that_does_not_total_the_sale_is_refused(
+    tmp_path: Path, ready: Repositories
+) -> None:
+    row = {
+        **SELL_DESIGNATED,
+        "lots": [{"acquired": "2024-02-10", "quantity": "30", "cost_basis": "5700.00"}],
+    }
+    batch = load_batch(_write(tmp_path / "b.json", _document([DEPOSIT, BUY, BUY_LATER, row])))
+    with pytest.raises(ValidationError, match="total 30 units but the row closes 40") as caught:
+        BatchImporter(ready).commit(batch)
+    assert caught.value.code == "PT-E-LOT-SELECTION-INVALID"
+
+
+def test_a_designation_the_ledger_has_no_lot_for_is_refused_not_substituted(
+    tmp_path: Path, ready: Repositories
+) -> None:
+    """The custodian names a day the ledger bought nothing. Relieving some
+    other lot instead would be the silent substitution spec-ID exists to
+    prevent, so the batch stops and names the lots that do exist."""
+    row = {
+        **SELL_DESIGNATED,
+        "lots": [{"acquired": "2024-03-15", "quantity": "40", "cost_basis": "7600.00"}],
+    }
+    batch = load_batch(_write(tmp_path / "b.json", _document([DEPOSIT, BUY, BUY_LATER, row])))
+    with pytest.raises(ValidationError, match="acquired on 2024-03-15") as caught:
+        BatchImporter(ready).commit(batch)
+    assert caught.value.code == "PT-E-LOT-SELECTION-INVALID"
+    assert [lot["open_date"] for lot in caught.value.context["open_lots"]] == [
+        "2024-01-10",
+        "2024-02-10",
+    ]
+
+
+def test_a_lot_acquired_before_the_ledger_begins_resolves_to_the_seed(
+    tmp_path: Path, ready: Repositories
+) -> None:
+    """A block seeded at the cutover is one ledger lot dated at the
+    inception, however many lots the custodian holds inside it. A designation
+    naming one of those -- acquired before the ledger begins -- resolves to
+    the seed."""
+    seed = {**BUY, "trade_date": "2024-01-02"}
+    row = {
+        **SELL_DESIGNATED,
+        "lots": [{"acquired": "2021-05-05", "quantity": "40", "cost_basis": "4000.00"}],
+    }
+    batch = load_batch(_write(tmp_path / "b.json", _document([DEPOSIT, seed, row])))
+    BatchImporter(ready).commit(batch)
+    gains = ready.lots.realized_gains()
+    assert len(gains) == 1
+    assert gains[0].gain == D("1000.00")  # 40 x (210 - 185), the seed's basis
+
+
+def test_two_lots_on_one_day_are_told_apart_by_what_they_cost(
+    tmp_path: Path, ready: Repositories
+) -> None:
+    same_day = {**BUY_LATER, "trade_date": "2024-01-10", "external_ref": "ex:6"}
+    row = {
+        **SELL_DESIGNATED,
+        "lots": [{"acquired": "2024-01-10", "quantity": "40", "cost_basis": "19000.00"}],
+    }
+    batch = load_batch(_write(tmp_path / "b.json", _document([DEPOSIT, BUY, same_day, row])))
+    BatchImporter(ready).commit(batch)
+    gains = ready.lots.realized_gains()
+    assert gains[0].gain == D("800.00")  # the 190 lot, not the 185 lot FIFO would take
+
+
+def test_two_lots_on_one_day_with_no_cost_to_tell_them_apart_are_refused(
+    tmp_path: Path, ready: Repositories
+) -> None:
+    same_day = {**BUY_LATER, "trade_date": "2024-01-10", "external_ref": "ex:6"}
+    row = {**SELL_DESIGNATED, "lots": [{"acquired": "2024-01-10", "quantity": "40"}]}
+    batch = load_batch(_write(tmp_path / "b.json", _document([DEPOSIT, BUY, same_day, row])))
+    with pytest.raises(ValidationError, match="2 open lots") as caught:
+        BatchImporter(ready).commit(batch)
+    assert caught.value.code == "PT-E-LOT-SELECTION-INVALID"

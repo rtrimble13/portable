@@ -135,3 +135,10 @@ def test_the_pipeline_runs_on_the_fixture(run_pt: CliRunner, tmp_path: Path) -> 
     assert {(t["account"], t["counter_account"]) for t in transfers} == {
         ("Brokerage", "IRA"),
     }
+    # The realized document names the lot the IRA's one sale consumed, so the
+    # sale relieves that lot by designation rather than by an assumed method.
+    (sale,) = [r for r in rows if r.get("txn_type") == "sell"]
+    assert sale["relief_method"] == "spec"
+    assert sale["lots"] == [
+        {"acquired": "2022-10-17", "quantity": "60", "cost_basis": "600"},
+    ]

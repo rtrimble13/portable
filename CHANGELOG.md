@@ -79,6 +79,16 @@ Two rules specific to this repository:
     .DIVIDEND_REINVEST` has a service path: the gross is the income earned
     and the cost of the units, the row opens a lot, and no cash moves.
     `pt income dividend --reinvest-units`, and the batch carries the type.
+  - **The lots a sale consumed, from the custodian's own report.** Where the
+    realized document covers a sale, the batch row carries `lots` — acquired
+    date, units and cost of each lot the custodian says went — and relieves
+    by specific identification of exactly those. The commit resolves each to
+    the ledger's lot opened that day (two on one day are told apart by what
+    they cost; a lot acquired before the ledger begins resolves to its seed)
+    and refuses `PT-E-LOT-SELECTION-INVALID` rather than relieve something
+    else. Found by tying the first real import's realized gains to the
+    custodian's lot report: the sums agreed and twelve sales did not, every
+    one a FIFO pick where the adviser had designated a different lot.
   - A cash line the snapshot states as a balance with no share count takes
     the balance as its quantity (ADR 0013); a cutover price the table lacks
     is taken from the custodian's same-day in-kind receipt and recorded as

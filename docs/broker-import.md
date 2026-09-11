@@ -86,7 +86,9 @@ For every lot the custodian closed since the cutover it states when the lot
 was acquired and what it cost, which is exactly the basis a reconstruction
 cannot otherwise recover for a block disposed of after the cutover (§7). With
 it, such a block is `custodian_asserted` rather than `unavailable`, and no
-relief method is assumed anywhere, because the report says which lots went.
+relief method is assumed anywhere, because the report says which lots went —
+and every sale the report covers relieves exactly those lots, by designation
+rather than by an assumed method (§5, *the lots a sale consumed*).
 
 ---
 
@@ -529,13 +531,34 @@ beginning market value rather than a flow into the period, and the cutover
 return engine and is not yet implemented; until it is, no first-period return
 is computed and nothing reads the classification.
 
-**A relief method on every closing trade.** The seeded basis was solved under
-an assumed FIFO relief (ADR 0017 §2a), so the ledger has to relieve the same
-way: a block solved for FIFO and then relieved spec-ID yields a basis the solve
-never computed. `pt import broker` writes `relief_method: "fifo"` on each
-closing row rather than leaving it to the account default — visible in the
-file, changeable by the reviewer, and understood to invalidate the solve if
-changed.
+**A relief method on every closing trade.** Without the custodian's word on
+which lots a sale consumed, the seeded basis was solved under an assumed FIFO
+relief (ADR 0017 §2a), so the ledger has to relieve the same way: a block
+solved for FIFO and then relieved spec-ID yields a basis the solve never
+computed. `pt import broker` writes `relief_method: "fifo"` on each closing
+row rather than leaving it to the account default — visible in the file,
+changeable by the reviewer, and understood to invalidate the solve if changed.
+
+**The lots a sale consumed, where the custodian states them.** With the
+realized document (§2), every closing row it covers carries `lots`: the
+acquired date, units and cost of each lot the custodian says that sale
+consumed, and `relief_method: "spec"`. That is specific identification in
+everything but the lot id, which only the ledger knows. At commit each entry
+resolves to the ledger's lot opened on that day — where two were, to the one
+whose original basis is what the custodian says the lot cost — and a lot
+acquired before the ledger begins resolves to the seed carrying its block.
+Anything else is refused as `PT-E-LOT-SELECTION-INVALID` naming the lots that
+do exist: designating a lot the ledger cannot find and relieving something
+else instead is the substitution specific identification exists to prevent.
+The report's lots for a sale must total the sale's units; where they do not,
+the row falls back to the assumed method with the discrepancy written on it.
+
+One limit to know. A block seeded at the cutover is **one** ledger lot at the
+block's aggregate basis, however many lots the custodian holds inside it, so a
+sale that takes part of such a block relieves the block's average and the
+custodian's report relieves the specific lot. The totals agree; the per-sale
+split can differ until the block is gone. Seeding one lot per custodian lot
+would close that gap and is not done yet.
 
 **The opening position set is derived, not read.** Apply the transaction history
 **in reverse** to the holdings snapshot to obtain the holding of every instrument
@@ -608,7 +631,12 @@ An import is accepted when it reconciles, not when it parses.
    `account` column once more than one account is in scope, and a `cash` column
    marking the cash line and any sweep vehicle.
 2. **Per closed tax year:** realized gains tie to the custodian's tax reporting,
-   excluding dispositions marked `unavailable`.
+   excluding dispositions marked `unavailable`. With the realized document
+   the tie is per sale: proceeds, basis and gain of every disposition against
+   the report's lots for the same account, instrument and day. A break there
+   with the lots agreeing is a basis the custodian adjusted and the activity
+   export never showed — a distribution reclassified as return of capital is
+   the usual one — and is the owner's to record, not the importer's to infer.
 3. `pt validate` passes — which, after ADR 0016, means stored derived state
    actually equals replayed state.
 4. `pt export` → `pt import` → `pt export` is byte-identical.

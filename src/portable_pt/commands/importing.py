@@ -524,6 +524,7 @@ def import_broker(
                 in_ledger=in_ledger,
                 files=report.files,
                 capabilities=[c.value for c in report.capabilities.declared],
+                closed_lots=report.closed_lots,
             )
         else:
             boundary = date.fromisoformat(cutover) if cutover else None
@@ -544,6 +545,7 @@ def import_broker(
                 capabilities=[c.value for c in report.capabilities.declared],
                 in_ledger=in_ledger,
                 price_sources=sources,
+                closed_lots=report.closed_lots,
             )
         out.write_text(dump_batch(extract.batch), encoding="utf-8")
 

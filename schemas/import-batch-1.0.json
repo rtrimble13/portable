@@ -137,6 +137,21 @@
           "type": "string",
           "enum": ["spec", "fifo", "lifo", "hifo", "lofo", "avg"]
         },
+        "lots": {
+          "description": "The lots a closing row consumes, as the custodian's lot-level realized report states them: acquired date, units, and what they cost. Specific identification in everything but the lot id, which the commit resolves — to the ledger's lot opened that day, or to the cutover seed for a lot acquired before the ledger begins — and otherwise refuses. Cannot be combined with a relief_method other than spec.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["acquired", "quantity"],
+            "additionalProperties": false,
+            "properties": {
+              "acquired": { "$ref": "#/$defs/date" },
+              "quantity": { "$ref": "#/$defs/decimal" },
+              "cost_basis": { "anyOf": [{ "$ref": "#/$defs/decimal" }, { "type": "null" }] }
+            }
+          }
+        },
         "original_basis": {
           "description": "ADR 0015, on transfer_in only: total cost basis at the DELIVERING custodian. Not the transfer's value — `amount` is that. Using value as basis makes every future sale report the gain since the transfer; using basis as value makes the period's return wrong by the whole unrealized gain. Absent under basis_source 'unavailable', where no figure is supportable.",
           "anyOf": [

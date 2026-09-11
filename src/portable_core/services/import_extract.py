@@ -34,7 +34,11 @@ from decimal import Decimal
 from typing import Final
 
 from portable_core.domain.enums import ReliefMethod, TransactionType
-from portable_core.domain.import_records import MappedTransaction, TransactionRecord
+from portable_core.domain.import_records import (
+    ClosedLotRecord,
+    MappedTransaction,
+    TransactionRecord,
+)
 from portable_core.errors import DataUnavailableError, ValidationError
 from portable_core.errors.kinds import E_IMPORT_SOURCE_INVALID, E_PRICE_MISSING
 from portable_core.services.import_batch import (
@@ -42,6 +46,7 @@ from portable_core.services.import_batch import (
     BatchRow,
     BatchSource,
     ImportBatch,
+    LotDesignation,
 )
 from portable_core.services.reconstruction import (
     CutoverCash,
@@ -119,6 +124,7 @@ def build_batch(
     capabilities: Sequence[str] = (),
     in_ledger: InLedger = _nothing_in_ledger,
     price_sources: Mapping[str, str] | None = None,
+    closed_lots: Sequence[ClosedLotRecord] = (),
 ) -> ExtractResult:
     """Build the reviewable batch. Writes nothing.
 
@@ -139,6 +145,10 @@ def build_batch(
             seed row's source. A price the portfolio's own table supplied
             needs no note; one read off the custodian's same-day receipt is a
             different provenance and the reviewer has to be able to see it.
+        closed_lots: the custodian's lot-level realized report, where there is
+            one. Each closing row it covers carries the lots the custodian
+            says that sale consumed, and relieves by specific identification
+            rather than by the assumed method (see :func:`_designations`).
 
     Raises:
         DataUnavailableError: when a seeded position has no cutover price. Exit
@@ -195,8 +205,9 @@ def build_batch(
     appended = skipped = dropped = 0
     history = _after(mapped, reconstruction.cutover)
     ordinals = _Ordinals()
+    designations = _designations(closed_lots)
     for entry in history:
-        row = _history_row(entry, len(rows) + 1, unsupported, ordinals, in_ledger)
+        row = _history_row(entry, len(rows) + 1, unsupported, ordinals, in_ledger, designations)
         rows.append(row)
         if row.action == "append":
             appended += 1
@@ -236,6 +247,7 @@ def build_incremental_batch(
     in_ledger: InLedger,
     files: Sequence[tuple[str, str]] = (),
     capabilities: Sequence[str] = (),
+    closed_lots: Sequence[ClosedLotRecord] = (),
 ) -> ExtractResult:
     """Build the batch for a periodic update to accounts already in the ledger.
 
@@ -273,6 +285,7 @@ def build_incremental_batch(
     unsupported: set[str] = set()
     appended = skipped = dropped = 0
     ordinals = _Ordinals()
+    designations = _designations(closed_lots)
     for entry in sorted(mapped, key=lambda m: m.record.trade_date):
         record = entry.record
         if record.trade_date <= inception[record.account]:
@@ -288,7 +301,9 @@ def build_incremental_batch(
                 ),
             )
         else:
-            row = _history_row(entry, len(rows) + 1, unsupported, ordinals, in_ledger)
+            row = _history_row(
+                entry, len(rows) + 1, unsupported, ordinals, in_ledger, designations
+            )
         rows.append(row)
         if row.action == "append":
             appended += 1
@@ -490,12 +505,33 @@ class _Ordinals:
         return ordinal
 
 
+#: The custodian's closed lots, keyed by the sale they belong to.
+_Designations = Mapping[tuple[str, str, date], Sequence[ClosedLotRecord]]
+
+
+def _designations(closed_lots: Sequence[ClosedLotRecord]) -> _Designations:
+    """Group the realized report's lots by the sale that closed them.
+
+    A sale is one account, one instrument, one day. The activity export
+    identifies it the same way, which is how a closing row finds its lots
+    without the two documents sharing an identifier. Where the export has
+    two sales of one instrument on one day the grouping cannot tell them
+    apart, and :func:`_history_row` leaves both under the assumed method
+    rather than splitting the lots between them by guesswork.
+    """
+    grouped: dict[tuple[str, str, date], list[ClosedLotRecord]] = {}
+    for lot in closed_lots:
+        grouped.setdefault((lot.account, lot.identifier, lot.disposed), []).append(lot)
+    return grouped
+
+
 def _history_row(
     entry: MappedTransaction,
     index: int,
     unsupported: set[str],
     ordinals: _Ordinals,
     in_ledger: InLedger,
+    designations: _Designations | None = None,
 ) -> BatchRow:
     record = entry.record
     if entry.is_skipped:
@@ -541,6 +577,7 @@ def _history_row(
             note=f"{record.account} already carries a row with reference {external_ref}",
         )
 
+    lots, note = _designate(entry, designations or {})
     return BatchRow(
         index=index,
         action="append",
@@ -560,15 +597,63 @@ def _history_row(
         fee_class=entry.fee_class,
         counter_account=entry.counter_account,
         taxes_withheld=entry.taxes_withheld,
-        # ADR 0017 §2a. The reconstruction solved every seeded basis under an
+        # ADR 0017 §2a. Without the custodian's word on which lots a sale
+        # consumed, the reconstruction solved every seeded basis under an
         # assumed FIFO relief; the ledger must relieve the same way or a block
         # solved for FIFO gets relieved spec-ID and yields a basis the solve
         # never computed. Written into the batch rather than left to the
         # account default so it is visible and a reviewer can change it -- and
-        # so that changing it here is understood to invalidate the solve.
-        relief_method=(ReliefMethod.FIFO if entry.txn_type in _CLOSING else None),
-        note=record.note,
+        # so that changing it here is understood to invalidate the solve. With
+        # the custodian's word (`lots`), the relief is specific identification
+        # of exactly those lots, and nothing is assumed.
+        relief_method=(
+            ReliefMethod.SPEC
+            if lots
+            else (ReliefMethod.FIFO if entry.txn_type in _CLOSING else None)
+        ),
+        lots=lots,
+        note=_join_notes(record.note, note),
     )
+
+
+def _designate(
+    entry: MappedTransaction, designations: _Designations
+) -> tuple[tuple[LotDesignation, ...], str | None]:
+    """The lots the custodian says this closing row consumed, or why not.
+
+    The report's lots for the sale must add up to the row's quantity: a
+    report that closes more or fewer units than the sale disposed of is
+    describing something else, and the row falls back to the assumed method
+    with the discrepancy written on it, where the reviewer reads it.
+    """
+    record = entry.record
+    if entry.txn_type not in _CLOSING or not record.identifier or not record.quantity:
+        return (), None
+    closed = designations.get((record.account, record.identifier, record.trade_date))
+    if not closed:
+        return (), None
+    quantity = abs(record.quantity)
+    reported = sum((lot.quantity for lot in closed), ZERO)
+    if reported != quantity:
+        return (), (
+            f"the realized report closes {reported} units of {record.identifier} on "
+            f"{record.trade_date.isoformat()} but this row disposes of {quantity}; "
+            f"the report is not used and the assumed relief method applies"
+        )
+    return (
+        tuple(
+            LotDesignation(
+                acquired=lot.acquired, quantity=lot.quantity, cost_basis=lot.cost_basis
+            )
+            for lot in sorted(closed, key=lambda lot: (lot.acquired, lot.quantity))
+        ),
+        None,
+    )
+
+
+def _join_notes(*notes: str | None) -> str | None:
+    present = [note for note in notes if note]
+    return "; ".join(present) if present else None
 
 
 def _magnitude(record: TransactionRecord) -> Decimal | None:
