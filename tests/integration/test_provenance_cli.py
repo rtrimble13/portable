@@ -455,3 +455,40 @@ def test_a_reinvested_dividend_opens_a_lot_and_leaves_cash_alone(
     aapl = next(r for r in rows if r["symbol"] == "AAPL")
     assert aapl["quantity"] == "100.5"
     assert aapl["cost_basis"] == "18600.00"  # 18,500 paid plus the 100 reinvested
+
+
+def test_a_capital_gain_distribution_is_recorded_by_its_character(
+    run_pt: CliRunner, held: Path
+) -> None:
+    created = run_pt(
+        "--port",
+        str(held),
+        "income",
+        "capital-gain",
+        "AAPL",
+        "-a",
+        "B",
+        "--amount",
+        "40.00",
+        "--term",
+        "long",
+        "--pay-date",
+        "2024-12-20",
+    ).ok()
+    assert created.data["type"] == "capital_gain_lt"
+
+    result = run_pt(
+        "--port",
+        str(held),
+        "income",
+        "capital-gain",
+        "AAPL",
+        "-a",
+        "B",
+        "--amount",
+        "40.00",
+        "--term",
+        "medium",
+        expect=2,
+    )
+    assert result.returncode == 2

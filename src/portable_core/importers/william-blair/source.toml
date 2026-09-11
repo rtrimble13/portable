@@ -1,0 +1,134 @@
+# William Blair -- the reference custodian of docs/broker-import.md §12.
+#
+# DRAFT, local only. The exports are real and are never committed; the
+# mapping files carry no amounts, positions, or account numbers.
+#
+# The custodian's spreadsheets are rendered to CSV by wb/convert.py: every
+# cell as text, dates as ISO, numbers as their shortest round-trip text, and
+# the account names of the holdings file re-cased to match the transaction
+# files ("BROKERAGE" -> "Brokerage"). Nothing else is transformed.
+
+broker = "william-blair"
+name = "William Blair"
+
+[format]
+# ISO after conversion; the settlement column keeps the custodian's own
+# m/d/Y text where it was text, and is ISO where the spreadsheet had typed it.
+dates = ["%Y-%m-%d", "%m/%d/%Y"]
+thousands = ","
+decimal_point = "."
+parentheses_negative = true
+strip = ["$"]
+# "-" is how this custodian writes "nothing here" in Price, Amount and
+# Commissions. Never a zero.
+blanks = ["", "-"]
+encoding = "utf-8-sig"
+
+# ADR 0013. Three cash vehicles: the bank deposit sweep (one ticker for the
+# brokerage, another for the retirement accounts), the Fidelity government
+# cash reserves fund, and the cash ledger itself, which the transaction file
+# names as an instrument on every fee, sweep and flow row.
+[cash_equivalents]
+default = ["CASH", "FDRXX", "QWBSQ", "QWBLQ", "SPAXX"]
+
+# The last two digits of the account number a transfer-to-cover note names.
+# Enough to tell the three accounts apart; nothing more is written down.
+[account_aliases]
+"48" = "IRA"
+"49" = "Roth IRA"
+"46" = "Brokerage"
+
+[documents.holdings]
+file = "holdings.csv"
+[documents.holdings.columns]
+as_of = "As Of Date"
+account = "Account"
+identifier = "Symbol"
+quantity = "Shares"
+market_value = "Market value"
+cost_basis = "Cost basis"
+acquired = "Open date"
+
+[documents.transactions]
+file = "transactions.csv"
+# The transaction rows carry a security *description* and no symbol.
+crosswalk = "instruments.toml"
+[documents.transactions.columns]
+trade_date = "Date"
+settlement_date = "Settlement date"
+account = "Account"
+activity = "Type"
+identifier = "Description"
+quantity = "Quantity"
+amount = "Amount"
+note = "Notes"
+
+# The custodian's realized gain and loss report at lot level. Optional, and
+# worth having: for every lot closed since the cutover it states when the lot
+# was acquired and what it cost, so a block disposed of after the cutover has
+# its basis asserted by the custodian rather than left unrecoverable.
+[documents.realized]
+file = "realized.csv"
+crosswalk = "instruments.toml"
+[documents.realized.columns]
+account = "Account name"
+identifier = "Description"
+acquired = "Open date"
+disposed = "Date"
+quantity = "Units"
+proceeds = "Market value"
+cost_basis = "Cost basis"
+term = "Group 1"
+
+# ── Capabilities ─────────────────────────────────────────────────────────────
+
+[[capability]]
+name = "cost_basis"
+document = "holdings"
+field = "cost_basis"
+check = "populated"
+
+[[capability]]
+name = "acquisition_date"
+document = "holdings"
+field = "acquired"
+check = "populated"
+# The cash lines carry no open date; every position does. The ratio only has
+# to clear the cash lines' share of the snapshot.
+min_ratio = 0.6
+
+[[capability]]
+name = "instrument_symbol"
+document = "holdings"
+field = "identifier"
+check = "matches"
+types = ["[A-Z0-9]{1,9}"]
+
+# Present as a column, invalid as data: on income rows it holds the ex-date,
+# on trades it is frequently before the trade date. Declared so that the
+# report says so, and so the column is not read.
+[[capability]]
+name = "settlement_date"
+document = "transactions"
+field = "settlement_date"
+check = "not_before_trade_date"
+
+[[capability]]
+name = "corporate_actions"
+document = "transactions"
+check = "activity_covers"
+types = ["split", "merger_stock"]
+
+[[capability]]
+name = "external_flows"
+document = "transactions"
+check = "activity_covers"
+types = ["deposit", "withdrawal"]
+
+# The three accounts were funded on 2022-05-18 (IRA, Roth, by ACAT) and
+# 2022-05-20 (brokerage, by deposit), and the history begins on those days.
+[[capability]]
+name = "history_to_inception"
+document = "transactions"
+check = "history_since"
+since = 2022-05-20

@@ -1,0 +1,604 @@
+# William Blair: the description the transaction export writes for each
+# security, and the symbol it means. Resolved from the holdings export where
+# the security is still held, from the custodian's own notes where they name
+# a ticker, and otherwise proposed and marked `note = "symbol to verify"`.
+# A name that is not here stops the import (docs/broker-import.md §6).
+
+[[instrument]]
+name = "AAON INC"
+symbol = "AAON"
+
+[[instrument]]
+name = "ABIOMED INC COM"
+symbol = "ABMD"
+
+[[instrument]]
+name = "ABIOMED INC COM USD0.01 TEDER FROM CUSIP 003654100"
+symbol = "ABMD"
+
+[[instrument]]
+name = "ACCENTURE PLC A"
+symbol = "ACN"
+
+[[instrument]]
+name = "ALPHABET INC A"
+symbol = "GOOGL"
+
+[[instrument]]
+name = "AMAZON.COM INC"
+symbol = "AMZN"
+
+[[instrument]]
+name = "AMERICAN EXPRESS CO"
+symbol = "AXP"
+
+[[instrument]]
+name = "AMETEK INC"
+symbol = "AME"
+
+[[instrument]]
+name = "AMG RIVER ROAD SMALL MID CAP VALUE I"
+symbol = "ARSMX"
+note = "symbol to verify"
+
+[[instrument]]
+name = "AON PLC"
+symbol = "AON"
+
+[[instrument]]
+name = "APPLE INC"
+symbol = "AAPL"
+
+[[instrument]]
+name = "APPLOVIN CORP"
+symbol = "APP"
+
+[[instrument]]
+name = "ARISTA NETWORKS INC COM"
+symbol = "ANET"
+
+[[instrument]]
+name = "ASML HOLDING NV"
+symbol = "ASML"
+
+[[instrument]]
+name = "BANK DEPOSIT SWEEP PROGRAM"
+symbol = "QWBLQ"
+
+[[instrument]]
+name = "BILL HOLDINGS INC COM"
+symbol = "BILL"
+
+[[instrument]]
+name = "BLACKROCK STRATEGIC INCOME OPPS INSTL"
+symbol = "BSIIX"
+
+[[instrument]]
+name = "BLACKSTONE GROUP INC. CLASS A"
+symbol = "BX"
+
+[[instrument]]
+name = "BOEING CO"
+symbol = "BA"
+
+[[instrument]]
+name = "BOOZ ALLEN HAMILTON HOLDING CORP"
+symbol = "BAH"
+
+[[instrument]]
+name = "BROADCOM INC COM"
+symbol = "AVGO"
+
+[[instrument]]
+name = "CACI INTERNATIONAL INC"
+symbol = "CACI"
+
+[[instrument]]
+name = "CASELLA WASTE SYSTEMS INC"
+symbol = "CWST"
+
+[[instrument]]
+name = "CASH"
+symbol = "CASH"
+
+[[instrument]]
+name = "CHARLES SCHWAB CORP"
+symbol = "SCHW"
+
+[[instrument]]
+name = "CHEVRON CORP"
+symbol = "CVX"
+
+[[instrument]]
+name = "CME GROUP INC CLASS A"
+symbol = "CME"
+
+[[instrument]]
+name = "COCA COLA CO"
+symbol = "KO"
+
+[[instrument]]
+name = "CONTRA ABIOMED INC COM"
+symbol = "003CVR016"
+
+[[instrument]]
+name = "COREWEAVE INC"
+symbol = "CRWV"
+
+[[instrument]]
+name = "COSTAR GROUP INC"
+symbol = "CSGP"
+
+[[instrument]]
+name = "COSTCO WHOLESALE CORP"
+symbol = "COST"
+
+[[instrument]]
+name = "CROWDSTRIKE HOLDINGS INC"
+symbol = "CRWD"
+
+[[instrument]]
+name = "CURTISS WRIGHT CORP"
+symbol = "CW"
+
+[[instrument]]
+name = "DEXCOM INC"
+symbol = "DXCM"
+
+[[instrument]]
+name = "DIAMONDBACK ENERGY INC COM"
+symbol = "FANG"
+
+[[instrument]]
+name = "DODGE & COX GLOBAL STOCK I"
+symbol = "DODWX"
+
+[[instrument]]
+name = "DODGE & COX INCOME I"
+symbol = "DODIX"
+
+[[instrument]]
+name = "DOUBLEVERIFY HOLDINGS INC"
+symbol = "DV"
+
+[[instrument]]
+name = "ECOLAB INC"
+symbol = "ECL"
+
+[[instrument]]
+name = "EDWARDS LIFESCIENCES CORP"
+symbol = "EW"
+
+[[instrument]]
+name = "ELI LILLY AND CO"
+symbol = "LLY"
+
+[[instrument]]
+name = "EVERPURE CLASS A"
+symbol = "P"
+
+[[instrument]]
+name = "EVOLENT HEALTH INC"
+symbol = "EVH"
+
+[[instrument]]
+name = "FASTENAL CO"
+symbol = "FAST"
+
+[[instrument]]
+name = "FIDELITY ADVISOR MID CAP VALUE Z"
+symbol = "FZAMX"
+note = "Class Z, converted from FSMVX in 2022; symbol to verify"
+
+[[instrument]]
+name = "FIDELITY DIVERSIFIED INTERNATIONAL"
+symbol = "FDIVX"
+
+[[instrument]]
+name = "FIDELITY FREEDOM 2040"
+symbol = "FFFFX"
+
+[[instrument]]
+name = "FIDELITY GOVERNMENT CASH RESERVES"
+symbol = "FDRXX"
+
+[[instrument]]
+name = "FIDELITY GOVERNMENT MMKT"
+symbol = "SPAXX"
+
+[[instrument]]
+name = "FIDELITY MID CAP VALUE"
+symbol = "FSMVX"
+
+[[instrument]]
+name = "FIDELITY REAL ESTATE INVESTMENT PORT"
+symbol = "FRESX"
+
+[[instrument]]
+name = "FLYWIRE CORPORATION COM VTG"
+symbol = "FLYW"
+
+[[instrument]]
+name = "GE VERNOVA INC"
+symbol = "GEV"
+
+[[instrument]]
+name = "GENERAC HOLDINGS INC"
+symbol = "GNRC"
+
+[[instrument]]
+name = "GLOBAL PAYMENTS INC"
+symbol = "GPN"
+
+[[instrument]]
+name = "GOLDMAN SACHS GQG PTNRS INTL OPPS INSTL"
+symbol = "GSIMX"
+
+[[instrument]]
+name = "GOLDMAN SACHS GQG PTNRS INTL OPPS R6"
+symbol = "GSIYX"
+
+[[instrument]]
+name = "GOLDMAN SACHS GROUP INC"
+symbol = "GS"
+
+[[instrument]]
+name = "GQG PARTNERS EMERGING MARKETS EQUITYINST"
+symbol = "GQGIX"
+
+[[instrument]]
+name = "GUIDEWIRE SOFTWARE INC COM"
+symbol = "GWRE"
+
+[[instrument]]
+name = "HAMLIN HIGH DIVIDEND EQUITY INSTL"
+symbol = "HHDFX"
+
+[[instrument]]
+name = "HOLOGIC INC"
+symbol = "HOLX"
+
+[[instrument]]
+name = "HOOD RIVER NEW OPPORTUNITIES INST"
+symbol = "HRNOX"
+
+[[instrument]]
+name = "INSULET CORP"
+symbol = "PODD"
+
+[[instrument]]
+name = "INTCNTL EXCHANGE"
+symbol = "ICE"
+
+[[instrument]]
+name = "INTERNATIONAL FLAVORS & FRAGRANCES INC"
+symbol = "IFF"
+
+[[instrument]]
+name = "INTUITIVE SURGICAL INC"
+symbol = "ISRG"
+
+[[instrument]]
+name = "INVESCO QQQ TRUST"
+symbol = "QQQ"
+
+[[instrument]]
+name = "IRHYTHM TECHNOLOGIES INC"
+symbol = "IRTC"
+
+[[instrument]]
+name = "ISHARES CORE 1 5 YEAR USD BOND ETF"
+symbol = "ISTB"
+
+[[instrument]]
+name = "ISHARES CORE MSCI TOTAL INTL STK ETF"
+symbol = "IXUS"
+
+[[instrument]]
+name = "ISHARES CORE S&P 500 ETF"
+symbol = "IVV"
+
+[[instrument]]
+name = "ISHARES CORE US AGGREGATE BOND ETF"
+symbol = "AGG"
+
+[[instrument]]
+name = "ISHARES IBONDS DEC 2022 TERM CORP ETF"
+symbol = "IBDN"
+
+[[instrument]]
+name = "ISHARES IBONDS DEC 2023 TERM CORP ETF"
+symbol = "IBDO"
+
+[[instrument]]
+name = "ISHARES INTERMEDIATE GOVT/CRDT BD ETF"
+symbol = "GVI"
+
+[[instrument]]
+name = "ISHARES MSCI ACWI ETF"
+symbol = "ACWI"
+
+[[instrument]]
+name = "ISHARES MSCI USA QUALITY FACTOR ETF"
+symbol = "QUAL"
+
+[[instrument]]
+name = "ISHARES MSCI USA VALUE FACTOR ETF"
+symbol = "VLUE"
+
+[[instrument]]
+name = "ISHARES RUSSELL 2000 ETF"
+symbol = "IWM"
+
+[[instrument]]
+name = "ISHARES RUSSELL 2500 ETF"
+symbol = "SMMD"
+
+[[instrument]]
+name = "ISHARES RUSSELL 3000 ETF"
+symbol = "IWV"
+
+[[instrument]]
+name = "JOHNSON & JOHNSON"
+symbol = "JNJ"
+
+[[instrument]]
+name = "LEGALZOOM.COM INC. COM"
+symbol = "LZ"
+
+[[instrument]]
+name = "LINDE PLC"
+symbol = "LIN"
+
+[[instrument]]
+name = "LOCKHEED MARTIN CORP"
+symbol = "LMT"
+
+[[instrument]]
+name = "LOWE S COMPANIES INC"
+symbol = "LOW"
+
+[[instrument]]
+name = "MARAVAI LIFESCIENCES HOLDINGS INC COM CL A"
+symbol = "MRVI"
+
+[[instrument]]
+name = "MICROSOFT CORP"
+symbol = "MSFT"
+
+[[instrument]]
+name = "MONDAY.COM LIMITED SHS"
+symbol = "MNDY"
+
+[[instrument]]
+name = "MONGODB INC CL A"
+symbol = "MDB"
+
+[[instrument]]
+name = "MONTROSE ENVIRONMENTAL GROUP INC"
+symbol = "MEG"
+
+[[instrument]]
+name = "NEOGEN CORP"
+symbol = "NEOG"
+
+[[instrument]]
+name = "NEXTERA ENERGY INC"
+symbol = "NEE"
+
+[[instrument]]
+name = "NOVANTA INC COM"
+symbol = "NOVT"
+
+[[instrument]]
+name = "NVIDIA CORP"
+symbol = "NVDA"
+
+[[instrument]]
+name = "O REILLY AUTOMOTIVE INC"
+symbol = "ORLY"
+
+[[instrument]]
+name = "ORACLE CORP"
+symbol = "ORCL"
+
+[[instrument]]
+name = "PAYPAL HOLDINGS INC"
+symbol = "PYPL"
+
+[[instrument]]
+name = "PFIZER INC"
+symbol = "PFE"
+
+[[instrument]]
+name = "PHREESIA, INC"
+symbol = "PHR"
+
+[[instrument]]
+name = "PIMCO INCOME INSTL"
+symbol = "PIMIX"
+
+[[instrument]]
+name = "POOL CORP"
+symbol = "POOL"
+
+[[instrument]]
+name = "PORTILLOS CL A ORD"
+symbol = "PTLO"
+
+[[instrument]]
+name = "POWERSCHOOL HOLDINGS CL A ORD"
+symbol = "PWSC"
+
+[[instrument]]
+name = "RB GLOBAL INC"
+symbol = "RBA"
+
+[[instrument]]
+name = "RBC BEARINGS INC"
+symbol = "RBC"
+
+[[instrument]]
+name = "RESMED INC"
+symbol = "RMD"
+
+[[instrument]]
+name = "ROCKWELL AUTOMATION INC"
+symbol = "ROK"
+
+[[instrument]]
+name = "RYAN SPECIALTY GROUP HLDGS A"
+symbol = "RYAN"
+
+[[instrument]]
+name = "S&P GLOBAL INC"
+symbol = "SPGI"
+
+[[instrument]]
+name = "SERVICENOW INC"
+symbol = "NOW"
+
+[[instrument]]
+name = "SERVICETITAN INC"
+symbol = "TTAN"
+
+[[instrument]]
+name = "SHERWIN WILLIAMS CO"
+symbol = "SHW"
+
+[[instrument]]
+name = "SPOTIFY TECHNOLOGY SA"
+symbol = "SPOT"
+
+[[instrument]]
+name = "SPROUT SOCIAL INC"
+symbol = "SPT"
+
+[[instrument]]
+name = "STARBUCKS CORP"
+symbol = "SBUX"
+
+[[instrument]]
+name = "STATE STREET SPDR S&P 500 ETF TRUST"
+symbol = "SPY"
+
+[[instrument]]
+name = "STERLING INFRASTRUCTURE INC"
+symbol = "STRL"
+
+[[instrument]]
+name = "STRYKER CORP"
+symbol = "SYK"
+
+[[instrument]]
+name = "T. ROWE PRICE SPECTRUM MOD GR ALLC"
+symbol = "TRSGX"
+note = "symbol to verify"
+
+[[instrument]]
+name = "T. ROWE PRICE SPECTRUM MOD GR ALLC I"
+symbol = "TRPUX"
+note = "Class I, converted from TRSGX in 2022; symbol to verify"
+
+[[instrument]]
+name = "TAIWAN SEMICONDUCTOR MANUFACTURING CO LTD"
+symbol = "TSM"
+
+[[instrument]]
+name = "TEMA S&P 500 HIST WGHT ETF STRAT"
+symbol = "DSPY"
+
+[[instrument]]
+name = "THE DESCARTES SYSTEMS GROUP INC"
+symbol = "DSGX"
+
+[[instrument]]
+name = "THE HOME DEPOT INC"
+symbol = "HD"
+
+[[instrument]]
+name = "TOAST INC"
+symbol = "TOST"
+
+[[instrument]]
+name = "TRANSDIGM GROUP INC"
+symbol = "TDG"
+
+[[instrument]]
+name = "TRIMBLE INC"
+symbol = "TRMB"
+
+[[instrument]]
+name = "TWILIO INC"
+symbol = "TWLO"
+
+[[instrument]]
+name = "TWIST BIOSCIENCE CORP"
+symbol = "TWST"
+
+[[instrument]]
+name = "UBER TECHNOLOGIES INC"
+symbol = "UBER"
+
+[[instrument]]
+name = "UL SOLUTIONS INC"
+symbol = "ULS"
+
+[[instrument]]
+name = "VERTIV HOLDINGS CO"
+symbol = "VRT"
+
+[[instrument]]
+name = "VISA INC CLASS A"
+symbol = "V"
+
+[[instrument]]
+name = "WAL MART STORES INC"
+symbol = "WMT"
+
+[[instrument]]
+name = "WALT DISNEY COMPANY"
+symbol = "DIS"
+
+[[instrument]]
+name = "WASTE MANAGEMENT INC"
+symbol = "WM"
+
+[[instrument]]
+name = "WATSCO INC"
+symbol = "WSO"
+
+[[instrument]]
+name = "WESTINGHOUSE AIR BRAKE TECHNOLOGIES CORP"
+symbol = "WAB"
+
+[[instrument]]
+name = "WILLIAM BLAIR LARGE CAP GROWTH I"
+symbol = "LCGFX"
+note = "Class I of the fund now held as LCGJX; symbol to verify"
+
+[[instrument]]
+name = "WILLIAM BLAIR LARGE CAP GROWTH R6"
+symbol = "LCGJX"
+
+[[instrument]]
+name = "WILLIAM BLAIR SMALL MID CAP CORE R6"
+symbol = "WSMRX"
+note = "symbol to verify"
+
+[[instrument]]
+name = "WILLIAM BLAIR SML MD CP CR CL I MF"
+symbol = "WSMDX"
+note = "Class I, converted to R6 in 2023; symbol to verify"
+
+[[instrument]]
+name = "WORKDAY INC"
+symbol = "WDAY"
+
+[[instrument]]
+name = "XOMETRY INC"
+symbol = "XMTR"
+
+[[instrument]]
+name = "ZOETIS INC"
+symbol = "ZTS"

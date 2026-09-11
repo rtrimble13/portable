@@ -501,3 +501,40 @@ def test_an_incremental_batch_states_the_period_it_covers() -> None:
     rows = [_hashed(date(2025, 6, 1), "1"), _hashed(date(2025, 3, 1), "2")]
     extract = _incremental([_mapped(r, TransactionType.DIVIDEND) for r in rows])
     assert extract.batch.source.period == (date(2025, 3, 1), date(2025, 6, 1))
+
+
+def test_the_seed_carries_the_blocks_earliest_acquisition_date() -> None:
+    """Stated where the custodian states one; the lot then ages from it."""
+    held = HoldingRecord(
+        as_of=date(2026, 6, 30),
+        account="Main",
+        identifier="AAPL",
+        quantity=Decimal("30"),
+        is_cash_equivalent=False,
+        cost_basis=Decimal("6000.00"),
+        acquired=date(2018, 6, 14),
+    )
+    extract = _extract([held, SWEEP], [_txn(date(2025, 6, 1), None, None, "1.00")], [])
+    seed = next(r for r in extract.batch.rows if r.symbol == "AAPL")
+    assert seed.original_acquired_date == date(2018, 6, 14)
+
+
+def test_the_two_parts_of_a_block_get_distinct_references_and_the_accounted_part_first() -> (
+    None
+):
+    receipt = TransactionRecord(
+        trade_date=CUTOVER,
+        account="Main",
+        activity="Receipt",
+        identifier="AAPL",
+        quantity=Decimal("100"),
+        amount=Decimal("0"),
+        source_row={},
+        value=Decimal("20000.00"),
+    )
+    sale = _txn(date(2025, 3, 1), "AAPL", "-30", "6600.00", "Sold")
+    extract = _extract([SWEEP], [receipt, sale], [_mapped(sale, TransactionType.SELL)])
+    seeds = [r for r in extract.batch.rows if r.symbol == "AAPL" and "cutover" in r.rule]
+    assert [s.quantity for s in seeds] == [Decimal("30"), Decimal("70")]
+    assert seeds[0].external_ref != seeds[1].external_ref
+    assert seeds[1].source_row["part"] == "vanished"

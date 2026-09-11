@@ -171,7 +171,11 @@ def build_batch(
         )
 
     rows: list[BatchRow] = []
-    for position in sorted(reconstruction.positions, key=lambda p: (p.account, p.identifier)):
+    # The accounted-for part of a block before its vanished part, so that FIFO
+    # relieves the lots the custodian's own report says were sold first.
+    for position in sorted(
+        reconstruction.positions, key=lambda p: (p.account, p.identifier, p.part)
+    ):
         rows.append(
             _seed_row(
                 position,
@@ -326,6 +330,8 @@ def _seed_row(
     """One `transfer_in` for a position held before the ledger begins."""
     price = prices[position.identifier]
     provenance = {"price_source": price_source} if price_source else {}
+    if position.part:
+        provenance["part"] = position.part
     return BatchRow(
         index=index,
         action="append",
@@ -353,11 +359,14 @@ def _seed_row(
         # The FLOW amount: market value on the cutover date. Not the basis.
         amount=price * position.quantity,
         original_basis=position.cost_basis,
-        # Absent where the reconstruction recovered none. The lot then dates at
-        # the cutover, which makes holding-period character conservative by
-        # construction -- everything seeded reads short-term until a year past
-        # it, which is the safe direction to be wrong in (ADR 0018).
-        original_acquired_date=None,
+        # The block's earliest acquisition where the custodian states one, and
+        # absent otherwise. Absent, the lot dates at the cutover, which makes
+        # holding-period character conservative by construction -- everything
+        # seeded reads short-term until a year past it, the safe direction to
+        # be wrong in (ADR 0018). Stated, it is the block's *earliest* date and
+        # biases the other way, which is why the reconstruction enumerates the
+        # dispositions within a year of the cutover for review (ADR 0017 §4).
+        original_acquired_date=position.acquired,
         basis_source=position.basis_source,
         basis_assumption=position.assumption,
         note=f"seeded at the cutover {cutover.isoformat()}",
@@ -440,7 +449,9 @@ def _seed_ref(position: CutoverPosition, cutover: date) -> str:
     duplicate rather than doubling the position -- which is the whole reason
     references are synthesized at all.
     """
-    material = "|".join([position.account, position.identifier, cutover.isoformat(), "cutover"])
+    material = "|".join(
+        [position.account, position.identifier, cutover.isoformat(), "cutover", position.part]
+    )
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:_REF_WIDTH]
     return f"cutover:{digest}"
 

@@ -1,0 +1,238 @@
+# William Blair activity map.
+#
+# Every activity string the three transaction exports contain, and nothing
+# else. Rows are unsigned magnitudes with the direction in the Type, except
+# the transfer-to-cover legs, which the custodian signs from its own side.
+#
+# Every mapping here that rested on a judgment was put to the owner and
+# decided; the one remaining assumption is marked ASSUMPTION.
+
+# ── trades ───────────────────────────────────────────────────────────────────
+
+[[activity]]
+match = "Buy"
+txn_type = "buy"
+quantity = "positive"
+cash = "negative"
+
+[[activity]]
+match = "Sell"
+txn_type = "sell"
+quantity = "negative"
+cash = "positive"
+
+# ── income ───────────────────────────────────────────────────────────────────
+
+[[activity]]
+match = "Income (Dividend)"
+txn_type = "dividend"
+quantity = "none"
+cash = "positive"
+
+# The reinvestment rows carry the units bought as Quantity. Where the
+# instrument is a cash vehicle the units *are* the cash (ADR 0013) and the
+# row is plain income; where it is a fund the row is income plus a lot.
+[[activity]]
+match = "Income (Reinvested Dividend)"
+identifiers = "cash_equivalents"
+txn_type = "dividend"
+quantity = "none"
+cash = "positive"
+
+[[activity]]
+match = "Income (Reinvested Dividend)"
+identifiers = "securities"
+txn_type = "dividend_reinvest"
+quantity = "positive"
+# The distribution is spent on the units in the same event: no cash moves,
+# and the amount column is what the units cost.
+cash = "none"
+value = "positive"
+
+[[activity]]
+match = "Income (Reinvested Interest)"
+txn_type = "interest"
+quantity = "none"
+cash = "positive"
+
+# Fund capital-gain distributions, by the character the fund reported.
+[[activity]]
+match = "Income (Long Term Gain)"
+txn_type = "capital_gain_lt"
+quantity = "none"
+cash = "positive"
+
+[[activity]]
+match = "Income (Short Term Gain)"
+txn_type = "capital_gain_st"
+quantity = "none"
+cash = "positive"
+
+[[activity]]
+match = "Income (Reinvested Long Term Gain)"
+txn_type = "capital_gain_lt"
+quantity = "positive"
+cash = "none"
+value = "positive"
+
+# A withholding row, one per foreign dividend, same day and same security.
+# It belongs on the dividend row as `taxes_withheld`, not in the ledger as a
+# fee (withholding is tax, not a fee -- PORT-GIPS-A06). None of it is
+# reclaimed, per the owner.
+[[activity]]
+match = "Expense (Foreign Tax Paid)"
+attach = "taxes_withheld"
+quantity = "none"
+cash = "negative"
+
+# ── fees, and the cross-account settlement (ADR 0014) ───────────────────────
+
+[[activity]]
+match = "Expense (Management Fee)"
+txn_type = "fee"
+fee_class = "external_mgmt_fee"
+quantity = "none"
+cash = "negative"
+
+# Positive in the paying brokerage account, negative in the receiving IRA or
+# Roth. The receiving leg and the receiving account's own fee are dated three
+# days before the paying leg in 30 of 34 quarters, hence the window. The note
+# names the receiving account by number; the pattern captures only its last
+# two digits, which [account_aliases] in source.toml resolves.
+[[activity]]
+match = "Expense (Transfer to Cover Management Fee)"
+txn_type = "transfer"
+quantity = "none"
+cash = "inverted"
+[activity.pair]
+counterpart = 'FEE FOR \S*?(?P<account>\d{2}) '
+window_days = 5
+unpaired_out = "withdrawal"
+
+# ── sweep bookkeeping (ADR 0013) ─────────────────────────────────────────────
+
+[[activity]]
+match = "MoneyTransfer"
+skip = true
+identifiers = "cash_equivalents"
+reason = "a movement between the cash ledger and a sweep vehicle; cash either way (ADR 0013)"
+
+# ── flows ────────────────────────────────────────────────────────────────────
+
+# Seventeen rows, several meanings, told apart by the note. Money from outside
+# -- an ACAT, a wire, an EFT, a check, a contribution the custodian received
+# directly -- is a deposit. A contribution the brokerage funded is one movement
+# reported in both accounts: the brokerage's Withdrawal and the IRA's Deposit
+# carry the same "VS WEF-" note naming the other account, and pair into one
+# transfer (ADR 0007). A brokerage Withdrawal naming a household account that
+# is not in this portfolio has no counterpart and is money that left.
+[[activity]]
+match = "Deposit"
+note = "^ACAT RECEIVE|^ACAT RES\\.CREDIT|^CHECK RECEIVED|^CASH CONTRB|^EFT FUNDS RECEIVED|^WR\\d+$"
+txn_type = "deposit"
+quantity = "none"
+cash = "positive"
+
+[[activity]]
+match = "Deposit"
+note = "^VS WEF-"
+txn_type = "transfer"
+quantity = "none"
+cash = "positive"
+[activity.pair]
+counterpart = 'WEF-\d{4}(?P<account>\d{2})-'
+window_days = 3
+unpaired_in = "deposit"
+
+# A free-credit interest adjustment on the IRA's cash: interest, not a
+# contribution. ASSUMPTION to confirm with the owner.
+[[activity]]
+match = "Deposit"
+note = "^MISCELLANEOUS ADJ EARNINGS ADJUSTMENT"
+txn_type = "interest"
+quantity = "none"
+cash = "positive"
+
+[[activity]]
+match = "Withdrawal"
+note = "^VS WEF-"
+txn_type = "transfer"
+quantity = "none"
+cash = "negative"
+[activity.pair]
+counterpart = 'WEF-\d{4}(?P<account>\d{2})-'
+window_days = 3
+unpaired_out = "withdrawal"
+
+# ── securities crossing the boundary, and corporate actions ─────────────────
+
+# The ACAT receipts that funded the IRA and the Roth on 2022-05-18, and the
+# incoming side of two share-class conversions and one remediation. Keyed on
+# the note.
+[[activity]]
+match = "Receipt"
+note = "ACAT RECEIVE"
+txn_type = "transfer_in"
+quantity = "positive"
+cash = "none"
+# The custodian's valuation of the shares on the day they arrived: the flow,
+# never the basis (ADR 0015).
+value = "positive"
+
+[[activity]]
+match = "Receipt"
+note = "SHR CLASS CONVERSION|SHR REMED"
+txn_type = "merger_stock"
+quantity = "positive"
+cash = "none"
+value = "positive"
+
+[[activity]]
+match = "Transfer"
+note = "SHR CLASS CONVERSION"
+txn_type = "merger_stock"
+quantity = "negative"
+cash = "none"
+value = "positive"
+
+# `Credit` is four things. "CB RESET" rows restate each lot of a conversion
+# or tender and duplicate the row that carries the total, so they are memo
+# lines; "Rename" rows restate lots under a new name the crosswalk already
+# resolves; the rows with an empty note, "SHR CLASS CONVERSION" and "REORG
+# ADJUSTMENT" are the incoming side of a conversion, a tender, or a contra
+# receipt, with no outgoing side in the file. Corporate actions are refused
+# by the batch and recorded with the typed commands.
+[[activity]]
+match = "Credit"
+note = "CB RESET"
+skip = true
+reason = "a per-lot basis memo restating the conversion or tender row that carries the total"
+
+[[activity]]
+match = "Credit"
+note = "Rename"
+skip = true
+reason = "a per-lot memo of a rename; the crosswalk resolves both names to one symbol"
+
+[[activity]]
+match = "Credit"
+note = "SHR CLASS CONVERSION|^$"
+txn_type = "merger_stock"
+quantity = "positive"
+cash = "none"
+value = "positive"
+
+# The contra/CVR receipt from a tender: shares with no stated value and a
+# genuine zero basis (BasisAdjustmentReason.FORCED_ZERO_BASIS).
+[[activity]]
+match = "Credit"
+note = "REORG ADJUSTMENT"
+txn_type = "merger_stock"
+quantity = "positive"
+cash = "none"
+
+[[activity]]
+match = "Split"
+txn_type = "split"
+quantity = "positive"
+cash = "none"

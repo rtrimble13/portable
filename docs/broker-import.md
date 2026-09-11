@@ -79,6 +79,15 @@ the errors that leave every quantity right and the money wrong.
 Any custodian can produce both. If yours cannot, the problem is upstream of
 `portable`.
 
+A third document is optional and worth asking for: a **realized gain and loss
+report at lot level** (`[documents.realized]` — account · instrument ·
+acquired · disposed · quantity · cost basis, optionally proceeds and term).
+For every lot the custodian closed since the cutover it states when the lot
+was acquired and what it cost, which is exactly the basis a reconstruction
+cannot otherwise recover for a block disposed of after the cutover (§7). With
+it, such a block is `custodian_asserted` rather than `unavailable`, and no
+relief method is assumed anywhere, because the report says which lots went.
+
 ---
 
 ## 3. What more buys you
@@ -263,6 +272,14 @@ account's first ledger date skipped under `ledger:before-inception`, because
 such a row is inside the seeded position already. Run against an account with
 no rows, it refuses too — there is nothing to extend, and leaving the opening
 positions out would be a silently short portfolio. Neither shape is inferred.
+
+**Corporate actions are imported in segments.** Format version 1 refuses a
+split or a conversion, and a sale after one depends on it, so the history is
+extracted `--until` the day before each such action and committed, the action
+is recorded with its typed command (`pt ca split`, `pt ca convert`,
+`pt ca spinoff`), and the next segment is extracted `--incremental`. Rows left
+for a later segment are counted in the extract's report, never silently
+absent, and every segment is its own reviewed batch.
 
 **Identity.** Where the custodian supplies `TRANSACTION_ID`, that is the
 `external_ref`. Where it does not, `external_ref` is `sha256` over the source
@@ -540,7 +557,7 @@ to take on trust.
 | Position untouched since the cutover: basis today less every subsequent addition | `reconstructed` |
 | Block partly survives: solved backwards under the account's assumed relief method | `estimated` |
 | Nothing of the block survives — sold out, or fully consumed | `unavailable` |
-| Read from a lot-detail report, where `LOT_DETAIL` is present | `custodian_asserted` |
+| The custodian's realized report closes the block's lots and states their cost (§2, the optional third document) | `custodian_asserted` |
 
 One formula serves the first two rows. The custodian's present basis is
 `surviving_block * unit_cost + cost of every surviving addition`, so the block's
@@ -645,10 +662,12 @@ at the end.
   covered including the corporate-action and options commands that build rows
   directly. `pt import` scans an export's ledger before its first insert.
 
+- ~~Fund capital-gain distributions have no transaction type.~~ `capital_gain_lt`
+  and `capital_gain_st` (schema 0004): income for flow purposes, the character
+  is the type, and either may carry reinvested units. `pt income capital-gain`.
+
 **Open.**
 
-- **Fund capital-gain distributions have no transaction type.** Income for flow
-  purposes, taxed by character.
 - **Wash sales are not detected** until `v0.2`; `pt tax` says so on its face.
 
 ---
@@ -670,6 +689,10 @@ at the end.
    incomplete: a position that cannot be priced makes the return unanswerable
    rather than approximate.
 8. `pt validate`, `pt rebuild`, `pt validate` again.
+
+Where the history contains corporate actions, step 5 runs in segments: extract
+`--until` the day before each one, commit, record the action with its typed
+command, and continue `--incremental` (§5).
 
 **Every update after that** is the same loop with one flag: export the
 custodian's current window, `pt import broker <adapter> -o update.json
@@ -755,13 +778,16 @@ subset was coerced under an ambiguous day/month reading. *Generalises:* read eve
 cell as text, never let a spreadsheet library infer a date (invariant 6), and
 validate before declaring the capability.
 
-**One activity word, several events.** `Credit` is a symbol change in three rows
-and a share-class conversion in a fourth, both lot-preserving, both with **no
-matching debit anywhere in the file**, both emitted one row per existing lot.
-*Generalises, and is grammar:* the activity map keys on the activity **and** a
-note pattern (§6). The events themselves are corporate actions, refused by the
-batch and recorded with `pt ca symbol-change`, which matches the incoming
-quantity against the open lots and refuses when they do not reconcile.
+**One activity word, several events.** `Credit` is a per-lot basis memo, a
+rename, the incoming side of a share-class conversion, a tender, and a contra
+receipt — the conversions with **no matching debit anywhere in the file**, and
+the memos emitted one row per existing lot beside the row that carries the
+total. *Generalises, and is grammar:* the activity map keys on the activity
+**and** a note pattern (§6); the memo rows are skips with a reason and the
+renames are skips because the crosswalk already resolves both names to one
+symbol. The conversions themselves are corporate actions, refused by the batch
+and recorded with `pt ca convert`, which exchanges every open lot for the
+stated units with basis, acquisition date and holding period carried.
 
 **Split ratios in prose.** `… SHARE-RATIO: 1:4.0`, with `Quantity` holding the
 shares *added*. A split is a corporate action, which the batch refuses by name

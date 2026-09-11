@@ -21,7 +21,11 @@ from decimal import Decimal
 import pytest
 
 from portable_core.domain.enums import BasisSource
-from portable_core.domain.import_records import HoldingRecord, TransactionRecord
+from portable_core.domain.import_records import (
+    ClosedLotRecord,
+    HoldingRecord,
+    TransactionRecord,
+)
 from portable_core.errors import ValidationError
 from portable_core.services.reconstruction import reconstruct
 
@@ -435,3 +439,140 @@ def test_rows_after_the_snapshot_are_not_rolled_back_and_are_named() -> None:
     finding = next(f for f in result.findings if f.kind == "after_snapshot")
     assert "1 row(s) are dated after the snapshot (2026-06-30)" in finding.detail
     assert "2026-07-01" in finding.detail
+
+
+# ── the custodian's own lot-level report ─────────────────────────────────────
+
+
+def _closed(
+    acquired: date, disposed: date, quantity: str, basis: str, symbol: str = "AAPL"
+) -> ClosedLotRecord:
+    return ClosedLotRecord(
+        account="Main",
+        identifier=symbol,
+        acquired=acquired,
+        disposed=disposed,
+        quantity=Decimal(quantity),
+        cost_basis=Decimal(basis),
+        source_row={},
+    )
+
+
+def test_a_block_sold_out_after_the_cutover_carries_the_basis_the_custodian_asserts() -> None:
+    """ADR 0017 §2b's `unavailable` case, resolved by evidence: the realized
+    report says what the lots cost, so nothing has to be seeded at market
+    value and disclosed as no basis at all."""
+    sale = _txn(date(2025, 6, 1), "AAPL", "-30", "6000.00")
+    lots = [
+        _closed(date(2019, 3, 1), date(2025, 6, 1), "20", "1000.00"),
+        _closed(date(2021, 8, 9), date(2025, 6, 1), "10", "900.00"),
+    ]
+    result = reconstruct([SWEEP], [sale], cutover=CUTOVER, closed_lots=lots)
+    block = next(p for p in result.positions if p.identifier == "AAPL")
+    assert block.basis_source is BasisSource.CUSTODIAN_ASSERTED
+    assert block.cost_basis == Decimal("1900.00")
+    assert block.acquired == date(2019, 3, 1)
+    assert not block.still_held
+
+
+def test_a_partly_sold_block_combines_asserted_lots_with_the_surviving_basis() -> None:
+    """The disposed part is what the report says it cost; the surviving part
+    is the custodian's present basis less the additions still held. No relief
+    method is assumed anywhere."""
+    sale = _txn(date(2025, 6, 1), "AAPL", "-10", "2000.00")
+    buy = _txn(date(2025, 9, 1), "AAPL", "5", "-1100.00")
+    lots = [_closed(date(2020, 1, 1), date(2025, 6, 1), "10", "700.00")]
+    # Holding today: 25 = (30 - 10) + 5; stated basis 3100 = 2000 surviving + 1100 added.
+    result = reconstruct(
+        [_hold("AAPL", "25", "3100.00"), SWEEP], [sale, buy], cutover=CUTOVER, closed_lots=lots
+    )
+    block = next(p for p in result.positions if p.identifier == "AAPL")
+    assert block.quantity == Decimal("30")
+    assert block.basis_source is BasisSource.CUSTODIAN_ASSERTED
+    assert block.cost_basis == Decimal("2700.00")  # 700 asserted + (3100 - 1100)
+    assert "realized report" in (block.assumption or "")
+
+
+def test_a_report_that_does_not_cover_the_disposals_is_named_and_not_used() -> None:
+    sale = _txn(date(2025, 6, 1), "AAPL", "-30", "6000.00")
+    lots = [_closed(date(2019, 3, 1), date(2025, 6, 1), "12", "600.00")]
+    result = reconstruct([SWEEP], [sale], cutover=CUTOVER, closed_lots=lots)
+    block = next(p for p in result.positions if p.identifier == "AAPL")
+    assert block.basis_source is BasisSource.UNAVAILABLE
+    assert any(f.kind == "realized_mismatch" for f in result.findings)
+
+
+def test_lots_sold_that_were_bought_after_the_cutover_assert_nothing_about_the_block() -> None:
+    buy = _txn(date(2025, 3, 1), "AAPL", "10", "-2000.00")
+    sale = _txn(date(2025, 6, 1), "AAPL", "-10", "2200.00")
+    lots = [_closed(date(2025, 3, 1), date(2025, 6, 1), "10", "2000.00")]
+    result = reconstruct(
+        [_hold("AAPL", "30", "1500.00"), SWEEP], [buy, sale], cutover=CUTOVER, closed_lots=lots
+    )
+    block = next(p for p in result.positions if p.identifier == "AAPL")
+    assert block.basis_source is BasisSource.RECONSTRUCTED
+    assert block.cost_basis == Decimal("1500.00")
+
+
+def test_the_block_carries_the_snapshots_earliest_acquisition_date() -> None:
+    held = HoldingRecord(
+        as_of=date(2026, 6, 30),
+        account="Main",
+        identifier="AAPL",
+        quantity=Decimal("30"),
+        is_cash_equivalent=False,
+        cost_basis=Decimal("1500.00"),
+        acquired=date(2018, 6, 14),
+    )
+    result = reconstruct(
+        [held, SWEEP], [_txn(date(2025, 6, 1), None, None, "1.00")], cutover=CUTOVER
+    )
+    assert next(p for p in result.positions if p.identifier == "AAPL").acquired == date(
+        2018, 6, 14
+    )
+
+
+def test_units_that_arrived_by_the_cutover_and_never_left_are_seeded_separately() -> None:
+    """A share-class conversion the custodian reports with no outgoing side:
+    the receipt says 100 arrived, the roll-back accounts for the 30 that were
+    sold, and the 70 that were converted have no row. They are seeded on their
+    own, on the `unavailable` rung, so `pt ca convert` has something to
+    convert and the account's beginning value is not short by them."""
+    receipt = TransactionRecord(
+        trade_date=CUTOVER,
+        account="Main",
+        activity="Receipt",
+        identifier="OLD",
+        quantity=Decimal("100"),
+        amount=Decimal("0"),
+        source_row={},
+        value=Decimal("1000.00"),
+    )
+    sale = _txn(date(2025, 3, 1), "OLD", "-30", "330.00")
+    result = reconstruct([SWEEP], [receipt, sale], cutover=CUTOVER)
+    blocks = [p for p in result.positions if p.identifier == "OLD"]
+    assert [(b.quantity, b.part, b.basis_source) for b in blocks] == [
+        (Decimal("30"), "", BasisSource.UNAVAILABLE),
+        (Decimal("70"), "vanished", BasisSource.UNAVAILABLE),
+    ]
+    assert any(f.kind == "vanished_without_disposal" for f in result.findings)
+
+
+def test_a_receipt_the_roll_back_fully_accounts_for_seeds_nothing_extra() -> None:
+    receipt = TransactionRecord(
+        trade_date=CUTOVER,
+        account="Main",
+        activity="Receipt",
+        identifier="AAPL",
+        quantity=Decimal("30"),
+        amount=Decimal("0"),
+        source_row={},
+        value=Decimal("6000.00"),
+    )
+    result = reconstruct(
+        [_hold("AAPL", "30", "6000.00"), SWEEP],
+        [receipt, _txn(date(2025, 6, 1), None, None, "1.00")],
+        cutover=CUTOVER,
+    )
+    assert [p.part for p in result.positions if p.identifier == "AAPL"] == [""]
+    assert not any(f.kind == "vanished_without_disposal" for f in result.findings)

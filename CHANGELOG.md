@@ -161,6 +161,45 @@ Two rules specific to this repository:
     writes that table yet; the incompleteness is carried in the output instead.
   - 22 tests.
 
+- **`pt import broker --until DATE`**, so a history with corporate actions is
+  imported in segments: extract through the day before a split or a
+  conversion, commit, record the action with its typed command, and continue
+  `--incremental`. Rows left for a later segment are counted in the report.
+- **The optional third document: a realized gain and loss report at lot
+  level.** `[documents.realized]` in `source.toml`. For every lot the
+  custodian closed since the cutover it states the acquisition date and the
+  cost, so a cutover block disposed of after the cutover is seeded
+  `custodian_asserted` with the custodian's own basis rather than
+  `unavailable` with none (ADR 0017 §2b, now supplied), and a block whose
+  post-cutover sales the report attributes entirely to later purchases is
+  proved untouched rather than assumed consumed under FIFO. A report that
+  does not cover what the history disposed of is named in a finding and not
+  used. The seed row now carries the block's earliest acquisition date where
+  the custodian states one (the snapshot's open date, or the report's).
+- **Fund capital-gain distributions.** `TransactionType.CAPITAL_GAIN_LT` and
+  `CAPITAL_GAIN_ST`: income for flow purposes (never external,
+  `PORT-GIPS-B02`), and the character is the type, because a distribution
+  summed into dividends is a wrong number in a taxable account's tax year.
+  Either may carry reinvested units, as a reinvested dividend does.
+  `pt income capital-gain SYMBOL --term long|short`, and the batch carries
+  both. Closes the open item in `docs/broker-import.md` §10.
+
+- **`pt ca convert SYMBOL --to NEW --units N -a ACCOUNT`** — a share-class
+  conversion, a fund merger, a stock-for-stock exchange the custodian reports
+  as one incoming row. Every open lot becomes one new lot carrying exactly its
+  basis, its acquisition date, its holding period and its provenance rung;
+  nothing is realised. The units received are what the custodian stated, in
+  total, allocated across the old lots in proportion, so the exchange ratio is
+  derived from the two counts and never assumed. Recorded as a `merger_stock`
+  ledger row plus a `merger` reference row, and reproduced by `pt rebuild`.
+
+### Schema
+
+- **`schema_version` 3 → 4**, migration `0004_capital_gain_distributions`.
+  A rebuild of `"transaction"` (ADR 0019) that changes only the `txn_type`
+  CHECK, admitting `capital_gain_lt` and `capital_gain_st`. Every row is
+  preserved and nothing else moves.
+
 ### Changed
 
 - **A synthesized `external_ref` no longer depends on the row's position in

@@ -344,3 +344,28 @@ def test_withholding_on_a_reinvestment_is_refused_not_netted(
             taxes_withheld=D("15.00"),
             reinvested_units=D("0.5"),
         )
+
+
+def test_a_capital_gain_distribution_keeps_its_character_and_may_take_units(
+    repos: Repositories, taxable_account: Account, aapl: Instrument
+) -> None:
+    """The character is the type: a long-term distribution is never a
+    dividend. Taken in units it is income and a lot, like a reinvested
+    dividend; taken in cash it is income."""
+    service = TradingService(repos)
+    cash = service.record_income(
+        taxable_account, aapl, TransactionType.CAPITAL_GAIN_LT, D("40.00"), PAY
+    )
+    assert cash.txn_type is TransactionType.CAPITAL_GAIN_LT
+    assert cash.net_cash_effect == D("40.00") and cash.quantity is None
+
+    units = service.record_income(
+        taxable_account,
+        aapl,
+        TransactionType.CAPITAL_GAIN_ST,
+        D("40.00"),
+        PAY,
+        reinvested_units=D("0.2"),
+    )
+    assert units.txn_type is TransactionType.CAPITAL_GAIN_ST
+    assert units.net_cash_effect == D("0.00") and units.quantity == D("0.2")

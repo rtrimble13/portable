@@ -27,7 +27,7 @@ from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
 
-from portable_core.decimals import money_context, quantize_money, to_text
+from portable_core.decimals import money_context, quantize_money, quantize_quantity, to_text
 from portable_core.domain.enums import (
     BasisSource,
     LegRole,
@@ -66,6 +66,7 @@ _ACTION_TYPE_FOR: dict[TransactionType, str] = {
     TransactionType.SPLIT: "split",
     TransactionType.REVERSE_SPLIT: "reverse_split",
     TransactionType.SPINOFF: "spinoff",
+    TransactionType.MERGER_STOCK: "merger",
 }
 _CORPORATE_ACTIONS = frozenset(_ACTION_TYPE_FOR)
 
@@ -298,6 +299,10 @@ class ReplayEngine:
             TransactionType.BUY,
             TransactionType.SELL_SHORT,
             TransactionType.DIVIDEND_REINVEST,
+            # A distribution taken in units is income and a lot in one row:
+            # the gross is what the units cost, and no cash moved.
+            TransactionType.CAPITAL_GAIN_LT,
+            TransactionType.CAPITAL_GAIN_ST,
             # ADR 0015. A lot-creating path that consumes no cash: the cash
             # movement above was '0.00' and nothing else here has to change,
             # which is the whole argument for a transaction type rather than a
@@ -545,6 +550,8 @@ class ReplayEngine:
             self._replay_split(txn, action)
         elif txn.txn_type is TransactionType.SPINOFF:
             self._replay_spinoff(txn, action, counters)
+        elif txn.txn_type is TransactionType.MERGER_STOCK:
+            self._replay_conversion(txn, action, counters)
 
     def _replay_split(self, txn: Transaction, action: CorporateAction) -> None:
         assert txn.instrument_id is not None
@@ -635,6 +642,85 @@ class ReplayEngine:
         self._refresh_leg(leg_id, txn.trade_date)
         for parent_leg in {lot.leg_id for lot in lots}:
             self._refresh_leg(parent_leg, txn.trade_date)
+
+    def _replay_conversion(
+        self, txn: Transaction, action: CorporateAction, counters: dict[str, int]
+    ) -> None:
+        """Reapply a share-class exchange: every old lot becomes a new one.
+
+        The units delivered are on the reference row (`target_ratio` times the
+        quantity converted, recorded by `pt ca convert`), so the replay lands
+        on exactly the count the custodian stated rather than a rounding of it.
+        """
+        assert txn.instrument_id is not None
+        if action.target_instrument_id is None or action.target_ratio is None:
+            return
+        lots = self.repos.lots.open_lots(
+            txn.account_id, txn.instrument_id, as_of=txn.trade_date
+        )
+        if not lots:
+            return
+        with money_context():
+            total_old = sum((lot.remaining_quantity for lot in lots), ZERO)
+            target_units = quantize_quantity(total_old * action.target_ratio)
+        if txn.quantity is not None:
+            # The ledger row carries the delivered count exactly; the ratio on
+            # the reference row is its derivation, kept for the record.
+            target_units = abs(txn.quantity)
+
+        position_id, leg_id = self._leg_for_target(
+            txn.account_id, action.target_instrument_id, txn, counters
+        )
+        outcome = self.corporate_actions.convert(
+            lots,
+            target_units=target_units,
+            ex_date=txn.trade_date,
+            target_instrument_id=action.target_instrument_id,
+            target_leg_id=leg_id,
+            target_position_id=position_id,
+            txn_id=txn.txn_id,
+        )
+        for closed, adjustment in zip(outcome.closed_lots, outcome.adjustments, strict=True):
+            self.repos.lots.update_after_disposition(closed)
+            self.repos.lots.add_adjustment(replace(adjustment, adjustment_id=0))
+        for opened in outcome.new_lots:
+            self.repos.lots.add(replace(opened, lot_id=0))
+            counters["lots"] += 1
+        self._refresh_leg(leg_id, txn.trade_date)
+        for old_leg in {lot.leg_id for lot in lots}:
+            self._refresh_leg(old_leg, txn.trade_date)
+
+    def _leg_for_target(
+        self, account_id: int, instrument_id: int, txn: Transaction, counters: dict[str, int]
+    ) -> tuple[int, int]:
+        """The leg the converted units land on: the existing one, or a new position."""
+        leg = self.repos.positions.leg_for(account_id, instrument_id)
+        if leg is not None:
+            return leg.position_id, leg.leg_id
+        position_id = self.repos.positions.add(
+            Position(
+                position_id=0,
+                account_id=account_id,
+                strategy_type=StrategyType.SINGLE,
+                opened_date=txn.trade_date,
+                status=PositionStatus.OPEN,
+                opened_txn_id=txn.txn_id,
+                note=txn.note,
+            )
+        )
+        counters["positions"] += 1
+        leg_id = self.repos.positions.add_leg(
+            PositionLeg(
+                leg_id=0,
+                position_id=position_id,
+                instrument_id=instrument_id,
+                role=LegRole.LONG_STOCK,
+                sign=1,
+                quantity=ZERO,
+                opened_date=txn.trade_date,
+            )
+        )
+        return position_id, leg_id
 
     def _refresh_leg(self, leg_id: int, on: date) -> None:
         """Re-materialize a leg's quantity from its lots, and close it if empty.

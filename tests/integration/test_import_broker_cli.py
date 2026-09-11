@@ -387,3 +387,55 @@ def test_an_incremental_extract_into_an_empty_account_is_refused_by_name(
     assert error["code"] == "PT-E-IMPORT-SOURCE"
     assert error["context"]["accounts"] == ["Brokerage", "Roth IRA"]
     assert "without --incremental" in error["message"]
+
+
+def test_until_leaves_later_rows_for_a_later_extract(
+    run_pt: CliRunner, portfolio: Path, tmp_path: Path
+) -> None:
+    """Importing in segments around a corporate action: the history stops at
+    the day before it, and the rows left behind are counted, never lost."""
+    batch = tmp_path / "first.json"
+    data = (
+        run_pt(
+            "--port",
+            str(portfolio),
+            "import",
+            "broker",
+            str(EXAMPLE),
+            "-o",
+            str(batch),
+            "--until",
+            "2025-03-31",
+        )
+        .ok()
+        .data
+    )
+    assert data["until"] == "2025-03-31"
+    assert data["deferred"] == 3  # the April sale, the June interest, the June distribution
+    rows = json.loads(batch.read_text(encoding="utf-8"))["rows"]
+    assert max(r.get("trade_date") or "" for r in rows) == "2025-03-31"
+    run_pt("--port", str(portfolio), "import", "batch", str(batch)).ok()
+
+    rest = tmp_path / "rest.json"
+    data = (
+        run_pt(
+            "--port",
+            str(portfolio),
+            "import",
+            "broker",
+            str(EXAMPLE),
+            "-o",
+            str(rest),
+            "--incremental",
+        )
+        .ok()
+        .data
+    )
+    assert data["appended"] == 3
+    run_pt("--port", str(portfolio), "import", "batch", str(rest)).ok()
+    assert (
+        run_pt("--port", str(portfolio), "reconcile", "--against", str(_stated(tmp_path)))
+        .ok()
+        .data["breaks"]
+        == 0
+    )

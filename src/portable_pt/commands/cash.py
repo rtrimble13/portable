@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from enum import StrEnum
 from typing import Annotated
 
 import typer
@@ -390,6 +391,53 @@ def dividend(
         ref=ref,
         withheld=withheld,
         reclaimable=reclaimable,
+        reinvest_units=reinvest_units,
+    )
+
+
+class GainTerm(StrEnum):
+    """The character a fund reports on a capital-gain distribution."""
+
+    LONG = "long"
+    SHORT = "short"
+
+
+@income_app.command(name="capital-gain")
+def capital_gain(
+    symbol: Annotated[str, typer.Argument()],
+    account: Annotated[str, typer.Option("--account", "-a")],
+    amount: Annotated[str, typer.Option("--amount", help="Total distributed.")],
+    term: Annotated[
+        GainTerm,
+        typer.Option("--term", help="The character the fund reported."),
+    ],
+    ex_date: Annotated[str | None, typer.Option("--ex-date")] = None,
+    pay_date: Annotated[str | None, typer.Option("--pay-date")] = None,
+    note: Annotated[str | None, typer.Option("--note")] = None,
+    ref: RefOpt = None,
+    reinvest_units: Annotated[
+        str | None,
+        typer.Option("--reinvest-units", help="Units bought with the distribution."),
+    ] = None,
+) -> None:
+    """Record a fund's capital-gain distribution.
+
+    A fund that realised gains inside itself passes them to holders, and they
+    are taxed by the character the fund reports -- long or short -- rather
+    than as a dividend. Income for flow purposes, never an external flow.
+    """
+    _income(
+        TransactionType.CAPITAL_GAIN_LT
+        if term is GainTerm.LONG
+        else TransactionType.CAPITAL_GAIN_ST,
+        symbol,
+        account,
+        amount,
+        ex_date=ex_date,
+        pay_date=pay_date,
+        qualified=None,
+        note=note,
+        ref=ref,
         reinvest_units=reinvest_units,
     )
 

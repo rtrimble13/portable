@@ -60,6 +60,8 @@ MATRIX: list[tuple[str, TransactionType, bool, bool]] = [
     ("Cash dividend received", TransactionType.DIVIDEND, False, False),
     ("Bond coupon received", TransactionType.COUPON, False, False),
     ("Reinvested dividend", TransactionType.DIVIDEND_REINVEST, False, False),
+    ("Long-term capital-gain distribution", TransactionType.CAPITAL_GAIN_LT, False, False),
+    ("Short-term capital-gain distribution", TransactionType.CAPITAL_GAIN_ST, False, False),
     ("Return of capital", TransactionType.RETURN_OF_CAPITAL, False, False),
     ("Fee paid", TransactionType.FEE, False, False),
     ("Margin interest paid", TransactionType.MARGIN_INTEREST, False, False),
@@ -149,6 +151,8 @@ def test_income_is_never_an_external_flow_at_any_level() -> None:
     income_types = [
         TransactionType.DIVIDEND,
         TransactionType.DIVIDEND_REINVEST,
+        TransactionType.CAPITAL_GAIN_LT,
+        TransactionType.CAPITAL_GAIN_ST,
         TransactionType.COUPON,
         TransactionType.INTEREST,
         TransactionType.RETURN_OF_CAPITAL,

@@ -50,18 +50,24 @@ __all__ = [
 
 HOLDINGS: Final = "holdings"
 TRANSACTIONS: Final = "transactions"
+#: Optional: a realized gain and loss report at lot level, which lets a
+#: cutover block disposed of after the cutover carry the basis the custodian
+#: asserts for it rather than none (ADR 0017 §2b).
+REALIZED: Final = "realized"
 
 #: The minimum dataset, as columns. ADR 0018 §1 states it as two documents;
 #: this is the same statement at the field level, and it is what refuses.
 REQUIRED_COLUMNS: Final[dict[str, tuple[str, ...]]] = {
     HOLDINGS: ("account", "identifier", "quantity"),
     TRANSACTIONS: ("trade_date", "account", "activity", "amount"),
+    REALIZED: ("account", "identifier", "acquired", "disposed", "quantity", "cost_basis"),
 }
 
 #: Everything else a document may carry. Most map one-to-one onto a capability.
 OPTIONAL_COLUMNS: Final[dict[str, tuple[str, ...]]] = {
     HOLDINGS: ("as_of", "market_value", "cost_basis", "acquired", "lot_id"),
     TRANSACTIONS: ("identifier", "quantity", "settlement_date", "external_id", "note"),
+    REALIZED: ("proceeds", "term"),
 }
 
 
@@ -280,13 +286,18 @@ def _documents(path: Path, raw: Any) -> dict[str, DocumentSpec]:
             f"the snapshot is the reconciliation anchor and the history is the "
             f"ledger, and neither substitutes for the other (ADR 0018 §1)",
         )
-    unknown = sorted(set(raw) - {HOLDINGS, TRANSACTIONS})
+    unknown = sorted(set(raw) - {HOLDINGS, TRANSACTIONS, REALIZED})
     if unknown:
         raise _invalid(
             path,
-            f"declares unknown document(s) {', '.join(unknown)}. The adapter reads exactly two",
+            f"declares unknown document(s) {', '.join(unknown)}. The adapter reads "
+            f"{HOLDINGS}, {TRANSACTIONS}, and optionally {REALIZED}",
         )
-    return {kind: _document(path, kind, raw[kind]) for kind in (HOLDINGS, TRANSACTIONS)}
+    return {
+        kind: _document(path, kind, raw[kind])
+        for kind in (HOLDINGS, TRANSACTIONS, REALIZED)
+        if kind in raw
+    }
 
 
 def _document(path: Path, kind: str, raw: Any) -> DocumentSpec:

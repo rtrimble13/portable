@@ -457,14 +457,24 @@ class TradingService:
         self.check_external_ref(account, external_ref)
         self._check_withholding(gross, taxes_withheld, withholding_reclaimable)
 
-        reinvested = txn_type is TransactionType.DIVIDEND_REINVEST
+        # A dividend taken in units is its own type; a capital-gain
+        # distribution keeps its type (the character is the type) and carries
+        # the units on the row.
+        may_reinvest = txn_type in {
+            TransactionType.DIVIDEND_REINVEST,
+            TransactionType.CAPITAL_GAIN_LT,
+            TransactionType.CAPITAL_GAIN_ST,
+        }
+        reinvested = txn_type is TransactionType.DIVIDEND_REINVEST or (
+            may_reinvest and reinvested_units is not None
+        )
         if reinvested and (reinvested_units is None or reinvested_units <= 0):
             raise ValidationError(
                 "a reinvested distribution states the units it bought",
                 remedy="Pass the units received; the gross is what they cost.",
                 amount=str(gross),
             )
-        if not reinvested and reinvested_units is not None:
+        if not may_reinvest and reinvested_units is not None:
             raise ValidationError(
                 f"units are stated on a {txn_type.value}, which reinvests nothing",
                 remedy="Use dividend_reinvest for a distribution taken in units.",

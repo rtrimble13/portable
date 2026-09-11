@@ -34,7 +34,7 @@ from portable_core.decimals import (
     quantize_money,
     quantize_quantity,
 )
-from portable_core.domain.enums import BasisAdjustmentReason, HoldingPeriod
+from portable_core.domain.enums import BasisAdjustmentReason, HoldingPeriod, LotStatus
 from portable_core.domain.models import BasisAdjustment, Lot
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import E_FRACTIONAL_SHARE, E_INVARIANT_BROKEN
@@ -51,6 +51,15 @@ class SplitResult:
     #: Fractional shares the account cannot hold, which the caller must resolve
     #: -- normally cash in lieu, which is a disposition, not a rounding.
     fractional_shares: Decimal = ZERO
+
+
+@dataclass(frozen=True, slots=True)
+class ConversionResult:
+    """What a share-class exchange did: the lots closed, and the lots opened."""
+
+    closed_lots: tuple[Lot, ...]
+    new_lots: tuple[Lot, ...]
+    adjustments: tuple[BasisAdjustment, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,6 +315,134 @@ class CorporateActionEngine:
             spun_lots=tuple(spun_lots),
             adjustments=tuple(adjustments),
             fractional_shares=fractional_total,
+        )
+
+    # ── conversions ──────────────────────────────────────────────────────────
+
+    def convert(
+        self,
+        lots: list[Lot],
+        *,
+        target_units: Decimal,
+        ex_date: date,
+        target_instrument_id: int,
+        target_leg_id: int,
+        target_position_id: int,
+        txn_id: int | None = None,
+        next_lot_id: int = 1,
+        next_adjustment_id: int = 1,
+    ) -> ConversionResult:
+        """Exchange every open lot of one instrument for units of another.
+
+        A share-class conversion, a fund merger, a stock-for-stock exchange
+        the custodian reports as one incoming row: the same claim under a new
+        name and a new unit count. Three rules, each of which changes a tax
+        figure if got wrong:
+
+        1. **Total basis is unchanged**, lot by lot. Each old lot becomes one
+           new lot carrying exactly its adjusted basis; no gain or loss is
+           realised, and no disposition is recorded.
+        2. **The holding period and the acquisition date carry over.** The new
+           lot is not newly acquired; a conversion of a five-year-old lot is
+           long-term on day one, and ``open_date`` keeps the original date so
+           that lot ageing reads the truth.
+        3. **The basis provenance carries over.** A block seeded at cutover as
+           `estimated` does not become `derived` by changing its name.
+
+        ``target_units`` is what the custodian says arrived, in total; it is
+        allocated across the old lots in proportion to their remaining
+        quantity, with the rounding residue on the last lot so the total is
+        exactly what was stated. The exchange ratio is therefore derived from
+        the two counts, never assumed.
+        """
+        if target_units <= 0:
+            raise ValidationError(
+                f"a conversion delivers a positive number of units, got {target_units}",
+                code=E_INVARIANT_BROKEN,
+            )
+        if not lots:
+            raise ValidationError(
+                "there are no open lots to convert",
+                code=E_INVARIANT_BROKEN,
+            )
+        total_old = sum((lot.remaining_quantity for lot in lots), ZERO)
+        if total_old <= 0:
+            raise ValidationError("the lots to convert hold nothing", code=E_INVARIANT_BROKEN)
+
+        closed: list[Lot] = []
+        opened: list[Lot] = []
+        adjustments: list[BasisAdjustment] = []
+        allocated = ZERO
+        lot_id = next_lot_id
+        adjustment_id = next_adjustment_id
+
+        for offset, lot in enumerate(lots):
+            last = offset == len(lots) - 1
+            with money_context():
+                if last:
+                    new_quantity = target_units - allocated
+                else:
+                    new_quantity = quantize_quantity(
+                        target_units * lot.remaining_quantity / total_old
+                    )
+                allocated += new_quantity
+                per_unit = lot.adjusted_cost_basis / new_quantity if new_quantity else ZERO
+
+            closed.append(
+                replace(
+                    lot,
+                    remaining_quantity=ZERO,
+                    adjusted_cost_basis=ZERO,
+                    status=LotStatus.CLOSED,
+                    closed_date=ex_date,
+                )
+            )
+            adjustments.append(
+                BasisAdjustment(
+                    adjustment_id=adjustment_id,
+                    lot_id=lot.lot_id,
+                    adjustment_date=ex_date,
+                    reason=BasisAdjustmentReason.MERGER,
+                    basis_delta=-lot.adjusted_cost_basis,
+                    quantity_delta=-lot.remaining_quantity,
+                    holding_period_start_after=lot.holding_period_start,
+                    txn_id=txn_id,
+                    note=(
+                        f"converted into {new_quantity} units of instrument "
+                        f"{target_instrument_id}; basis and holding period carried, "
+                        f"nothing realised"
+                    ),
+                )
+            )
+            adjustment_id += 1
+            if new_quantity > 0:
+                opened.append(
+                    Lot(
+                        lot_id=lot_id,
+                        leg_id=target_leg_id,
+                        position_id=target_position_id,
+                        instrument_id=target_instrument_id,
+                        account_id=lot.account_id,
+                        # Not ex_date: the claim is not newly acquired.
+                        open_date=lot.open_date,
+                        open_txn_id=txn_id or lot.open_txn_id,
+                        original_quantity=new_quantity,
+                        remaining_quantity=new_quantity,
+                        per_unit_price=per_unit,
+                        original_cost_basis=lot.adjusted_cost_basis,
+                        adjusted_cost_basis=lot.adjusted_cost_basis,
+                        holding_period_start=lot.holding_period_start,
+                        basis_source=lot.basis_source,
+                        basis_assumption=lot.basis_assumption,
+                        is_short=lot.is_short,
+                    )
+                )
+                lot_id += 1
+
+        return ConversionResult(
+            closed_lots=tuple(closed),
+            new_lots=tuple(opened),
+            adjustments=tuple(adjustments),
         )
 
     # ── return of capital ────────────────────────────────────────────────────

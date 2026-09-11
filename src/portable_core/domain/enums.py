@@ -171,6 +171,13 @@ class TransactionType(enum.StrEnum):
     RETURN_OF_CAPITAL = "return_of_capital"
     COUPON = "coupon"
     ACCRUAL_INCOME = "accrual_income"
+    # A fund's distribution of gains it realised inside itself, taxed by its
+    # character rather than as a dividend. Two members because the character
+    # decides the rate: one type with a flag that could default would be a
+    # dividend by accident. Either may carry reinvested units, as
+    # DIVIDEND_REINVEST does.
+    CAPITAL_GAIN_LT = "capital_gain_lt"
+    CAPITAL_GAIN_ST = "capital_gain_st"
     # corporate actions
     SPLIT = "split"
     REVERSE_SPLIT = "reverse_split"

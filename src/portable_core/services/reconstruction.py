@@ -42,7 +42,11 @@ from decimal import Decimal
 from typing import Final
 
 from portable_core.domain.enums import BasisSource
-from portable_core.domain.import_records import HoldingRecord, TransactionRecord
+from portable_core.domain.import_records import (
+    ClosedLotRecord,
+    HoldingRecord,
+    TransactionRecord,
+)
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import E_IMPORT_SOURCE_INVALID
 
@@ -85,6 +89,19 @@ class CutoverPosition:
     still_held: bool
     added_after: Decimal
     disposed_after: Decimal
+    #: Which part of a block this is. Empty for the block the roll-back
+    #: accounts for; ``"vanished"`` for units the history shows arriving on or
+    #: before the cutover and never leaving -- most often a share-class
+    #: conversion whose outgoing side the custodian did not report. Seeded
+    #: separately so the conversion can be recorded against it, on its own
+    #: rung, and so the reference of each seed stays distinct.
+    part: str = ""
+    #: The block's earliest acquisition, where the custodian states one: the
+    #: holdings snapshot's open date, or the earliest closed lot of the block.
+    #: ADR 0017 §4: this is the block's *earliest* date and biases toward
+    #: long-term, which is why dispositions within a year of the cutover are
+    #: enumerated for review rather than trusted to it.
+    acquired: date | None = None
 
     @property
     def needs_cutover_price(self) -> bool:
@@ -182,7 +199,9 @@ class Reconstruction:
             (
                 p.cost_basis
                 for p in self.positions
-                if p.cost_basis is not None and p.basis_source is BasisSource.RECONSTRUCTED
+                if p.cost_basis is not None
+                and p.basis_source
+                in {BasisSource.RECONSTRUCTED, BasisSource.CUSTODIAN_ASSERTED}
             ),
             ZERO,
         )
@@ -194,6 +213,7 @@ def reconstruct(
     transactions: Sequence[TransactionRecord],
     *,
     cutover: date | None = None,
+    closed_lots: Sequence[ClosedLotRecord] = (),
 ) -> Reconstruction:
     """Roll the history back from the snapshot to the state before it begins.
 
@@ -201,6 +221,11 @@ def reconstruct(
     is ADR 0017 §1's definition and the only one the evidence supports. It is
     overridable because a later cutover is a legitimate choice -- it trades
     track record for precision -- and because the tests need to exercise both.
+
+    ``closed_lots`` is the custodian's realized gain and loss report at lot
+    level, where one exists. A block disposed of after the cutover then has
+    its basis *asserted* by the custodian -- the closed lots acquired on or
+    before the cutover say what it cost -- instead of being unrecoverable.
     """
     if not transactions:
         raise ValidationError(
@@ -239,7 +264,17 @@ def reconstruct(
     after = [t for t in transactions if boundary < t.trade_date <= as_of]
     beyond = [t for t in transactions if t.trade_date > as_of]
 
-    positions, opened, findings, held_keys = _positions(holdings, after)
+    positions, opened, mutable_findings, held_keys = _positions(
+        holdings, after, [c for c in closed_lots if c.disposed > boundary], boundary
+    )
+    positions = _with_vanished(
+        positions,
+        holdings,
+        [t for t in transactions if t.trade_date <= boundary],
+        mutable_findings,
+        boundary,
+    )
+    findings: tuple[ReconstructionFinding, ...] = tuple(mutable_findings)
     if beyond:
         findings = (
             *findings,
@@ -271,11 +306,14 @@ def reconstruct(
 
 
 def _positions(
-    holdings: Sequence[HoldingRecord], after: Sequence[TransactionRecord]
+    holdings: Sequence[HoldingRecord],
+    after: Sequence[TransactionRecord],
+    closed_lots: Sequence[ClosedLotRecord],
+    cutover: date,
 ) -> tuple[
     tuple[CutoverPosition, ...],
     tuple[tuple[str, str], ...],
-    tuple[ReconstructionFinding, ...],
+    list[ReconstructionFinding],
     frozenset[tuple[str, str]],
 ]:
     """Roll every (account, instrument) pair back and classify its basis."""
@@ -289,6 +327,9 @@ def _positions(
         if txn.identifier is None or txn.quantity is None:
             continue  # a cash event: no position to roll back
         moves.setdefault((txn.account, txn.identifier), []).append(txn)
+    closed: dict[tuple[str, str], list[ClosedLotRecord]] = {}
+    for lot in closed_lots:
+        closed.setdefault((lot.account, lot.identifier), []).append(lot)
 
     positions: list[CutoverPosition] = []
     opened: list[tuple[str, str]] = []
@@ -304,6 +345,27 @@ def _positions(
         disposed = -sum((t.quantity for t in rows if t.quantity and t.quantity < 0), ZERO)
         at_cutover = now - added + disposed
 
+        if ZERO < at_cutover <= SUBSHARE and (added > ZERO or disposed > ZERO):
+            # The mirror image of the negative residue below: the history
+            # explains the whole position except a fraction of a unit, which is
+            # the custodian's own rounding between transaction and holding
+            # precisions. Seeding it would put a 0.004-unit block, priced and
+            # basis-laddered, into the ledger for nothing.
+            findings.append(
+                ReconstructionFinding(
+                    account=account,
+                    identifier=identifier,
+                    kind="subshare_residue",
+                    detail=(
+                        f"rolls back to {at_cutover}, within a share of zero, with "
+                        f"{added} added and {disposed} disposed since: the custodian "
+                        f"states transaction quantities and holdings to different "
+                        f"precisions. Treated as opened after the cutover"
+                    ),
+                )
+            )
+            opened.append(key)
+            continue
         if at_cutover <= ZERO:
             if at_cutover < -SUBSHARE:
                 # The completeness check. A holding that rolls back below zero
@@ -351,15 +413,93 @@ def _positions(
                 holding=holding,
                 rows=rows,
                 findings=findings,
+                closed=closed.get(key, []),
+                cutover=cutover,
             )
         )
 
     return (
         tuple(positions),
         tuple(opened),
-        tuple(findings),
+        findings,
         frozenset((p.account, p.identifier) for p in positions),
     )
+
+
+def _with_vanished(
+    positions: tuple[CutoverPosition, ...],
+    holdings: Sequence[HoldingRecord],
+    before: Sequence[TransactionRecord],
+    findings: list[ReconstructionFinding],
+    cutover: date,
+) -> tuple[CutoverPosition, ...]:
+    """Units the history shows arriving by the cutover and never leaving.
+
+    Where the export reaches back to the day the account was funded, the rows
+    on or before the cutover are the custodian's own statement of what was
+    held on it, and the roll-back from the snapshot is the cross-check. When
+    the roll-back accounts for less, the difference left the account without
+    a row -- a share-class conversion whose outgoing side the custodian did
+    not report is the usual case -- and it has to be seeded, or the conversion
+    can never be recorded and the account's beginning value is short by it.
+
+    Seeded as its own block on the `unavailable` rung: nothing anchors its
+    basis, and a value at cutover market is not a basis claim (ADR 0017 §2b).
+    """
+    arrived: dict[tuple[str, str], Decimal] = {}
+    for txn in before:
+        if txn.identifier is None or txn.quantity is None:
+            continue
+        key = (txn.account, txn.identifier)
+        arrived[key] = arrived.get(key, ZERO) + txn.quantity
+    if not arrived:
+        return positions
+
+    cash_like = {(h.account, h.identifier) for h in holdings if h.is_cash_equivalent}
+    accounted = {(p.account, p.identifier): p.quantity for p in positions}
+    extra: list[CutoverPosition] = []
+    for key, quantity in sorted(arrived.items()):
+        if key in cash_like or quantity <= ZERO:
+            continue
+        gap = quantity - accounted.get(key, ZERO)
+        if gap <= SUBSHARE:
+            continue
+        account, identifier = key
+        findings.append(
+            ReconstructionFinding(
+                account=account,
+                identifier=identifier,
+                kind="vanished_without_disposal",
+                detail=(
+                    f"the history shows {quantity} arriving by the cutover but the "
+                    f"roll-back from the snapshot accounts for {accounted.get(key, ZERO)}: "
+                    f"{gap} left the account with no row. Most often a share-class "
+                    f"conversion whose outgoing side the custodian did not report; "
+                    f"seeded separately so it can be recorded with `pt ca convert`"
+                ),
+            )
+        )
+        extra.append(
+            CutoverPosition(
+                account=account,
+                identifier=identifier,
+                quantity=gap,
+                basis_source=BasisSource.UNAVAILABLE,
+                cost_basis=None,
+                assumption=(
+                    f"{gap} units arrived by the cutover {cutover.isoformat()} and "
+                    f"neither were sold nor are held today: they left without a row. "
+                    f"Seeded at cutover market value so the arithmetic closes and a "
+                    f"conversion can be recorded against them; that value is not a "
+                    f"basis claim (ADR 0017 §2b)"
+                ),
+                still_held=False,
+                added_after=ZERO,
+                disposed_after=ZERO,
+                part="vanished",
+            )
+        )
+    return positions + tuple(extra)
 
 
 def _classify(
@@ -372,6 +512,8 @@ def _classify(
     holding: HoldingRecord | None,
     rows: Sequence[TransactionRecord],
     findings: list[ReconstructionFinding],
+    closed: Sequence[ClosedLotRecord] = (),
+    cutover: date | None = None,
 ) -> CutoverPosition:
     """Which rung of the ladder this block's basis sits on, and why.
 
@@ -384,6 +526,24 @@ def _classify(
     still_held = holding is not None and holding.quantity > ZERO
     surviving = at_cutover - disposed  # FIFO: disposals consume the block first
     added_cost = _cost_of_additions(rows)
+    acquired = holding.acquired if holding is not None else None
+
+    if closed and cutover is not None:
+        asserted = _asserted(
+            account=account,
+            identifier=identifier,
+            at_cutover=at_cutover,
+            added=added,
+            disposed=disposed,
+            added_cost=added_cost,
+            holding=holding,
+            still_held=still_held,
+            closed=closed,
+            cutover=cutover,
+            findings=findings,
+        )
+        if asserted is not None:
+            return asserted
 
     if not still_held or surviving <= ZERO:
         # No anchor. Today's basis constrains the block only through what
@@ -411,6 +571,7 @@ def _classify(
             still_held=still_held,
             added_after=added,
             disposed_after=disposed,
+            acquired=acquired,
         )
 
     if holding is None or holding.cost_basis is None:
@@ -432,6 +593,7 @@ def _classify(
             still_held=True,
             added_after=added,
             disposed_after=disposed,
+            acquired=acquired,
         )
 
     block_basis = (holding.cost_basis - added_cost) / surviving * at_cutover
@@ -467,6 +629,7 @@ def _classify(
             still_held=True,
             added_after=added,
             disposed_after=disposed,
+            acquired=acquired,
         )
 
     if disposed == ZERO:
@@ -485,6 +648,7 @@ def _classify(
             still_held=True,
             added_after=added,
             disposed_after=disposed,
+            acquired=acquired,
         )
 
     return CutoverPosition(
@@ -503,6 +667,157 @@ def _classify(
         still_held=True,
         added_after=added,
         disposed_after=disposed,
+        acquired=acquired,
+    )
+
+
+def _asserted(
+    *,
+    account: str,
+    identifier: str,
+    at_cutover: Decimal,
+    added: Decimal,
+    disposed: Decimal,
+    added_cost: Decimal,
+    holding: HoldingRecord | None,
+    still_held: bool,
+    closed: Sequence[ClosedLotRecord],
+    cutover: date,
+    findings: list[ReconstructionFinding],
+) -> CutoverPosition | None:
+    """The custodian's own lot-level report, where it covers the block.
+
+    The report says, for every lot closed after the cutover, when it was
+    acquired and what it cost. Lots acquired on or before the cutover are the
+    block's; their basis is the custodian's assertion of what the disposed
+    part cost, and the surviving part carries the custodian's present basis
+    less the cost of the additions that survive. Nothing is assumed about the
+    relief method: the report says which lots went.
+
+    Used only where the report accounts for everything the history disposed
+    of. A report that covers less is reported as a mismatch and the ordinary
+    ladder applies; a partial assertion would be an approximation wearing an
+    exact label.
+    """
+    block_lots = [c for c in closed if c.acquired <= cutover]
+    added_lots = [c for c in closed if c.acquired > cutover]
+    sold_block = sum((c.quantity for c in block_lots), ZERO)
+    sold_added = sum((c.quantity for c in added_lots), ZERO)
+    if abs(sold_block + sold_added - disposed) > SUBSHARE:
+        findings.append(
+            ReconstructionFinding(
+                account=account,
+                identifier=identifier,
+                kind="realized_mismatch",
+                detail=(
+                    f"the realized report closes {sold_block + sold_added} units after "
+                    f"the cutover but the history disposes of {disposed}; the report "
+                    f"is not used for this block and the ordinary ladder applies"
+                ),
+            )
+        )
+        return None
+    block_sold_basis = sum((c.cost_basis for c in block_lots), ZERO)
+    added_sold_basis = sum((c.cost_basis for c in added_lots), ZERO)
+    surviving = at_cutover - sold_block
+    earliest = holding.acquired if holding is not None else None
+    if block_lots:
+        earliest = min([c.acquired for c in block_lots] + ([earliest] if earliest else []))
+
+    if not block_lots:
+        # Everything sold since the cutover was bought since the cutover: the
+        # report proves the block untouched, where FIFO would have assumed it
+        # consumed first. Its basis is then the custodian's present basis less
+        # the additions still held -- the top rung's formula, with the report
+        # rather than an assumption saying which lots went.
+        if not still_held or holding is None or holding.cost_basis is None:
+            return None
+        untouched = holding.cost_basis - (added_cost - added_sold_basis)
+        if untouched < ZERO:
+            return None
+        return CutoverPosition(
+            account=account,
+            identifier=identifier,
+            quantity=at_cutover,
+            basis_source=BasisSource.RECONSTRUCTED,
+            cost_basis=untouched,
+            assumption=(
+                f"the custodian's realized report closes only lots acquired after the "
+                f"cutover, so the {at_cutover}-unit block is untouched: the custodian's "
+                f"stated basis {holding.cost_basis} less "
+                f"{added_cost - added_sold_basis} for additions still held. Exact as an "
+                f"aggregate, averaged within the block"
+            ),
+            still_held=True,
+            added_after=added,
+            disposed_after=disposed,
+            acquired=earliest,
+        )
+
+    if surviving <= SUBSHARE:
+        return CutoverPosition(
+            account=account,
+            identifier=identifier,
+            quantity=at_cutover,
+            basis_source=BasisSource.CUSTODIAN_ASSERTED,
+            cost_basis=block_sold_basis,
+            assumption=(
+                f"{len(block_lots)} closed lot(s) in the custodian's realized report, "
+                f"acquired on or before the cutover, dispose of the whole "
+                f"{at_cutover}-unit block and state its basis as {block_sold_basis}"
+            ),
+            still_held=still_held,
+            added_after=added,
+            disposed_after=disposed,
+            acquired=earliest,
+        )
+
+    if not still_held or holding is None or holding.cost_basis is None:
+        findings.append(
+            ReconstructionFinding(
+                account=account,
+                identifier=identifier,
+                kind="realized_mismatch",
+                detail=(
+                    f"the realized report leaves {surviving} of the block unsold but the "
+                    f"snapshot states no present basis to carry it; the report is not "
+                    f"used for this block"
+                ),
+            )
+        )
+        return None
+    surviving_basis = holding.cost_basis - (added_cost - added_sold_basis)
+    if surviving_basis < ZERO:
+        findings.append(
+            ReconstructionFinding(
+                account=account,
+                identifier=identifier,
+                kind="negative_basis",
+                detail=(
+                    f"the surviving part of the block solves to a negative basis "
+                    f"({surviving_basis}) against the custodian's stated present basis; "
+                    f"the realized report is not used for this block"
+                ),
+            )
+        )
+        return None
+    return CutoverPosition(
+        account=account,
+        identifier=identifier,
+        quantity=at_cutover,
+        basis_source=BasisSource.CUSTODIAN_ASSERTED,
+        cost_basis=block_sold_basis + surviving_basis,
+        assumption=(
+            f"{len(block_lots)} closed lot(s) in the custodian's realized report, "
+            f"acquired on or before the cutover, carry basis {block_sold_basis} for the "
+            f"{sold_block} units disposed of; the surviving {surviving} carry the "
+            f"custodian's present basis {holding.cost_basis} less "
+            f"{added_cost - added_sold_basis} for additions still held"
+        ),
+        still_held=True,
+        added_after=added,
+        disposed_after=disposed,
+        acquired=earliest,
     )
 
 

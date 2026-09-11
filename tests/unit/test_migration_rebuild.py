@@ -277,3 +277,35 @@ def test_a_failed_rebuild_leaves_the_file_unchanged(tmp_path: Path) -> None:
         )
     assert con.execute('SELECT count(*) FROM "transaction"').fetchone()[0] == before
     assert M.schema_version(con) == 2
+
+
+def test_migration_0004_preserves_every_ledger_row_and_admits_the_new_types(
+    tmp_path: Path,
+) -> None:
+    """Fund capital-gain distributions: a rebuild that changes only the CHECK.
+    Every row survives, the triggers come back, and the two new members are
+    accepted where they were refused before."""
+    con = _at(tmp_path / "real.port", 3)
+    _seed(con)  # an account, an instrument, three rows including a reversal
+    before = con.execute('SELECT count(*) FROM "transaction"').fetchone()[0]
+    with pytest.raises(sqlite3.IntegrityError):
+        con.execute(
+            'INSERT INTO "transaction" (account_id, trade_date, seq, txn_type, '
+            "net_cash_effect, created_at) VALUES (1, '2026-01-01', 99, 'capital_gain_lt', "
+            "'0.00', 'x')"
+        )
+    con.rollback()
+    fourth = next(m for m in M.available_migrations() if m.version == 4)
+    assert fourth.rebuilds
+    M._apply(con, fourth)
+    assert M.schema_version(con) == 4
+    assert con.execute('SELECT count(*) FROM "transaction"').fetchone()[0] == before
+    assert con.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert {"trg_transaction_no_update", "trg_transaction_no_delete"} <= M._triggers(con)
+    for seq, kind in enumerate(("capital_gain_lt", "capital_gain_st"), start=100):
+        con.execute(
+            'INSERT INTO "transaction" (account_id, trade_date, seq, txn_type, '
+            "net_cash_effect, created_at) VALUES (1, '2026-01-01', ?, ?, '0.00', 'x')",
+            (seq, kind),
+        )
+    con.commit()

@@ -40,7 +40,7 @@ from decimal import Decimal
 
 from portable_core.domain.enums import FeeClass, TransactionType
 
-__all__ = ["HoldingRecord", "TransactionRecord"]
+__all__ = ["ClosedLotRecord", "HoldingRecord", "TransactionRecord"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +72,27 @@ class HoldingRecord:
     acquired: date | None = None
     #: ``ImportCapability.LOT_DETAIL``.
     lot_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ClosedLotRecord:
+    """One closed lot from a custodian's realized gain and loss report.
+
+    The optional third document. A custodian that reports gains at lot level
+    states, for every lot it closed, when it was acquired and what it cost --
+    which is exactly the basis a cutover reconstruction otherwise cannot
+    recover for a block disposed of after the cutover (ADR 0017 §2b). Here
+    the custodian asserts it, and the seeded block can say so.
+    """
+
+    account: str
+    identifier: str
+    acquired: date
+    disposed: date
+    quantity: Decimal
+    cost_basis: Decimal
+    source_row: Mapping[str, str]
+    proceeds: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)

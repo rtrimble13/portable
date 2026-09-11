@@ -91,8 +91,18 @@ _INCOME: Final = frozenset(
     {
         TransactionType.DIVIDEND,
         TransactionType.DIVIDEND_REINVEST,
+        TransactionType.CAPITAL_GAIN_LT,
+        TransactionType.CAPITAL_GAIN_ST,
         TransactionType.COUPON,
         TransactionType.RETURN_OF_CAPITAL,
+    }
+)
+#: Income types that may carry reinvested units on the row.
+_REINVESTABLE: Final = frozenset(
+    {
+        TransactionType.DIVIDEND_REINVEST,
+        TransactionType.CAPITAL_GAIN_LT,
+        TransactionType.CAPITAL_GAIN_ST,
     }
 )
 SUPPORTED_TYPES: Final[frozenset[TransactionType]] = _TRADES | _CASH | _INCOME | _IN_KIND
@@ -697,9 +707,7 @@ class BatchImporter:
             taxes_withheld=row.taxes_withheld,
             withholding_reclaimable=row.withholding_reclaimable,
             is_qualified=row.is_qualified,
-            reinvested_units=(
-                row.quantity if row.txn_type is TransactionType.DIVIDEND_REINVEST else None
-            ),
+            reinvested_units=(row.quantity if row.txn_type in _REINVESTABLE else None),
             note=row.note,
             external_ref=row.external_ref,
             source=TransactionSource.IMPORT,

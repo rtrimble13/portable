@@ -41,6 +41,7 @@ from typing import Any, Final
 
 from portable_core.domain.enums import TransactionType
 from portable_core.domain.import_records import (
+    ClosedLotRecord,
     HoldingRecord,
     MappedTransaction,
     TransactionRecord,
@@ -66,6 +67,7 @@ from portable_core.importers.crosswalk import Crosswalk, load_crosswalk
 from portable_core.importers.pairing import Leg, pair_legs
 from portable_core.importers.source import (
     HOLDINGS,
+    REALIZED,
     TRANSACTIONS,
     DocumentSpec,
     SourceSpec,
@@ -89,10 +91,12 @@ _GUARDED: Final[dict[ImportCapability, tuple[str, str]]] = {
 _DATE_FIELDS: Final[dict[str, frozenset[str]]] = {
     HOLDINGS: frozenset({"as_of", "acquired"}),
     TRANSACTIONS: frozenset({"trade_date", "settlement_date"}),
+    REALIZED: frozenset({"acquired", "disposed"}),
 }
 _NUMBER_FIELDS: Final[dict[str, frozenset[str]]] = {
     HOLDINGS: frozenset({"quantity", "market_value", "cost_basis"}),
     TRANSACTIONS: frozenset({"quantity", "amount"}),
+    REALIZED: frozenset({"quantity", "cost_basis", "proceeds"}),
 }
 
 _SPREADSHEETS: Final = frozenset({".xlsx", ".xls", ".xlsm", ".ods"})
@@ -130,6 +134,8 @@ class AdapterReport:
     files: tuple[tuple[str, str], ...]
     as_of: date | None = None
     period: tuple[date, date] | None = None
+    #: From the optional realized document. Empty where none is declared.
+    closed_lots: tuple[ClosedLotRecord, ...] = ()
 
     @property
     def accounts(self) -> tuple[str, ...]:
@@ -207,6 +213,9 @@ class TabularAdapter:
         """Read both documents, decide the capabilities, and emit records."""
         holdings_rows = self._rows(self.spec.document(HOLDINGS))
         transaction_rows = self._rows(self.spec.document(TRANSACTIONS))
+        realized_rows = (
+            self._rows(self.spec.document(REALIZED)) if REALIZED in self.spec.documents else []
+        )
 
         capabilities = self._capabilities(holdings_rows, transaction_rows)
         holdings = self._holdings(holdings_rows, capabilities)
@@ -236,6 +245,7 @@ class TabularAdapter:
             files=self._digests(),
             as_of=as_of,
             period=(dates[0], dates[-1]) if dates else None,
+            closed_lots=self._closed_lots(realized_rows),
         )
 
     def _path(self, document: DocumentSpec) -> Path:
@@ -381,6 +391,38 @@ class TabularAdapter:
                     cost_basis=None if "cost_basis" in guarded else row.get("cost_basis"),
                     acquired=None if "acquired" in guarded else row.get("acquired"),
                     lot_id=None if "lot_id" in guarded else row.get("lot_id"),
+                )
+            )
+        return tuple(records)
+
+    def _closed_lots(self, rows: list[dict[str, Any]]) -> tuple[ClosedLotRecord, ...]:
+        """The realized document, as records. Nothing is derived from it here."""
+        records: list[ClosedLotRecord] = []
+        for row in rows:
+            index = row["_index"]
+            account = _required(row, "account", index)
+            identifier = self._resolve(REALIZED, _required(row, "identifier", index), index)
+            acquired, disposed = row.get("acquired"), row.get("disposed")
+            if not isinstance(acquired, date):
+                raise _missing(index, "acquired", "a closed lot")
+            if not isinstance(disposed, date):
+                raise _missing(index, "disposed", "a closed lot")
+            quantity, basis = row.get("quantity"), row.get("cost_basis")
+            if not isinstance(quantity, Decimal):
+                raise _missing(index, "quantity", "a closed lot")
+            if not isinstance(basis, Decimal):
+                raise _missing(index, "cost_basis", "a closed lot")
+            proceeds = row.get("proceeds")
+            records.append(
+                ClosedLotRecord(
+                    account=account,
+                    identifier=identifier,
+                    acquired=acquired,
+                    disposed=disposed,
+                    quantity=abs(quantity),
+                    cost_basis=basis,
+                    source_row=row["_raw"],
+                    proceeds=proceeds if isinstance(proceeds, Decimal) else None,
                 )
             )
         return tuple(records)
@@ -618,10 +660,7 @@ class TabularAdapter:
         """sha256 per document, so a batch can name what it was built from."""
         return tuple(
             (document.file, _sha256(self.root / document.file))
-            for document in (
-                self.spec.document(HOLDINGS),
-                self.spec.document(TRANSACTIONS),
-            )
+            for kind, document in self.spec.documents.items()
         )
 
 

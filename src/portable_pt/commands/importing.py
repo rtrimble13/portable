@@ -284,7 +284,12 @@ def import_reconstruct(
     def action() -> CommandResult:
         report = TabularAdapter.load(adapter).read()
         boundary = date.fromisoformat(cutover) if cutover else None
-        result = reconstruct(report.holdings, report.transactions, cutover=boundary)
+        result = reconstruct(
+            report.holdings,
+            report.transactions,
+            cutover=boundary,
+            closed_lots=report.closed_lots,
+        )
 
         # One row list, rendered as a table and carried in `data`. A consumer
         # reading `--format json` must be able to see which position rests on
@@ -303,6 +308,8 @@ def import_reconstruct(
                 "added_after": position.added_after,
                 "disposed_after": position.disposed_after,
                 "assumption": position.assumption,
+                "acquired": position.acquired.isoformat() if position.acquired else None,
+                "part": position.part or None,
             }
             for position in result.positions
         )
@@ -440,6 +447,17 @@ def import_broker(
             ),
         ),
     ] = False,
+    until: Annotated[
+        str | None,
+        typer.Option(
+            "--until",
+            help=(
+                "Extract history only through this date; later rows are left for a "
+                "later extract and counted. For importing in segments around the "
+                "corporate actions a batch cannot carry."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Extract a custodian's exports into a reviewable batch.
 
@@ -471,6 +489,13 @@ def import_broker(
     that already has rows would seed it twice, and an incremental one into an
     empty account has nothing to extend.
 
+    **Corporate actions are imported in segments.** A batch cannot carry a
+    split or a conversion (§5), and a sale after one depends on it, so the
+    history is extracted `--until` the day before each such action, committed,
+    the action recorded with its typed command, and the next segment extracted
+    `--incremental`. Rows left for a later segment are counted, not silently
+    absent.
+
     Nothing is written to the portfolio. Read the batch, edit it, then
     `pt import batch --dry-run` and `pt import batch`.
     """
@@ -480,6 +505,12 @@ def import_broker(
         repos = ctx.require_portfolio()
 
         report = TabularAdapter.load(adapter).read()
+        mapped = report.mapped
+        deferred = 0
+        if until:
+            stop = date.fromisoformat(until)
+            deferred = sum(1 for m in mapped if m.record.trade_date > stop)
+            mapped = tuple(m for m in mapped if m.record.trade_date <= stop)
         inception = _ledger_inception(repos, report.accounts)
         _check_shape(inception, incremental=incremental)
         in_ledger = _in_ledger(repos)
@@ -488,7 +519,7 @@ def import_broker(
         if incremental:
             extract = build_incremental_batch(
                 broker=report.broker,
-                mapped=report.mapped,
+                mapped=mapped,
                 inception={a: d for a, d in inception.items() if d is not None},
                 in_ledger=in_ledger,
                 files=report.files,
@@ -496,13 +527,18 @@ def import_broker(
             )
         else:
             boundary = date.fromisoformat(cutover) if cutover else None
-            result = reconstruct(report.holdings, report.transactions, cutover=boundary)
+            result = reconstruct(
+                report.holdings,
+                report.transactions,
+                cutover=boundary,
+                closed_lots=report.closed_lots,
+            )
             prices = _cutover_prices(repos, result)
             sources = _prices_from_receipts(prices, result, report.transactions)
             extract = build_batch(
                 broker=report.broker,
                 reconstruction=result,
-                mapped=report.mapped,
+                mapped=mapped,
                 cutover_prices=prices,
                 files=report.files,
                 capabilities=[c.value for c in report.capabilities.declared],
@@ -512,6 +548,10 @@ def import_broker(
         out.write_text(dump_batch(extract.batch), encoding="utf-8")
 
         warnings: list[str] = []
+        if deferred:
+            warnings.append(
+                f"{deferred} row(s) dated after {until} are left for a later extract."
+            )
         if extract.unsupported:
             warnings.append(
                 "the history contains "
@@ -539,6 +579,8 @@ def import_broker(
                 "batch": str(out),
                 "broker": report.broker,
                 "incremental": incremental,
+                "until": until,
+                "deferred": deferred,
                 # Explicitly null on an incremental extract: there is no
                 # cutover because nothing is seeded, and a reader must not
                 # mistake the absence for an unstated date.
@@ -661,9 +703,10 @@ def _prices_from_receipts(
     for record in transactions:
         if record.trade_date != result.cutover or record.identifier is None:
             continue
-        if record.identifier in prices or not record.quantity or not record.amount:
+        stated = abs(record.amount) if record.amount else record.value
+        if record.identifier in prices or not record.quantity or not stated:
             continue
-        prices[record.identifier] = abs(record.amount) / abs(record.quantity)
+        prices[record.identifier] = stated / abs(record.quantity)
         sources[record.identifier] = (
             f"the custodian's {record.activity!r} row on the cutover, amount over units"
         )
