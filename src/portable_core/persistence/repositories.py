@@ -762,9 +762,9 @@ class TransactionRepository(_Repository):
             "position_id, counter_account_id, related_txn_id, reverses_txn_id, "
             "lot_selection, relief_method, ex_date, pay_date, is_qualified, note, "
             "external_ref, source, original_basis, original_acquired_date, "
-            "basis_source, basis_assumption, created_at) VALUES "
+            "basis_source, basis_assumption, strategy_type, created_at) VALUES "
             "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "?, ?, ?, ?, ?, ?, ?, ?)",
+            "?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 txn.account_id,
                 txn.trade_date.isoformat(),
@@ -801,6 +801,7 @@ class TransactionRepository(_Repository):
                 ),
                 str(txn.basis_source) if txn.basis_source else None,
                 txn.basis_assumption,
+                str(txn.strategy_type) if txn.strategy_type else None,
                 txn.created_at or _now(),
             ),
         )
@@ -973,6 +974,12 @@ class PositionRepository(_Repository):
             (strategy_type, position_id),
         )
 
+    def leg(self, leg_id: int) -> PositionLeg | None:
+        row = self.con.execute(
+            "SELECT * FROM position_leg WHERE leg_id = ?", (leg_id,)
+        ).fetchone()
+        return None if row is None else mappers.to_position_leg(row)
+
     def position_id_for_leg(self, leg_id: int) -> int | None:
         """The position a leg belongs to.
 
@@ -986,11 +993,34 @@ class PositionRepository(_Repository):
         return None if row is None else int(row["position_id"])
 
     def move_leg(self, leg_id: int, position_id: int) -> None:
-        """Regroup: one column, no lot touched, no basis touched (ADR 0009)."""
+        """Regroup a leg, and the denormalised position id its lots carry.
+
+        No quantity, basis or holding period is touched (ADR 0009); the lots'
+        copy of the position id moves with the leg so the two never disagree.
+        Called by replay for a ``position_regroup`` row (ADR 0023), never as an
+        edit of its own -- derived state changed outside replay is undone by
+        the next rebuild.
+        """
         self.con.execute(
             "UPDATE position_leg SET position_id = ? WHERE leg_id = ?",
             (position_id, leg_id),
         )
+        self.con.execute(
+            "UPDATE lot SET position_id = ? WHERE leg_id = ?",
+            (position_id, leg_id),
+        )
+
+    def opened_by(self, txn_id: int) -> Position | None:
+        """The position a ledger row opened: its identity across rebuilds.
+
+        ``position_id`` is a surrogate key that a rebuild replaying in a
+        different order renumbers. The opening transaction is in the ledger and
+        does not move, so that is how a ledger row names a position (ADR 0023).
+        """
+        row = self.con.execute(
+            "SELECT position_id FROM position WHERE opened_txn_id = ?", (txn_id,)
+        ).fetchone()
+        return None if row is None else self.get(int(row["position_id"]))
 
 
 class LotRepository(_Repository):

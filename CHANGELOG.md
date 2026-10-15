@@ -228,6 +228,13 @@ Two rules specific to this repository:
 
 ### Schema
 
+- **`schema_version` 4 → 5**, migration `0005_position_regroup` (ADR 0023). A
+  rebuild of `"transaction"` (ADR 0019) that admits `txn_type =
+  'position_regroup'` and adds `strategy_type`, with `CHECK`s binding both to
+  that type: a regroup names an instrument, moves no quantity and no cash, and
+  only a regroup carries a strategy. All 33 existing columns are copied, by
+  name; tested on a v4 file with every column set. Not reversible, like every
+  rebuild: restore the backup `pt migrate` takes.
 - **`schema_version` 3 → 4**, migration `0004_capital_gain_distributions`.
   A rebuild of `"transaction"` (ADR 0019) that changes only the `txn_type`
   CHECK, admitting `capital_gain_lt` and `capital_gain_st`. Every row is
@@ -257,6 +264,28 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **A rebuild undid every position grouping** (ADR 0023). `pt position group`
+  edited derived state directly, so the next rebuild -- any back-dated import,
+  reversal or `--incremental` update -- split a covered call back into a stock
+  and a short call, and `pt validate` failed the moment a grouping was made. A
+  regroup is now a `position_regroup` row in the ledger, replayed like a trade,
+  checked against the state on its own date before it is written, and undone
+  with `pt trade reverse`. `pt position ungroup` is new.
+- **`pt buy --position N` was recorded and ignored**, and wrote a derived
+  position id -- which a rebuild renumbers -- into the ledger. It now records
+  the trade and a regroup row together, naming the position by the transaction
+  that opened it. `--new-position`, also accepted and ignored, is honoured when
+  the trade opens a new position anyway and refused when the account already
+  holds the instrument (one instrument in two positions in one account is not
+  modelled).
+- **An older `.port` file was read as if it were current.** A file at an earlier
+  schema version failed on the first column it lacked, reported as an
+  unexpected error. It is now refused with `PT-E-SCHEMA-TOO-OLD` (exit 3), which
+  was defined and never raised, until `pt migrate` -- which takes a backup --
+  brings it up to date.
+- **Two stocks grouped by hand were labelled `single`.** Strategy inference
+  named any set of legs sharing one role `single`; two or more legs sharing a
+  role are now `custom`.
 - **fafnir priced a range from the security its ticker named on the last day.**
   `FafnirProvider.eod_prices` and `corporate_actions` resolved the ticker once,
   as of the range's end, so across a reused ticker every earlier date came back

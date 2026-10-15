@@ -188,6 +188,9 @@ class TransactionType(enum.StrEnum):
     MERGER_MIXED = "merger_mixed"
     SYMBOL_CHANGE = "symbol_change"
     DELIST = "delist"
+    # trader intent, replayed (ADR 0023): moves a leg between positions, and
+    # moves no quantity and no cash
+    POSITION_REGROUP = "position_regroup"
     # options lifecycle
     OPTION_EXERCISE = "option_exercise"
     OPTION_ASSIGNMENT = "option_assignment"

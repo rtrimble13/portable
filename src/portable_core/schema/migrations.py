@@ -37,6 +37,7 @@ from portable_core.errors.kinds import (
     E_MIGRATION_FAILED,
     E_PORTFOLIO_CORRUPT,
     E_SCHEMA_TOO_NEW,
+    E_SCHEMA_TOO_OLD,
 )
 
 _SCHEMA_DIR: Final[Path] = Path(__file__).parent
@@ -49,7 +50,7 @@ REBUILD_MARKER: Final = "-- portable:rebuild"
 #: The schema version this build of `portable` writes and understands. Bumped
 #: by every migration, in the same commit as the migration and its CHANGELOG
 #: entry.
-CURRENT_SCHEMA_VERSION: Final[int] = 4
+CURRENT_SCHEMA_VERSION: Final[int] = 5
 
 #: Checksums of shipped migration texts that were later amended under ADR 0022,
 #: by version, each with the reason. A file that applied one of these is
@@ -437,13 +438,22 @@ def verify_checksums(con: sqlite3.Connection) -> list[str]:
     return problems
 
 
-def check_openable(con: sqlite3.Connection, path: Path | None = None) -> None:
+def check_openable(
+    con: sqlite3.Connection, path: Path | None = None, *, allow_older: bool = False
+) -> None:
     """Refuse a file this build does not understand.
 
     Forward compatibility is one-directional on purpose. A newer `portable`
     can migrate an older file. An older `portable` **cannot** read a newer one:
     it would be interpreting columns whose meaning it does not know, which is
     the silently-wrong-number failure mode with extra steps.
+
+    An older file is refused too, unless the caller is about to migrate it
+    (*allow_older*). Read unmigrated, it lacks the columns this build reads,
+    and the first command to touch one failed with a bare "No item with that
+    key" -- or, for a column it could read but whose meaning changed, would not
+    fail at all. Migrating is explicit, because it is the one operation that
+    can lose a ledger and it takes a backup first.
     """
     version = schema_version(con)
     if version > CURRENT_SCHEMA_VERSION:
@@ -465,6 +475,19 @@ def check_openable(con: sqlite3.Connection, path: Path | None = None) -> None:
             "file has no portable schema: it is empty, or not a .port file",
             code=E_PORTFOLIO_CORRUPT,
             remedy="Create a portfolio with `pt init`.",
+            path=str(path) if path else None,
+        )
+    if version < CURRENT_SCHEMA_VERSION and not allow_older:
+        raise PortfolioFileError(
+            f"portfolio uses schema version {version}; this build of portable reads "
+            f"version {CURRENT_SCHEMA_VERSION}",
+            code=E_SCHEMA_TOO_OLD,
+            remedy=(
+                "Run `pt migrate` -- it takes a backup first, and `--dry-run` shows "
+                "what it would apply. Nothing reads the file until then."
+            ),
+            file_version=version,
+            supported_version=CURRENT_SCHEMA_VERSION,
             path=str(path) if path else None,
         )
 
@@ -491,7 +514,7 @@ def migrate(
     Returns ``(from_version, to_version, applied, backup_file)``. Under
     ``dry_run`` nothing is written and ``applied`` is what *would* be applied.
     """
-    check_openable(con, path)
+    check_openable(con, path, allow_older=True)
     before = schema_version(con)
     pending = [m for m in available_migrations() if m.version > before]
 

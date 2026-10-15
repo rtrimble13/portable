@@ -297,6 +297,9 @@ class Transaction:
     #: state to be reproducible by replaying the ledger.
     basis_source: BasisSource | None = None
     basis_assumption: str | None = None
+    #: ADR 0023. On a `position_regroup` only: the strategy it restates for the
+    #: position it moves a leg into. ``None`` there means "name it from its legs".
+    strategy_type: StrategyType | None = None
     created_at: str = ""
 
     def __post_init__(self) -> None:

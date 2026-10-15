@@ -147,10 +147,17 @@ for them.
 
 **Positions can be regrouped.** When you write a call against stock you already
 own, your intent changes: two positions become one covered call. `pt position
-group` moves the legs. Because lots hang off legs and legs carry the position id,
-regrouping touches one column and not a single basis figure. **A change of intent
-does not change tax history** — which is correct, and is a consequence of the
-structure rather than a rule somebody has to remember.
+group` moves the legs, and `pt position ungroup` moves them back out. Because lots
+hang off legs and legs carry the position id, regrouping touches one column and
+not a single basis figure. **A change of intent does not change tax history** —
+which is correct, and is a consequence of the structure rather than a rule
+somebody has to remember.
+
+A regroup is a dated row in the ledger (`position_regroup`, ADR 0023), so it is
+replayed like a trade: it survives every rebuild, it is undone with
+`pt trade reverse`, and a report for an earlier date shows the positions as they
+were grouped then. `pt buy --position N` records the trade and the regroup
+together.
 
 ---
 

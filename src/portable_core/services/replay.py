@@ -380,6 +380,12 @@ class ReplayEngine:
         if txn.instrument_id is None:
             return  # a pure cash event: nothing to position
 
+        # ADR 0023. A change of intent: carries an instrument and no quantity,
+        # so it is dispatched before the quantity check below.
+        if txn.txn_type is TransactionType.POSITION_REGROUP:
+            self._regroup(txn, counters)
+            return
+
         # Dispatched BEFORE the quantity check, because a spinoff carries an
         # instrument but no quantity -- the quantity is a consequence of the
         # action, not an input to it. Ordering these the other way round meant
@@ -550,6 +556,73 @@ class ReplayEngine:
         )
         counters["lots"] += 1
         self._refresh_leg(leg_id, txn.trade_date)
+
+    def _regroup(self, txn: Transaction, counters: dict[str, int]) -> None:
+        """Move this account's leg in an instrument into another position.
+
+        ADR 0023. The target is the position the row's ``related_txn_id``
+        opened -- named by its opening transaction because ``position_id`` is a
+        surrogate a rebuild renumbers -- or, when that is NULL, a new position
+        this row opens. Nothing but the grouping changes: no quantity, no lot,
+        no basis, no holding period (ADR 0009). A position its last leg left is
+        closed that day; one that still has legs is renamed from them.
+
+        Raises:
+            ValidationError: there is no open leg to move, or no open position
+                in this account for it to move into. Replay reports it as it
+                reports any row it cannot apply.
+        """
+        assert txn.instrument_id is not None
+        leg = self.repos.positions.leg_for(txn.account_id, txn.instrument_id)
+        if leg is None:
+            raise ValidationError(
+                f"nothing to regroup: no open leg in instrument {txn.instrument_id} "
+                f"in this account on {txn.trade_date.isoformat()}",
+                txn_id=txn.txn_id,
+            )
+        source_id = leg.position_id
+
+        if txn.related_txn_id is None:
+            target_id = self.repos.positions.add(
+                Position(
+                    position_id=0,
+                    account_id=txn.account_id,
+                    strategy_type=StrategyType.SINGLE,
+                    opened_date=txn.trade_date,
+                    status=PositionStatus.OPEN,
+                    opened_txn_id=txn.txn_id,
+                    note=txn.note,
+                )
+            )
+            counters["positions"] += 1
+        else:
+            target = self.repos.positions.opened_by(txn.related_txn_id)
+            if (
+                target is None
+                or target.account_id != txn.account_id
+                or target.status is not PositionStatus.OPEN
+            ):
+                raise ValidationError(
+                    f"no open position in this account was opened by transaction "
+                    f"{txn.related_txn_id} on {txn.trade_date.isoformat()}",
+                    txn_id=txn.txn_id,
+                )
+            target_id = target.position_id
+
+        if target_id != source_id:
+            self.repos.positions.move_leg(leg.leg_id, target_id)
+            remaining = self.repos.positions.legs(source_id)
+            if not any(other.status is PositionStatus.OPEN for other in remaining):
+                self.repos.positions.close_position(source_id, txn.trade_date)
+            else:
+                self.repos.positions.set_strategy(
+                    source_id, str(PositionEngine.infer_strategy(remaining))
+                )
+
+        strategy = txn.strategy_type or PositionEngine.infer_strategy(
+            self.repos.positions.legs(target_id)
+        )
+        self.repos.positions.set_strategy(target_id, str(strategy))
 
     def _close(self, txn: Transaction, counters: dict[str, int]) -> None:
         """Consume lots under the relief method and record the dispositions."""

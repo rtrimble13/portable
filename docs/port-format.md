@@ -146,8 +146,11 @@ and recorded in `schema_migration` with a **checksum**.
   renaming it over `x`. A migration declares this with `-- portable:rebuild`
   in its header. The runner turns foreign keys off around it, checks every
   reference once before commit, and refuses a rebuild that did not restore
-  every trigger and every index. 0003 and 0004 rebuild `"transaction"`; 0003
-  also rebuilds `lot`.
+  every trigger and every index. 0003, 0004 and 0005 rebuild `"transaction"`;
+  0003 also rebuilds `lot`.
+- **An older file is refused until it is migrated** (`PT-E-SCHEMA-TOO-OLD`,
+  exit 3). Read unmigrated, it lacks columns this build reads. `pt migrate` is
+  the one command that opens it.
 - **Preconditions are checked first.** A migration is pure SQL and cannot
   branch, so a constraint added over existing data either applies or fails with
   whatever SQLite says — and `_apply`'s remedy, restore the backup, would

@@ -567,3 +567,104 @@ def test_a_corporate_action_with_no_parameters_is_reported_not_ignored(
 
     result = ReplayEngine(repos).rebuild()
     assert any("cannot be reapplied" in w for w in result.warnings), result.warnings
+
+
+# ── regrouping (ADR 0023) ────────────────────────────────────────────────────
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    buys=st.lists(st.integers(min_value=0, max_value=20), min_size=3, max_size=3, unique=True),
+    moves=st.lists(
+        st.tuples(
+            st.integers(min_value=0, max_value=2),  # the leg to move, by instrument
+            st.one_of(st.none(), st.integers(min_value=0, max_value=2)),  # into whose position
+            st.integers(min_value=0, max_value=30),  # days after the last purchase
+        ),
+        max_size=8,
+    ),
+)
+def test_groupings_made_live_are_what_replay_reproduces(
+    buys: list[int], moves: list[tuple[int, int | None, int]]
+) -> None:
+    """CLAUDE.md invariant 3, for the one derived fact that used to escape it.
+
+    Purchases, groupings and ungroupings are entered through the live path in
+    date order; a full rebuild must then reproduce the stored state exactly,
+    and every leg must still equal the sum of its lots.
+    """
+    from portable_core.services.regrouping import Regroup, record_regroup
+    from portable_core.services.trading import TradeIntent, TradingService
+
+    repos = _fresh_repos()
+    try:
+        account_id = repos.accounts.add(
+            Account(
+                account_id=0,
+                name="Generated",
+                account_type=AccountType.TAX_EXEMPT,
+                opened_date=START,
+                default_relief_method=ReliefMethod.FIFO,
+            )
+        )
+        account = repos.accounts.get(account_id)
+        assert account is not None
+        instruments = []
+        for symbol in ("AAA", "BBB", "CCC"):
+            instrument = repos.instruments.get(
+                repos.instruments.add(
+                    Instrument(
+                        instrument_id=0, symbol=symbol, instrument_type=InstrumentType.EQUITY
+                    )
+                )
+            )
+            assert instrument is not None
+            instruments.append(instrument)
+
+        trading = TradingService(repos)
+        for offset, instrument in sorted(
+            zip(buys, instruments, strict=True), key=lambda p: p[0]
+        ):
+            trading.commit(
+                trading.plan(
+                    TradeIntent(
+                        account=account,
+                        instrument=instrument,
+                        txn_type=TransactionType.BUY,
+                        quantity=D("10"),
+                        price=D("10.00"),
+                        trade_date=START + timedelta(days=offset),
+                    )
+                )
+            )
+
+        start = START + timedelta(days=max(buys) + 1)
+        for leg_index, into_index, offset in sorted(moves, key=lambda m: m[2]):
+            into = None
+            if into_index is not None:
+                holder = repos.positions.leg_for(
+                    account_id, instruments[into_index].instrument_id
+                )
+                assert holder is not None
+                target = repos.positions.get(holder.position_id)
+                assert target is not None
+                into = target.opened_txn_id
+            record_regroup(
+                repos,
+                Regroup(
+                    account_id=account_id,
+                    instrument_id=instruments[leg_index].instrument_id,
+                    on=start + timedelta(days=offset),
+                    into_opened_by=into,
+                ),
+            )
+
+        live = derived_state_digest(repos)
+        engine = ReplayEngine(repos)
+        result = engine.rebuild()
+
+        assert result.warnings == ()
+        assert result.digest == live, "a grouping made live must be what replay rebuilds"
+        assert engine.check_leg_invariants() == []
+    finally:
+        repos.con.close()

@@ -57,3 +57,4 @@ ADR (that document's §13), and `PORT-GIPS-xxx` identifiers are never reused.
 | [0020](0020-historical-price-import.md) | Historical price import: requirements and open questions |
 | [0021](0021-derived-state-as-of-a-past-date.md) | Derived state as of a past date |
 | [0022](0022-amending-a-shipped-migration.md) | Amending a shipped migration, and the one it was needed for |
+| [0023](0023-position-regroup-is-a-ledger-row.md) | A change of grouping is a ledger row |

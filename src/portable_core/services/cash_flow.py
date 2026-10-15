@@ -205,6 +205,11 @@ def classify(
         ):
             return FlowResult(FlowClassification.INTERNAL, zero, txn.trade_date)
 
+        # ── A change of intent (ADR 0023). A leg moves between positions in one
+        # account; nothing is owned that was not before, and no cash moves.
+        case TransactionType.POSITION_REGROUP:
+            return FlowResult(FlowClassification.INTERNAL, zero, txn.trade_date)
+
         # A stock dividend received from outside -- a distribution in kind --
         # IS an external flow, valued at the time of distribution
         # (PORT-GIPS-C02.c / Firms 2.A.29.c). Where no value was supplied it

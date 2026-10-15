@@ -474,3 +474,80 @@ def test_a_rebuild_that_loses_an_index_is_refused(tmp_path: Path) -> None:
     assert excinfo.value.context["indexes"] == ["ux_txn_account_external_ref"]
     assert "ux_txn_account_external_ref" in M._indexes(con), "rolled back"
     con.close()
+
+
+# ── 0005: position_regroup (ADR 0023) ────────────────────────────────────────
+
+
+def _fifth() -> M.Migration:
+    return next(m for m in M.available_migrations() if m.version == 5)
+
+
+def test_migration_0005_keeps_every_column_of_every_row(tmp_path: Path) -> None:
+    """The lesson of 0004, applied: copy all 33 columns, and test with all of them set."""
+    con = _at(tmp_path / "p.port", 4)
+    _seed(con)
+    _seed_transfers(con, transfer_in=True)
+    columns = [r[1] for r in con.execute('PRAGMA table_info("transaction")')]
+    listed = ", ".join(columns)
+    before = [
+        tuple(r) for r in con.execute(f'SELECT {listed} FROM "transaction" ORDER BY txn_id')
+    ]
+
+    M._apply(con, _fifth())
+
+    assert M.schema_version(con) == 5
+    after = [
+        tuple(r) for r in con.execute(f'SELECT {listed} FROM "transaction" ORDER BY txn_id')
+    ]
+    assert after == before
+    assert (
+        con.execute(
+            'SELECT COUNT(*) FROM "transaction" WHERE strategy_type IS NOT NULL'
+        ).fetchone()[0]
+        == 0
+    )
+    con.close()
+
+
+def test_migration_0005_admits_a_regroup_and_binds_it(tmp_path: Path) -> None:
+    """A regroup moves a leg and nothing else; a strategy belongs to a regroup only."""
+    con = _at(tmp_path / "p.port", 5)
+    _seed(con)
+    regroup = (
+        'INSERT INTO "transaction" (account_id, trade_date, seq, txn_type, instrument_id, '
+        "quantity, net_cash_effect, strategy_type, created_at) "
+        "VALUES (1, '2024-03-01', ?, 'position_regroup', ?, ?, ?, ?, 'x')"
+    )
+    con.execute(regroup, (1, 1, None, "0.00", "covered_call"))
+    for seq, (instrument, quantity, cash, strategy) in enumerate(
+        (
+            (1, "10", "0.00", None),  # moves a quantity
+            (1, None, "-5.00", None),  # moves cash
+            (None, None, "0.00", None),  # names no leg
+        ),
+        start=2,
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(regroup, (seq, instrument, quantity, cash, strategy))
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+        con.execute(
+            'INSERT INTO "transaction" (account_id, trade_date, seq, txn_type, '
+            "net_cash_effect, strategy_type, created_at) "
+            "VALUES (1, '2024-03-02', 1, 'deposit', '1.00', 'custom', 'x')"
+        )
+    con.close()
+
+
+def test_an_older_file_is_refused_until_it_is_migrated(tmp_path: Path) -> None:
+    """PT-E-SCHEMA-TOO-OLD was defined and never raised: a v4 file read by v5
+    code failed on its first new column with "No item with that key"."""
+    con = _at(tmp_path / "p.port", 4)
+
+    with pytest.raises(PortfolioFileError) as refused:
+        M.check_openable(con)
+    assert refused.value.code == "PT-E-SCHEMA-TOO-OLD"
+    assert "pt migrate" in (refused.value.remedy or "")
+
+    M.check_openable(con, allow_older=True)  # what `pt migrate` asks for
+    con.close()
