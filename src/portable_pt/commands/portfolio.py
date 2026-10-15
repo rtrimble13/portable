@@ -207,6 +207,9 @@ def info() -> None:
                 "total_cash": cash,
                 "last_valuation": last_valuation.isoformat() if last_valuation else None,
                 "as_of": ctx.as_of.isoformat(),
+                # Issue #39: say so, because an offline session answers from the
+                # cache and a missing price there is not an outage.
+                "offline": ctx.options.offline,
             },
             as_of=ctx.as_of,
             portfolio=meta.get("portfolio_name"),

@@ -166,7 +166,7 @@ capabilities, so a partial provider is legal and its gaps are visible:
 Every price is cached in the `.port` file with its source, as-of timestamp,
 valuation level, and estimate flag, and every valuation snapshot records the
 exact set of prices it consumed — so a return traces back to the ticks that
-produced it. `--offline` forces cache-only operation.
+produced it. `--offline` forces cache-only operation (a command that would fetch is refused).
 
 See [`docs/market-data.md`](docs/market-data.md) and
 [ADR 0006](docs/adr/0006-fafnir-access-path.md), which also records the two

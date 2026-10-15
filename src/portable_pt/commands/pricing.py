@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated
@@ -20,10 +21,12 @@ from portable_core.domain.models import (
     ValuationSnapshot,
 )
 from portable_core.errors import DataUnavailableError, ValidationError
+from portable_core.errors.kinds import E_PRICE_MISSING
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.persistence.repositories import Repositories
 from portable_core.providers import as_eod_provider
+from portable_core.services import price_history
 from portable_core.services.replay import effective_ledger, over_dates
 from portable_core.services.valuation import Holding, ValuationEngine
 from portable_pt import state
@@ -112,15 +115,31 @@ def set_price(
 
 @price_app.command()
 def load(
-    symbols: Annotated[list[str] | None, typer.Argument(help="Default: all held.")] = None,
+    symbols: Annotated[
+        list[str] | None,
+        typer.Argument(
+            help=(
+                "Default: every instrument held at some point in the range, over the "
+                "days it was held."
+            )
+        ),
+    ] = None,
     start: Annotated[str | None, typer.Option("--from")] = None,
     end: Annotated[str | None, typer.Option("--to")] = None,
 ) -> None:
     """Load prices from the market data provider into the portfolio's cache.
 
+    With no symbols, each instrument any account held in the range is loaded
+    over the days it was held -- read from the ledger, so a position sold
+    years ago is priced for the years it was owned (ADR 0020 R2). Each held
+    stretch is preceded by a few days, the staleness tolerance, so a stretch
+    that begins on a non-trading day can be valued from the previous close.
+    Each day is asked for under the ticker the instrument carried that day.
+
     Every price is stored with its source, as-of timestamp, valuation level,
     and estimate flag, so a valuation built from it can be traced back to the
-    tick that produced it (PORT-GIPS-J03).
+    tick that produced it (PORT-GIPS-J03). A symbol the provider has no data
+    for is a warning; a provider that cannot be reached is a failure, exit 5.
     """
 
     def action() -> CommandResult:
@@ -131,33 +150,81 @@ def load(
 
         first = resolve_date(start, ctx, what="--from") if start else ctx.as_of
         last = resolve_date(end, ctx, what="--to") if end else ctx.as_of
-        wanted = symbols or [i.symbol for i in repos.instruments.all(active_only=True)]
+        if last < first:
+            raise ValidationError(
+                f"--to {last.isoformat()} precedes --from {first.isoformat()}",
+                remedy="Check the order of the dates.",
+            )
+
+        warnings: list[str] = []
+        if symbols:
+            requests = price_history.requests_for(
+                repos, [repos.instruments.resolve(s, on=last) for s in symbols], first, last
+            )
+        else:
+            requests, replay_warnings = price_history.requests_while_held(
+                repos,
+                first,
+                last,
+                lead_in_days=int(ctx.config.get("staleness_tolerance_days", 5)),
+            )
+            warnings.extend(replay_warnings)
 
         loaded: list[dict[str, object]] = []
-        warnings: list[str] = []
-
-        for symbol in wanted:
-            instrument = repos.instruments.resolve(symbol, on=last)
+        missing: list[str] = []
+        lead_ins_missing: list[str] = []
+        for request in requests:
             try:
-                prices = prices_from.eod_prices(symbol, first, last)
-            except Exception as exc:
-                warnings.append(f"{symbol}: {exc}")
+                prices = prices_from.eod_prices(request.symbol, request.start, request.end)
+            except DataUnavailableError as exc:
+                # "No data for this symbol here" is an answer about one symbol
+                # and the run goes on. Anything else -- the provider is down,
+                # or cannot do this -- is an answer about every symbol, and is
+                # raised rather than repeated as a warning per row.
+                if exc.code != E_PRICE_MISSING:
+                    raise
+                span = f"{request.start.isoformat()}..{request.end.isoformat()}"
+                if request.lead_in:
+                    lead_ins_missing.append(f"{request.symbol} {span}")
+                else:
+                    missing.append(f"{request.symbol} {span}: {exc.message}")
                 continue
 
             if not ctx.dry_run:
                 with db_transaction(repos.con):
                     for price in prices:
-                        from dataclasses import replace
-
-                        repos.prices.add(replace(price, instrument_id=instrument.instrument_id))
+                        repos.prices.add(
+                            replace(price, instrument_id=request.instrument.instrument_id)
+                        )
             loaded.append(
                 {
-                    "symbol": symbol,
+                    "symbol": request.symbol,
                     "prices": len(prices),
                     "first": prices[0].price_date.isoformat(),
                     "last": prices[-1].price_date.isoformat(),
                     "source": prices[0].source,
                 }
+            )
+
+        wanted = [r for r in requests if not r.lead_in]
+        if wanted and len(missing) == len(wanted):
+            raise DataUnavailableError(
+                f"{provider.name} had no prices for anything asked: "
+                f"{len(missing)} request(s), none loaded",
+                code=E_PRICE_MISSING,
+                remedy=(
+                    "Check the symbols and the range, or supply the prices with "
+                    "`--source file`."
+                ),
+                provider=provider.name,
+                problems=missing,
+            )
+        warnings.extend(missing)
+        if lead_ins_missing:
+            warnings.append(
+                f"{len(lead_ins_missing)} held stretch(es) had no price in the days "
+                "before they began, so a first day that is not a trading day cannot be "
+                "valued from a previous close: " + "; ".join(lead_ins_missing)
             )
 
         result = CommandResult(
@@ -173,6 +240,12 @@ def load(
                 rows=tuple(loaded),
                 title=f"Loaded from {provider.name}",
             ),
+            data={
+                "from": first.isoformat(),
+                "to": last.isoformat(),
+                "requests": len(wanted),
+                "loaded": sum(1 for r in requests if not r.lead_in) - len(missing),
+            },
             warnings=tuple(warnings),
             portfolio=ctx.portfolio_name(),
         )

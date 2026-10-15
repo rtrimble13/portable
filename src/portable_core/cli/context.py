@@ -19,7 +19,12 @@ from portable_core.errors.kinds import E_PORTFOLIO_NOT_FOUND
 from portable_core.formatters import OutputFormat
 from portable_core.persistence.connection import open_portfolio
 from portable_core.persistence.repositories import Repositories
-from portable_core.providers import MarketDataProvider, NullProvider, build_provider
+from portable_core.providers import (
+    MarketDataProvider,
+    NullProvider,
+    OfflineProvider,
+    build_provider,
+)
 from portable_core.schema import migrations as M
 
 __all__ = ["CommandContext", "GlobalOptions", "build_context"]
@@ -89,7 +94,12 @@ class CommandContext:
         if self._provider is None:
             name = self.options.source or str(self.config.get("source") or "null")
             self._provider = (
-                NullProvider()
+                # Issue #39: --offline is enforced here, once, rather than at
+                # each command that reaches for a provider -- the configured one
+                # is never built, so it cannot be connected to by accident.
+                OfflineProvider(name)
+                if self.options.offline
+                else NullProvider()
                 if name == "null"
                 else build_provider(
                     name,

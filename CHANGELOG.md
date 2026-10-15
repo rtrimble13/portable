@@ -235,6 +235,13 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **`pt price load` and `pt ca sync` default to what was held, when it was held**
+  (ADR 0020 R2). They defaulted to every *active* instrument over the whole
+  range -- loading what was never owned and leaving out every position since
+  sold. With no symbols they now cover each instrument held in the range over
+  the days it was held, read from the ledger, with a lead-in of the staleness
+  tolerance before each held stretch; every request asks for the ticker the
+  instrument carried on those days.
 - **`ReplayEngine.rebuild()` no longer takes `until`.** It had no caller, and
   it answered "the ledger as booked through D" — with a reversal dated after D
   not yet netting its original out — which is not the state as of D
@@ -250,6 +257,30 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **fafnir priced a range from the security its ticker named on the last day.**
+  `FafnirProvider.eod_prices` and `corporate_actions` resolved the ticker once,
+  as of the range's end, so across a reused ticker every earlier date came back
+  with another issuer's bars (ADR 0020 R5). A range now resolves through
+  `core.symbol_xref` segment by segment, and a day the ticker named nothing is
+  refused by name. The non-point-in-time fallback to `primary_symbol` is gone,
+  `lookup_security` requires its date (it defaulted to `date.today()`), and
+  fafnir's `asset_type = 'other'` is refused rather than called an equity.
+- **`risk_free_rate(on)` labelled the live curve with any date asked**, parsed it
+  through binary floats, and looked tenors up under names the curve does not use
+  (`3M` as `month3m`). It now reads the row observed on that date or refuses,
+  naming the nearest earlier observation, and parses straight to `Decimal`.
+- **Provider commands turned an outage into success.** `pt price load`,
+  `pt ca sync` and `pt instrument sync` caught every exception per symbol and
+  exited 0, so an unreachable warehouse "succeeded" with an empty table. A
+  symbol with no data is still a warning; a provider that cannot be reached is
+  exit 5, and so is a run that loaded nothing at all.
+- **`--offline` was accepted and ignored** (issue #39). The configured provider
+  is no longer built under `--offline`; fetching commands are refused at once
+  with `PT-E-OFFLINE-CACHE-MISS`, and `pt info` reports `offline`.
+- **`pt instrument sync` titled its output "Hydrated from …" and wrote nothing**
+  (invariant 10). It is now a comparison: each instrument ever held, looked up as
+  of the last day it was held under the ticker it carried then, with every field
+  the provider states differently listed. It still writes nothing, and says so.
 - **Migration 0004 could not upgrade a portfolio holding an in-kind
   transfer** (ADR 0022). Its rebuild of `"transaction"` copied the column list
   from 0003, which predates 0003's own four columns (`original_basis`,

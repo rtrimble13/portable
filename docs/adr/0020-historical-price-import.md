@@ -245,6 +245,29 @@ answered. Proposed sequencing once they are:
   engine" and everything under it until the full history is priced and R10's
   reconciliation passes.
 
+## Progress (2026-10-15)
+
+Done without a warehouse, because each was needed however R1 resolves:
+
+- **R2.** `pt price load` and `pt ca sync`, given no symbols, cover every
+  instrument held in the range over the days it was held, from the ledger;
+  `pt instrument sync` compares every instrument ever held, as of the last day
+  it was held (`services/price_history.py`).
+- **R5, the adapter half.** `FafnirProvider` resolves a range segment by
+  segment through `core.symbol_xref` and refuses the days a ticker named
+  nothing, instead of resolving once as of the range's end -- which priced the
+  earlier days of a reused ticker from the wrong issuer. Each day is asked for
+  under the ticker portable recorded for it.
+- **R4, partly answered by the data dictionary.** fafnir v1.5.0 documents
+  NAV-priced funds (`asset_type = 'fund'`) in `core.daily_price`. Whether the
+  funds this portfolio held are in the tracked universe is still a question
+  for the real warehouse -- `pt instrument sync -S fafnir` now answers it.
+- Every adapter query now runs under test against fafnir's documented tables,
+  and an unreachable warehouse fails `pt price load` instead of warning.
+
+Still open: R1 (is there a warehouse to point at), R3's coverage report and
+R9's calendar, R7 (the CVR), R8 (the benchmark), R10 (the acceptance test).
+
 ## Alternatives considered
 
 - **Skip verification, build the full file-import pipeline now.** Rejected:

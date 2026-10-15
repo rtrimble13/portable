@@ -9,10 +9,12 @@ import typer
 from portable_core.decimals import from_text
 from portable_core.domain.enums import DayCount, ExerciseStyle, InstrumentType, OptionRight
 from portable_core.domain.models import BondDetail, Instrument, OptionDetail
-from portable_core.errors import ValidationError
+from portable_core.errors import DataUnavailableError, ValidationError
+from portable_core.errors.kinds import E_PRICE_MISSING
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.providers import as_security_master
+from portable_core.services import price_history
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, maybe_dry_run, resolve_date
 
@@ -246,10 +248,22 @@ def show(symbol: Annotated[str, typer.Argument()]) -> None:
 @app.command()
 def sync(
     symbols: Annotated[
-        list[str] | None, typer.Argument(help="Symbols. Default: all held.")
+        list[str] | None,
+        typer.Argument(help="Symbols. Default: every instrument the portfolio has held."),
     ] = None,
 ) -> None:
-    """Hydrate or refresh instruments from the market data provider."""
+    """Compare the local security master with the provider's. Writes nothing.
+
+    Each instrument is looked up as of the last day it was held -- or as of
+    --as-of, when it is still held or named here -- under the ticker it
+    carried that day. Looked up as of today, a ticker sold years ago can name
+    another issuer entirely, or nothing; that is the check ADR 0020 needs
+    before a history is priced (R4, R5).
+
+    Nothing is written: the security master is reference data that later
+    reports rest on, and a refresh that rewrote it as a side effect would change
+    what those reports mean. The differences are listed for a person to act on.
+    """
 
     def action() -> CommandResult:
         ctx = state.with_portfolio()
@@ -257,56 +271,81 @@ def sync(
         provider = ctx.provider()
         master = as_security_master(provider)
 
-        wanted = symbols or [i.symbol for i in repos.instruments.all()]
-        updated: list[dict[str, object]] = []
         warnings: list[str] = []
+        if symbols:
+            named = [repos.instruments.resolve(s, on=ctx.as_of) for s in symbols]
+            on_date = price_history.Span(ctx.as_of, ctx.as_of)
+            targets = [
+                (
+                    instrument,
+                    price_history.ticker_spans(repos, instrument, on_date)[0][0],
+                    ctx.as_of,
+                )
+                for instrument in named
+            ]
+        else:
+            targets, replay_warnings = price_history.lookups_when_last_held(
+                repos, through=ctx.as_of
+            )
+            warnings.extend(replay_warnings)
 
-        for symbol in wanted:
+        rows: list[dict[str, object]] = []
+        unresolved: list[str] = []
+        for instrument, ticker, on in targets:
             try:
-                fetched = master.lookup_security(symbol, on=ctx.as_of)
-            except Exception as exc:
-                warnings.append(f"{symbol}: {exc}")
+                fetched = master.lookup_security(ticker, on=on)
+            except DataUnavailableError as exc:
+                if exc.code != E_PRICE_MISSING:
+                    raise
+                unresolved.append(f"{ticker} on {on.isoformat()}: {exc.message}")
                 continue
-            updated.append(
+            rows.append(
                 {
-                    "symbol": fetched.symbol,
-                    "name": fetched.name,
-                    "exchange": fetched.exchange,
+                    "symbol": instrument.symbol,
+                    "looked_up": f"{ticker} on {on.isoformat()}",
+                    "provider_type": str(fetched.instrument_type),
+                    "provider_active": fetched.is_active,
+                    "differences": "; ".join(price_history.differences(instrument, fetched))
+                    or None,
                     "provider_ref": fetched.provider_ref,
                 }
             )
 
-        if ctx.dry_run:
-            return maybe_dry_run(
-                CommandResult(
-                    command="instrument sync",
-                    table=Table(
-                        columns=(
-                            Column("symbol", "Symbol"),
-                            Column("name", "Name"),
-                            Column("exchange", "Exchange"),
-                            Column("provider_ref", "Provider Ref"),
-                        ),
-                        rows=tuple(updated),
-                        title="Would hydrate",
-                    ),
-                    warnings=tuple(warnings),
-                )
+        if targets and len(unresolved) == len(targets):
+            raise DataUnavailableError(
+                f"{provider.name} could not place any instrument asked about",
+                code=E_PRICE_MISSING,
+                remedy="Check the symbols, and that the provider covers them.",
+                provider=provider.name,
+                problems=unresolved,
             )
+        warnings.extend(unresolved)
 
         return CommandResult(
             command="instrument sync",
             table=Table(
                 columns=(
                     Column("symbol", "Symbol"),
-                    Column("name", "Name"),
-                    Column("exchange", "Exchange"),
+                    Column("looked_up", "Looked Up"),
+                    Column("provider_type", "Type There"),
+                    Column("provider_active", "Active There", ColumnKind.BOOL),
+                    Column("differences", "Differences (here -> there)"),
                     Column("provider_ref", "Provider Ref"),
                 ),
-                rows=tuple(updated),
-                title=f"Hydrated from {provider.name}",
+                rows=tuple(rows),
+                title=f"Compared with {provider.name}",
+                footnotes=(
+                    "Nothing was written. A difference is for a person to resolve: "
+                    "the provider is not assumed to be right.",
+                ),
             ),
+            data={
+                "compared": len(rows),
+                "with_differences": sum(1 for r in rows if r["differences"]),
+                "unresolved": len(unresolved),
+            },
             warnings=tuple(warnings),
+            as_of=ctx.as_of,
             portfolio=ctx.portfolio_name(),
         )
 

@@ -26,7 +26,7 @@ the boundary rather than three frames into a valuation.
 
 ```bash
 pt --port p.port info --format json | jq .data.native_implementation
-pt --port p.port instrument sync -S fafnir     # mirrors duk's -S ergonomics
+pt --port p.port instrument sync -S fafnir     # compare the master; mirrors duk's -S
 ```
 
 ---
@@ -46,7 +46,7 @@ change here.
 | Symbol resolution **as of a date** | `core.symbol_xref` |
 | End-of-day prices | `core.daily_price` — **unadjusted** |
 | Splits and cash dividends | `core.corporate_action` |
-| Risk-free rate | `duk -S live yc` |
+| Risk-free rate | `duk -S live yc`, for the date asked |
 
 **Unadjusted prices only.** `mart.v_daily_price_adjusted` is not read by the
 valuation path, and the SQL that would read it is not written. `PORT-GIPS-A01`
@@ -58,6 +58,15 @@ transactions would double-count every split.
 own data dictionary says the primary symbol is "**not** an identifier". A ticker
 that has been reassigned resolves to whichever security held it on the trade
 date, which is the only answer that does not silently rewrite history.
+
+**A range resolves day by day.** A ticker can name one security for part of a
+range and another for the rest -- a rename, a delisting and a reuse -- so prices
+and corporate actions are fetched segment by segment, each from the security the
+ticker named on those days. A day on which it named nothing is refused by name,
+not skipped, and there is no fallback to `core.security.primary_symbol`: fafnir's
+own resolver uses that to say who holds a ticker *now*, which is never the
+question here. fafnir's `asset_type` of `other` is refused too, rather than
+assumed to be an equity.
 
 **Lineage travels with every price.** `price.provider_ref` records
 `security_id`, `trade_date`, `ingestion_run_id`, and `source`, so a valuation
@@ -85,11 +94,12 @@ This is the most important part of this page, and it is why ADR 0006 exists.
 
 DSN resolution, highest first:
 
-1. `--dsn`
-2. `PORTABLE_FAFNIR_DSN`
-3. `FAFNIR_DSN` — fafnir's own convention
-4. `[database].dsn` in `~/.dukrc`
-5. `[database].dsn` in `~/.fafnirrc`
+1. `PORTABLE_FAFNIR_DSN`
+2. `FAFNIR_DSN` — fafnir's own convention
+3. `[database].dsn` in `~/.dukrc`
+4. `[database].dsn` in `~/.fafnirrc`
+
+ADR 0006 also names a `--dsn` flag; it was never built.
 
 Somebody who already has `duk` working needs no new configuration. The
 environment is checked before any file because a DSN carries a password:
@@ -196,7 +206,47 @@ output says anything is wrong. Raise `--staleness-tolerance` when the gap is
 genuine — a holiday, a halted security — or price it by hand.
 
 `--offline` forces cache-only operation. It is the right flag when the warehouse
-is down and the prices you need are already in the file.
+is down and the prices you need are already in the file. The configured provider
+is never built, so nothing can reach a network: `pt value`, `pt mark` and
+`pt holdings` read the cache as they always do, and a command whose job is to
+fetch -- `pt price load`, `pt ca sync`, `pt instrument sync` -- is refused at once
+with `PT-E-OFFLINE-CACHE-MISS`, exit 5. That is its own error because its remedy
+is not an outage's. `pt info` reports `offline`.
+
+---
+
+## Loading a history
+
+[ADR 0020](adr/0020-historical-price-import.md). A return needs a price on every
+instrument held, for every day it was held -- including every position since
+sold. Both halves of what to ask for come from the portfolio:
+
+```bash
+pt --port p.port -S fafnir price load --from 2022-05-18 --to 2026-10-15
+pt --port p.port -S fafnir ca sync --from 2022-05-18 --to 2026-10-15
+pt --port p.port -S fafnir instrument sync
+```
+
+- **When.** With no symbols, `price load` and `ca sync` cover each instrument any
+  account held in the range, over the days it was held, read from the ledger by
+  the same replay every derived figure uses ([ADR 0021](adr/0021-derived-state-as-of-a-past-date.md)).
+  A position sold in 2023 is priced for 2022–2023 and not after; an instrument
+  never held is not asked for. Each held stretch is preceded by the staleness
+  tolerance's worth of days, so a stretch that begins on a non-trading day --
+  a cutover, an in-kind transfer -- can be valued from the previous close; a
+  stretch with nothing before it (a purchase on a listing day) is noted, not
+  refused.
+- **Under which ticker.** Each day is asked for under the ticker the instrument
+  carried that day, from portable's own symbol history (`pt ca symbol-change`),
+  and the provider resolves that ticker as of that day.
+- **`instrument sync` compares; it writes nothing.** Each instrument is looked up
+  as of the last day it was held, and every field the provider states
+  differently is listed for a person to resolve.
+
+What fails, and how: a symbol the provider has no data for is a warning, and the
+run goes on. A provider that cannot be reached -- or that cannot do what was
+asked -- is a failure, exit 5, once, rather than a warning per symbol. A run that
+loaded nothing at all is a failure too.
 
 ---
 

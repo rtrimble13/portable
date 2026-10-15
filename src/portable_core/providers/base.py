@@ -184,6 +184,15 @@ class MarketDataProvider(ABC):
         """Refuse politely, naming what would work instead."""
         require_capability(self, capability)
 
+    def unavailable(self, capability: Capability) -> DataUnavailableError | None:  # noqa: ARG002 -- an override's parameter
+        """This provider's own reason it cannot supply *capability*, if it has one.
+
+        ``None`` lets :func:`require_capability` give the general answer. A
+        provider that declines for a reason of its own -- the session is
+        offline -- says so here, so the refusal names the real cause.
+        """
+        return None
+
     def describe(self) -> dict[str, object]:
         """For `pt info` and `pt introspect`."""
         return {
@@ -265,6 +274,9 @@ def require_capability(provider: MarketDataProvider, capability: Capability) -> 
     """
     if provider.has(capability):
         return
+    own = provider.unavailable(capability)
+    if own is not None:
+        raise own
     if not provider.capabilities:
         # A provider that can do nothing at all is almost always an
         # unconfigured one, and "cannot supply eod_prices" is a worse first

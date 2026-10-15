@@ -449,6 +449,24 @@ class InstrumentRepository(_Repository):
             )
         return self._hydrate(candidates[0])
 
+    def symbol_history(self, instrument_id: int) -> list[tuple[str, date, date | None]]:
+        """``(symbol, valid_from, valid_to)`` per period, oldest first.
+
+        ``valid_to`` is inclusive and ``None`` while the symbol is current.
+        """
+        return [
+            (
+                str(r["symbol"]),
+                date.fromisoformat(r["valid_from"]),
+                date.fromisoformat(r["valid_to"]) if r["valid_to"] else None,
+            )
+            for r in self.con.execute(
+                "SELECT symbol, valid_from, valid_to FROM instrument_symbol_history "
+                "WHERE instrument_id = ? ORDER BY valid_from, symbol",
+                (instrument_id,),
+            )
+        ]
+
     def all(self, *, active_only: bool = False) -> list[Instrument]:
         sql = "SELECT * FROM instrument"
         if active_only:

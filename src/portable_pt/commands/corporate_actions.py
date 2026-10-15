@@ -38,10 +38,12 @@ from portable_core.domain.models import (
     PositionLeg,
     Transaction,
 )
-from portable_core.errors import ValidationError
+from portable_core.errors import DataUnavailableError, ValidationError
+from portable_core.errors.kinds import E_PRICE_MISSING
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.providers import as_corporate_action_provider
+from portable_core.services import price_history
 from portable_core.services.corporate_actions import CorporateActionEngine
 from portable_pt import state
 from portable_pt.commands._shared import RefOpt, dispatch, maybe_dry_run, resolve_date
@@ -685,7 +687,12 @@ def symbol_change(
 
 @app.command()
 def sync(
-    symbols: Annotated[list[str] | None, typer.Argument(help="Default: all held.")] = None,
+    symbols: Annotated[
+        list[str] | None,
+        typer.Argument(
+            help="Default: every instrument held in the range, over the days it was held."
+        ),
+    ] = None,
     start: Annotated[str | None, typer.Option("--from")] = None,
     end: Annotated[str | None, typer.Option("--to")] = None,
 ) -> None:
@@ -699,6 +706,11 @@ def sync(
     symbol changes and delistings are not in the warehouse, so this output is
     not a complete list of what happened -- it says so rather than implying
     otherwise (ADR 0006).
+
+    With no symbols, it asks about every instrument held in the range, over
+    the days it was held and under the ticker it carried then -- the full
+    history ADR 0020 R6 checks the recorded actions against, not today's
+    holdings.
     """
 
     def action() -> CommandResult:
@@ -711,31 +723,58 @@ def sync(
         first = (
             resolve_date(start, ctx, what="--from") if start else last.replace(month=1, day=1)
         )
-        wanted = symbols or [i.symbol for i in repos.instruments.all(active_only=True)]
+        warnings: list[str] = []
+        if symbols:
+            requests = price_history.requests_for(
+                repos, [repos.instruments.resolve(s, on=last) for s in symbols], first, last
+            )
+        else:
+            requests, replay_warnings = price_history.requests_while_held(
+                repos, first, last, lead_in_days=0
+            )
+            warnings.extend(replay_warnings)
 
         rows: list[dict[str, object]] = []
-        warnings: list[str] = []
-        for name in wanted:
+        unresolved: list[str] = []
+        for request in requests:
             try:
-                for record in actions_from.corporate_actions(name, first, last):
-                    rows.append(
-                        {
-                            "symbol": record.symbol,
-                            "action_type": record.action_type,
-                            "ex_date": record.ex_date.isoformat(),
-                            "pay_date": (
-                                record.pay_date.isoformat() if record.pay_date else None
-                            ),
-                            "ratio": (
-                                f"{record.split_numerator}:{record.split_denominator}"
-                                if record.split_numerator
-                                else None
-                            ),
-                            "cash_amount": record.cash_amount,
-                        }
-                    )
-            except Exception as exc:
-                warnings.append(f"{name}: {exc}")
+                found = actions_from.corporate_actions(
+                    request.symbol, request.start, request.end
+                )
+            except DataUnavailableError as exc:
+                # One symbol the provider cannot place is a warning; a provider
+                # that cannot be reached is not, and is raised.
+                if exc.code != E_PRICE_MISSING:
+                    raise
+                unresolved.append(
+                    f"{request.symbol} {request.start.isoformat()}..{request.end.isoformat()}: "
+                    f"{exc.message}"
+                )
+                continue
+            for record in found:
+                rows.append(
+                    {
+                        "symbol": record.symbol,
+                        "action_type": record.action_type,
+                        "ex_date": record.ex_date.isoformat(),
+                        "pay_date": (record.pay_date.isoformat() if record.pay_date else None),
+                        "ratio": (
+                            f"{record.split_numerator}:{record.split_denominator}"
+                            if record.split_numerator
+                            else None
+                        ),
+                        "cash_amount": record.cash_amount,
+                    }
+                )
+        if requests and len(unresolved) == len(requests):
+            raise DataUnavailableError(
+                f"{provider.name} could not answer for any instrument asked about",
+                code=E_PRICE_MISSING,
+                remedy="Check the symbols and the range.",
+                provider=provider.name,
+                problems=unresolved,
+            )
+        warnings.extend(unresolved)
 
         return CommandResult(
             command="ca sync",
@@ -754,9 +793,15 @@ def sync(
                     "Nothing was applied. Apply each with `pt ca split`, "
                     "`pt ca spinoff`, and so on -- a basis change should not happen "
                     "as a side effect of a refresh.",
-                    "fafnir carries splits and cash dividends only. Spinoffs, "
-                    "mergers, symbol changes and delistings are NOT in this list "
-                    "and must be entered by hand.",
+                    *(
+                        (
+                            "fafnir carries splits and cash dividends only. Spinoffs, "
+                            "mergers, symbol changes and delistings are NOT in this "
+                            "list and must be entered by hand.",
+                        )
+                        if provider.name == "fafnir"
+                        else ()
+                    ),
                 ),
             ),
             data={"found": len(rows), "from": first.isoformat(), "to": last.isoformat()},

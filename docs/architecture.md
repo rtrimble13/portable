@@ -183,7 +183,7 @@ Every price is cached into the `.port` file with its **source, as-of timestamp,
 valuation level, and estimate flag**, and every valuation snapshot records the
 exact set of price rows it consumed. That is not convenience — it is what
 `PORT-GIPS-J03` requires and what makes a return traceable to the ticks that
-produced it. `--offline` forces cache-only operation; a price stale beyond
+produced it. `--offline` forces cache-only operation (a command that would fetch is refused); a price stale beyond
 tolerance is exit code 5, never a silent substitution.
 
 ---
