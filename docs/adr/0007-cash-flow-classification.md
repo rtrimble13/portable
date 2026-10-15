@@ -1,6 +1,6 @@
 # ADR 0007 — Cash-flow classification is one level-aware service function
 
-- **Status:** Accepted
+- **Status:** Accepted — one level-aware `classify`, tested against the `PORT-GIPS-B02` matrix; the destination's half of a transfer comes from `classify_for_account`. Not done: the test that greps the tree for re-derived classification, and the `pt validate` check for a same-day withdrawal/deposit pair
 - **Date:** 2026-08-27
 - **Milestone:** v0.1
 - **Governs:** `PORT-GIPS-B02`

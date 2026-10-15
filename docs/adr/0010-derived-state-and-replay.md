@@ -1,6 +1,6 @@
 # ADR 0010 — Derived state, the replay contract, and what `pt rebuild` guarantees
 
-- **Status:** Accepted
+- **Status:** Accepted — the partition, the replay order and the three replay properties are implemented and property-tested. Not true as written: `rebuild()` drops valuation snapshots and nothing rebuilds them (ADR 0021, Consequences), and no code refuses a policy or tax-rate row dated before existing derived state
 - **Date:** 2026-08-27
 - **Milestone:** v0.1
 - **Governs:** `CLAUDE.md` invariants 2, 3, 6; `PORT-GIPS-J03`, `PORT-GIPS-J06`

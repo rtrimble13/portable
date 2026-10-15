@@ -1,6 +1,6 @@
 # ADR 0009 — A position spans instruments; lots hang off legs
 
-- **Status:** Accepted
+- **Status:** Accepted — the schema (positions, legs with role and sign, lots on legs) and the per-leg invariant are implemented. Contradicted in code: replay never reads `transaction.position_id`, so every opening trade lands in a single-instrument position, and `pt position group` edits `position_leg` directly with no ledger entry, so a rebuild undoes it. `pt position ungroup` and position labels are not built
 - **Date:** 2026-08-27
 - **Milestone:** v0.1
 

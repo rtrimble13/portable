@@ -1,6 +1,6 @@
 # ADR 0004 — Instrument subtype detail tables, not a JSON detail column
 
-- **Status:** Accepted
+- **Status:** Accepted — the detail tables and their CHECKs are implemented. Not done: nothing enforces that `instrument_type` agrees with the detail row present (no trigger, and `pt validate` does not check it)
 - **Date:** 2026-08-27
 - **Milestone:** v0.1
 
