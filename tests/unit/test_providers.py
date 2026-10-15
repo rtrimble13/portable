@@ -240,7 +240,7 @@ def test_a_missing_dsn_is_a_clear_error_not_a_traceback(
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     with pytest.raises(DataUnavailableError) as exc:
-        FafnirProvider().lookup_security("AAPL")
+        FafnirProvider().lookup_security("AAPL", on=date(2025, 6, 30))
     assert exc.value.code == "PT-E-PROVIDER-UNAVAILABLE"
     assert "~/.dukrc" in (exc.value.remedy or "")
 
@@ -249,7 +249,7 @@ def test_a_connection_failure_never_echoes_the_dsn() -> None:
     """A DSN carries a password. It must not reach a log or an error message."""
     provider = FafnirProvider(dsn="host=nowhere.invalid password=hunter2")
     with pytest.raises(DataUnavailableError) as exc:
-        provider.lookup_security("AAPL")
+        provider.lookup_security("AAPL", on=date(2025, 6, 30))
 
     rendered = json.dumps(exc.value.to_dict())
     assert "hunter2" not in rendered

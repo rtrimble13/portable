@@ -254,7 +254,7 @@ class FileProvider(MarketDataProvider):
             is_net_of_withholding=series.get("is_net_of_withholding"),
         )
 
-    def lookup_security(self, symbol: str, *, on: date | None = None) -> Instrument:  # noqa: ARG002 -- see the note on `on` below
+    def lookup_security(self, symbol: str, *, on: date) -> Instrument:  # noqa: ARG002 -- see the note on `on` below
         """Minimal master from what the price file mentions.
 
         Type is always ``equity``: a price file records what something traded

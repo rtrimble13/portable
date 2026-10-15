@@ -116,7 +116,11 @@ class RiskFreeRate:
 
 @runtime_checkable
 class SecurityMasterCapability(Protocol):
-    def lookup_security(self, symbol: str, *, on: date | None = None) -> Instrument: ...
+    """A ticker means different securities at different times, so the date is
+    part of the question and has no default -- defaulting it to today would
+    answer every historical lookup with whoever holds the ticker now."""
+
+    def lookup_security(self, symbol: str, *, on: date) -> Instrument: ...
 
 
 @runtime_checkable

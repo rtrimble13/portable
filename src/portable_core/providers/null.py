@@ -43,7 +43,7 @@ class NullProvider(MarketDataProvider):
 
     # The unused parameters are the protocol's, not ours: a provider that
     # refuses still has to have the shape of one.
-    def lookup_security(self, symbol: str, *, on: date | None = None) -> Instrument:  # noqa: ARG002
+    def lookup_security(self, symbol: str, *, on: date) -> Instrument:  # noqa: ARG002
 
         raise self._refuse(f"the security master lookup for {symbol!r}")
 
