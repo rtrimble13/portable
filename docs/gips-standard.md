@@ -320,9 +320,9 @@ Asset Owners **22.B.9 / 22.B.10 (B)** (added by errata **E2**) carve out the opp
 
 **Source** — Firms **2.A.21 (A)**; Asset Owners **22.A.18 (A)**.
 **What GIPS says** — if the last available historical price or a preliminary/estimated value is used as fair value, it must be considered the best approximation of current fair value, and the firm must assess the difference against the final value and **adjust when the final value is received**.
-**What `portable` must do** — This is the GIPS authority for `portable`'s price-staleness policy. A stale price is permitted only within tolerance and only when flagged; when a better price arrives, affected snapshots must be rebuilt (which `pt rebuild` already does, since snapshots are derived state). Beyond tolerance, exit code 5 as already specified.
+**What `portable` must do** — This is the GIPS authority for `portable`'s price-staleness policy. A stale price is permitted only within tolerance and only when flagged; when a better price arrives, affected snapshots must be valued again. `pt rebuild` does not do this: snapshots depend on prices as well as the ledger and are kept by a rebuild (ADR 0024). `pt validate` names every stored snapshot whose recorded price its price row no longer agrees with, and `pt value` over its date values it again. Beyond tolerance, exit code 5 as already specified.
 **Data model** — `price.is_estimate` boolean; snapshot records the set of prices it consumed.
-**Test** — `test_stale_price_then_correction_rebuilds`: introduce an estimate, compute a return, supply the final price, rebuild, and assert the return changed and the change is reported.
+**Test** — `test_stale_price_then_correction_rebuilds`: introduce an estimate, compute a return, supply the final price, value again, and assert the return changed and the change is reported. Waits on `pert`; the snapshot half is `test_port_gips_a09_a_replaced_price_names_the_snapshots_that_used_it`.
 
 ---
 

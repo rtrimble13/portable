@@ -108,15 +108,14 @@ on that day.
 - `pt reconcile --as-of` is still refused, but it could now be built on the
   walk. ADR 0020 R10's anchor, the custodian's 2026-08-27 holdings snapshot,
   wants exactly that.
-- ADR 0010's partition table says valuation snapshots are "dropped and
-  rebuilt". `rebuild()` drops them and nothing rebuilds them, because they
-  depend on prices as well as the ledger. One consequence predates this ADR
-  and is not fixed by it: `pt validate` digests `valuation_snapshot` against a
-  replay that cannot produce one, so **any portfolio that has been valued
-  fails `pt validate`**. Its remedy, `pt rebuild`, deletes the valuation
-  history. The partition needs a third class for state derived from the
-  ledger *and* prices; until it has one, valuation history and a clean
-  `pt validate` are mutually exclusive.
+- ADR 0010's partition table said valuation snapshots are "dropped and
+  rebuilt". `rebuild()` dropped them and nothing rebuilt them, because they
+  depend on prices as well as the ledger. `pt validate` digested them against
+  a replay that cannot produce one, so any valued portfolio failed it, and its
+  remedy deleted the valuation history. **Resolved by
+  [ADR 0024](0024-valuation-snapshots-are-valued-state.md):** a valued class,
+  kept by rebuild and checked by re-deriving each snapshot through this walk
+  with its recorded prices held fixed.
 - The walk costs one rebuild per invocation, inside a write-locked
   transaction. A profile showing that is too slow for the full history comes
   before any optimisation (`docs/roadmap.md`, *Candidate C++ hot paths*).

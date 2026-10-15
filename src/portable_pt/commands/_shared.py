@@ -7,6 +7,7 @@ here (`docs/architecture.md` §9).
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from typing import Annotated
@@ -18,6 +19,7 @@ from portable_core.cli.runner import dry_run_note, run_command
 from portable_core.decimals import from_text
 from portable_core.errors import UsageError
 from portable_core.formatters import CommandResult
+from portable_core.services.snapshots import removal_notices
 from portable_pt import state
 
 __all__ = ["RefOpt", "dispatch", "money_arg", "resolve_date"]
@@ -42,8 +44,26 @@ def dispatch(action: Callable[[], CommandResult]) -> None:
     ones somebody remembered.
     """
     options = state.current_options()
+    state.forget_opened()
+
+    def reported() -> CommandResult:
+        result = action()
+        # ADR 0024. A ledger write removes the valuation snapshots it makes
+        # stale, in whichever command wrote it; saying so here means no command
+        # can remove valuation history without the user being told.
+        notices = removal_notices(
+            (
+                removed
+                for ctx in state.opened()
+                if ctx.repos is not None
+                for removed in ctx.repos.transactions.removed_snapshots
+            ),
+            dry_run=options.dry_run,
+        )
+        return replace(result, warnings=(*result.warnings, *notices)) if notices else result
+
     code = run_command(
-        action,
+        reported,
         output_format=options.output_format,
         no_color=options.no_color,
         verbose=options.verbose,

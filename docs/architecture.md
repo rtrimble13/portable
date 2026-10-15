@@ -118,7 +118,8 @@ Four classes of table, and the distinction drives everything (ADR 0010):
 | **Ledger** — `transaction` | Append-only, enforced by trigger | Never touched |
 | **Reference** — instruments, prices, corporate actions | Immutable once written | Never touched |
 | **Config** — accounts, tax rates, benchmarks, policies | Effective-dated, immutable once effective | Never touched |
-| **Derived** — positions, legs, lots, dispositions, balances, snapshots | Materialized for speed | **Dropped and rebuilt** |
+| **Derived** — positions, legs, lots, dispositions, balances | Materialized for speed | **Dropped and rebuilt** |
+| **Valued** — valuation snapshots, their price sets and flows | Derived from the ledger *and* the prices each recorded | **Kept**; removed by a ledger write that makes them stale, checked by `pt validate`, recreated by `pt value` (ADR 0024) |
 
 Money, quantities, prices, and rates are canonical decimal `TEXT` (ADR 0005).
 There is no `REAL` column in the schema and a test asserts it.

@@ -106,6 +106,9 @@ E_WITHHOLDING_INVALID: Final = "PT-E-WITHHOLDING-INVALID"
 E_DUPLICATE_REF: Final = "PT-E-DUPLICATE-REF"
 E_INVARIANT_BROKEN: Final = "PT-E-INVARIANT-BROKEN"
 E_REPLAY_MISMATCH: Final = "PT-E-REPLAY-MISMATCH"
+#: A stored valuation snapshot that no longer re-derives from the ledger and
+#: the prices it recorded. The remedy is `pt value`, not `pt rebuild` (ADR 0024).
+E_SNAPSHOT_STALE: Final = "PT-E-SNAPSHOT-STALE"
 
 E_PRICE_MISSING: Final = "PT-E-PRICE-MISSING"
 E_PRICE_STALE: Final = "PT-E-PRICE-STALE"
@@ -162,6 +165,7 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_DUPLICATE_REF,
     E_INVARIANT_BROKEN,
     E_REPLAY_MISMATCH,
+    E_SNAPSHOT_STALE,
     E_PRICE_MISSING,
     E_PRICE_STALE,
     E_PROVIDER_UNAVAILABLE,

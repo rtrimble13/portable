@@ -45,10 +45,13 @@ believe one is wrong, say so and propose an ADR — do not quietly work around i
    entry — never by editing history. This is what makes the tax trail defensible.
 
 3. **All non-ledger state is derived and rebuildable.** Positions, lots, cash balances,
-   realized gains, and valuation snapshots are materialized for speed but must be exactly
-   reproducible by replaying the ledger. `pt rebuild` does this, and a test asserts that
-   replay reproduces materialized state for every fixture. If you add derived state, you
-   add it to the replay path and to that test in the same commit.
+   and realized gains are materialized for speed but must be exactly reproducible by
+   replaying the ledger. `pt rebuild` does this, and a test asserts that replay reproduces
+   materialized state for every fixture. If you add derived state, you add it to the
+   replay path and to that test in the same commit. Valuation snapshots also depend on the
+   prices they recorded, which replay does not read: they are reproducible holding those
+   prices fixed, kept by `pt rebuild`, removed by any ledger write that makes them stale,
+   and checked by `pt validate` (ADR 0024).
 
 4. **Cash is conserved.** For every transaction, cash effects across accounts plus the
    change in cost basis plus fees must balance. This is a property-based test. If your
@@ -376,6 +379,7 @@ test that fails without your change.
   | 0021 | Derived state as of a past date: the corrected ledger, replayed and rolled back |
   | 0022 | Amending a shipped migration — only when both texts leave the same file |
   | 0023 | A change of grouping is a ledger row, naming positions by their opening transaction |
+  | 0024 | Valuation snapshots are valued state: kept by rebuild, removed when stale, checked by validate |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

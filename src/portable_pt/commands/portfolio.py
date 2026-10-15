@@ -18,6 +18,7 @@ from portable_core.errors.kinds import (
     E_INVARIANT_BROKEN,
     E_PORTFOLIO_EXISTS,
     E_REPLAY_MISMATCH,
+    E_SNAPSHOT_STALE,
 )
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.persistence.connection import (
@@ -27,6 +28,7 @@ from portable_core.persistence.connection import (
 )
 from portable_core.persistence.repositories import Repositories
 from portable_core.schema import migrations as M
+from portable_core.services import snapshots
 from portable_core.services.replay import ReplayEngine, derived_state_digests
 from portable_pt import state
 
@@ -358,6 +360,15 @@ def validate(
         if not idempotent:
             problems.append(("replay", "rebuilding twice produced different state"))
 
+        # Valuation snapshots are not in the replay comparison: a replay of
+        # the ledger cannot produce them, because they also depend on prices.
+        # Each is re-derived from the ledger holding the prices it recorded
+        # fixed, and its recorded prices are checked against their price rows
+        # (ADR 0024). Read-only, like everything above.
+        stale = snapshots.verify(repos)
+        for problem in stale:
+            problems.append(("valuation", problem))
+
         if not repos.policies.all():
             warnings.append(
                 "no return_policy row: pert will refuse to compute returns until one "
@@ -386,6 +397,7 @@ def validate(
             as_of=ctx.as_of,
         )
 
+        only_stale = bool(stale) and len(stale) == len(problems)
         if problems or (strict and warnings):
             raise ValidationError(
                 f"{len(problems)} invariant problem(s) found"
@@ -393,8 +405,18 @@ def validate(
                 # A replay mismatch gets its own code: a script branching on it
                 # needs to distinguish "derived state is stale, rebuild" from
                 # every other invariant break, which has no such remedy.
-                code=E_REPLAY_MISMATCH if differing else E_INVARIANT_BROKEN,
-                remedy="Run `pt rebuild` first; if problems persist, they are real.",
+                code=(
+                    E_REPLAY_MISMATCH
+                    if differing
+                    else E_SNAPSHOT_STALE
+                    if only_stale
+                    else E_INVARIANT_BROKEN
+                ),
+                remedy=(
+                    "Value the dates named again with `pt value`."
+                    if only_stale
+                    else "Run `pt rebuild` first; if problems persist, they are real."
+                ),
                 problems=[f"{c}: {p}" for c, p in problems],
                 warnings=warnings,
             )
@@ -416,7 +438,8 @@ def rebuild() -> None:
 
     Safe to run at any time, and the standard response to any suspected
     derived-state bug: after a fix, a rebuild recovers correct state from a
-    ledger that was never wrong (ADR 0010).
+    ledger that was never wrong (ADR 0010). Valuation snapshots are kept: a
+    replay cannot produce them, and `pt validate` checks them (ADR 0024).
     """
     options = state.current_options()
 

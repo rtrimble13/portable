@@ -184,8 +184,9 @@ Every price fetched is stored in the `.port` file with:
 
 And every valuation snapshot records the **exact set of prices it consumed**, in
 `valuation_snapshot_price`. That is what `PORT-GIPS-J03` requires, and it is what
-makes `PORT-GIPS-A09` workable: when a final price replaces an estimate, the
-snapshots that used the estimate are identifiable and can be rebuilt.
+makes `PORT-GIPS-A09` workable: when a final price replaces an estimate,
+`pt validate` names every snapshot that used the estimate, and `pt value` over
+those dates values them again (ADR 0024).
 
 ### The valuation hierarchy
 

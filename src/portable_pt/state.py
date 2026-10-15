@@ -14,9 +14,14 @@ from portable_core.cli.context import CommandContext, GlobalOptions, build_conte
 from portable_core.errors import UsageError
 from portable_core.formatters import OutputFormat
 
-__all__ = ["current_options", "set_options", "with_portfolio"]
+__all__ = ["current_options", "forget_opened", "opened", "set_options", "with_portfolio"]
 
 _OPTIONS = GlobalOptions()
+
+#: Every context :func:`with_portfolio` built for the command now running, so
+#: that `dispatch` can report what its writes did beyond the command's own
+#: result -- the valuation snapshots a ledger write removed (ADR 0024).
+_OPENED: list[CommandContext] = []
 
 
 def set_options(
@@ -64,4 +69,16 @@ def current_options() -> GlobalOptions:
 
 def with_portfolio(*, check_schema: bool = True) -> CommandContext:
     """Open the portfolio named by the global flags."""
-    return build_context(_OPTIONS, require_portfolio=True, check_schema=check_schema)
+    ctx = build_context(_OPTIONS, require_portfolio=True, check_schema=check_schema)
+    _OPENED.append(ctx)
+    return ctx
+
+
+def opened() -> tuple[CommandContext, ...]:
+    """The contexts opened since :func:`forget_opened`."""
+    return tuple(_OPENED)
+
+
+def forget_opened() -> None:
+    """Start a command with nothing opened."""
+    _OPENED.clear()

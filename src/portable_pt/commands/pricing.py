@@ -12,12 +12,10 @@ import typer
 
 from portable_core.cli.context import CommandContext
 from portable_core.decimals import from_text, money_context, quantize_money
-from portable_core.domain.enums import TransactionType, ValuationBasis
+from portable_core.domain.enums import ValuationBasis
 from portable_core.domain.models import (
     Account,
     Price,
-    SnapshotPrice,
-    Transaction,
     ValuationSnapshot,
 )
 from portable_core.errors import DataUnavailableError, ValidationError
@@ -27,8 +25,7 @@ from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.persistence.repositories import Repositories
 from portable_core.providers import as_eod_provider
 from portable_core.services import price_history
-from portable_core.services.replay import effective_ledger, over_dates
-from portable_core.services.valuation import Holding, ValuationEngine
+from portable_core.services import snapshots as snapshots_service
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, maybe_dry_run, resolve_date
 
@@ -58,8 +55,8 @@ def set_price(
         bool,
         typer.Option(
             "--estimate",
-            help="A preliminary value. Flagged, and triggers a "
-            "rebuild when the final one arrives (PORT-GIPS-A09).",
+            help="A preliminary value. Flagged; when the final one replaces it, "
+            "`pt validate` names the snapshots that used it (PORT-GIPS-A09).",
         ),
     ] = False,
 ) -> None:
@@ -309,77 +306,6 @@ def show(
 # ── valuation ────────────────────────────────────────────────────────────────
 
 
-def _holdings_for(repos: Repositories, account_id: int) -> list[Holding]:
-    """Open legs in an account, as holdings to be priced.
-
-    Takes no date on purpose. It reads derived state as it currently stands,
-    and the caller is what makes that the right date: :func:`_snapshots` runs
-    it inside :func:`over_dates`, which rewinds derived state to the date being
-    valued when anything later is in the ledger (ADR 0021). Filtering here
-    instead would mean re-deriving positions outside replay.
-    """
-    holdings: list[Holding] = []
-    for position in repos.positions.all(account_id=account_id, open_only=True):
-        for leg in position.legs:
-            if leg.quantity == 0:
-                continue
-            instrument = repos.instruments.get(leg.instrument_id)
-            if instrument is None:
-                continue
-            holdings.append(Holding(instrument, leg.quantity))
-    return holdings
-
-
-def _build_snapshot(
-    ctx: CommandContext,
-    repos: Repositories,
-    account: Account,
-    on: date,
-    *,
-    beginning: Decimal,
-    transactions: list[Transaction],
-) -> ValuationSnapshot:
-    """Price an account's holdings and assemble its snapshot for one date.
-
-    Reads positions and cash from derived state, so it must run where derived
-    state is the state at the end of *on* -- see :func:`_snapshots`.
-    *transactions* are the account's effective ledger rows dated *on*: the
-    same rows, with the same reversals netted out, that the positions and
-    cash were derived from. A flow taken from any other set is a flow the
-    market value does not reflect (ADR 0021).
-
-    Instruments that cannot be priced are collected rather than raised on, so
-    that one missing price does not hide the rest of the report -- but the
-    snapshot is marked incomplete, and an incomplete snapshot must not be used
-    for a return.
-    """
-    engine = ValuationEngine(
-        staleness_tolerance_days=int(ctx.config.get("staleness_tolerance_days", 5))
-    )
-    priced: list[SnapshotPrice] = []
-    missing: list[str] = []
-
-    for holding in _holdings_for(repos, account.account_id):
-        price = repos.prices.newest_on_or_before(holding.instrument.instrument_id, on)
-        try:
-            priced.append(engine.price_holding(holding, price, on))
-        except DataUnavailableError:
-            missing.append(holding.instrument.symbol)
-
-    cash, margin = repos.valuations.cash(account.account_id, currency=account.currency)
-    return engine.build_snapshot(
-        account,
-        on,
-        priced=priced,
-        cash_balance=cash,
-        margin_loan=margin,
-        beginning_market_value=beginning,
-        transactions=transactions,
-        policy=repos.policies.in_force(on),
-        incomplete_symbols=tuple(missing),
-    )
-
-
 def _snapshots(
     ctx: CommandContext,
     repos: Repositories,
@@ -387,56 +313,14 @@ def _snapshots(
     first: date,
     last: date,
 ) -> tuple[list[ValuationSnapshot], list[str]]:
-    """Every account's snapshot for every day from *first* to *last*.
-
-    Account-major, oldest first. Positions and cash on each day are the state
-    at the end of that day, not today's state at that day's prices: when the
-    ledger has anything dated after *first*, :func:`over_dates` replays it
-    forward in a savepoint that is rolled back afterwards (ADR 0021).
-
-    Beginning market value chains from one day's snapshot to the next in
-    memory. Only the day before *first* comes from a stored snapshot, read
-    before the walk rewinds derived state.
-    """
-    days = [first + timedelta(days=n) for n in range((last - first).days + 1)]
-
-    # Filed under every account a row touches: a transfer is one row with two
-    # sides, and the receiving account's snapshot needs its inflow (ADR 0007).
-    rows_on: dict[tuple[int, date], list[Transaction]] = {}
-    for txn in effective_ledger(repos.transactions.in_ledger_order()):
-        if not first <= txn.trade_date <= last:
-            continue
-        sides = [txn.account_id]
-        if txn.txn_type is TransactionType.TRANSFER and txn.counter_account_id is not None:
-            sides.append(txn.counter_account_id)
-        for side in sides:
-            rows_on.setdefault((side, txn.trade_date), []).append(txn)
-
-    beginning: dict[int, Decimal] = {}
-    for target in accounts:
-        previous = repos.valuations.snapshot(target.account_id, first - timedelta(days=1))
-        beginning[target.account_id] = (
-            from_text(str(previous["ending_market_value"])) if previous is not None else ZERO
-        )
-
-    def visit(on: date) -> list[ValuationSnapshot]:
-        built: list[ValuationSnapshot] = []
-        for target in accounts:
-            snapshot = _build_snapshot(
-                ctx,
-                repos,
-                target,
-                on,
-                beginning=beginning[target.account_id],
-                transactions=rows_on.get((target.account_id, on), []),
-            )
-            beginning[target.account_id] = snapshot.ending_market_value
-            built.append(snapshot)
-        return built
-
-    walked = over_dates(repos, days, visit)
-    by_account = [[day[index] for day in walked.results] for index in range(len(accounts))]
-    return [snapshot for series in by_account for snapshot in series], list(walked.warnings)
+    """Every account's snapshot for every day from *first* to *last* (ADR 0021, 0024)."""
+    return snapshots_service.value_range(
+        repos,
+        accounts,
+        first,
+        last,
+        staleness_tolerance_days=int(ctx.config.get("staleness_tolerance_days", 5)),
+    )
 
 
 def value(

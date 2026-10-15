@@ -5,6 +5,7 @@
 - **Milestone:** v0.2
 - **Governs:** `CLAUDE.md` invariants 3, 6; ADR 0010; `PORT-GIPS-J06`
 - **Amends:** ADR 0010 — adds an operational obligation; the replay contract itself is unchanged
+- **Amended by:** [ADR 0024](0024-valuation-snapshots-are-valued-state.md) — the rebuild a back-dated append forces no longer deletes valuation snapshots; the append removes the ones it makes stale, and validate checks the rest instead of digesting them
 
 ## Context
 

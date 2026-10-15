@@ -242,6 +242,17 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **Valuation snapshots are a class of their own: kept by `pt rebuild`, removed
+  when a ledger write makes them stale, and checked by `pt validate`**
+  (ADR 0024). They depend on the prices they recorded as well as the ledger, so
+  a replay cannot produce them, and they are no longer part of the replay
+  comparison. `pt validate` re-derives each one from the ledger as of its date,
+  holding its recorded prices fixed. It also checks every recorded price
+  against its price row, which is the `PORT-GIPS-A09` case of a final price
+  replacing an estimate. When valuation problems are all it found, it exits 4
+  with the new code `PT-E-SNAPSHOT-STALE`, and its remedy is `pt value`.
+  `docs/gips-standard.md` `PORT-GIPS-A09` said `pt rebuild` revalued snapshots;
+  it never did, and the text now says what does.
 - **`pt price load` and `pt ca sync` default to what was held, when it was held**
   (ADR 0020 R2). They defaulted to every *active* instrument over the whole
   range -- loading what was never owned and leaving out every position since
@@ -264,6 +275,31 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **Every valued portfolio failed `pt validate`, and the remedy it named deleted
+  the valuation history** (ADR 0024). Validate compared `valuation_snapshot`
+  with a replay of the ledger, which produces none, and exited 4 with
+  `PT-E-REPLAY-MISMATCH`. `pt rebuild`, and every back-dated append, import or
+  reversal, which rebuild, deleted every snapshot of every account. A valued
+  portfolio now validates, and a rebuild keeps its snapshots.
+- **An entry dated on or before a stored snapshot left that snapshot wrong.** A
+  deposit dated after the ledger's last row but before a valuation date was
+  applied incrementally, and the snapshot kept the cash it had before.
+  `TransactionRepository.append` now removes every snapshot the row changes:
+  the accounts it touches, from its date onward, and for a reversal from the
+  date of the entry it reverses. The command says which snapshots it removed
+  and gives the `pt value` command that restores them. A dry-run
+  `pt import batch`, which rehearses the commit, says what it would remove.
+  Other accounts, and earlier dates, are kept. A position regroup removes
+  nothing.
+- **Valuing a day a second time could file its price set and flows under
+  another snapshot.** `save_snapshot` took the snapshot's id from `lastrowid`
+  after an upsert. On the update path, SQLite leaves that at the previous
+  insert on the connection, usually another snapshot's price or flow row. The
+  snapshot then either overwrote that one's record or failed with a
+  foreign-key error. `pt price set` had the same defect and reported another
+  row's id when it replaced a price. Both now look the id up by the key they
+  upserted on. Run `pt validate` once on a file valued before this change: it
+  names any snapshot affected.
 - **A rebuild undid every position grouping** (ADR 0023). `pt position group`
   edited derived state directly, so the next rebuild -- any back-dated import,
   reversal or `--incremental` update -- split a covered call back into a stock
