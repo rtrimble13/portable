@@ -345,3 +345,48 @@ def test_every_table_is_documented_in_the_generated_reference() -> None:
     ]
     missing = [t for t in tables if f"## `{t}`" not in rendered]
     assert missing == [], missing
+
+
+def test_schema_reference_describes_the_schema_a_migrated_file_has() -> None:
+    """Each table and index once, as the latest migration leaves it -- and no other.
+
+    Rebuild migrations (ADR 0019) re-create tables, and the reference used to
+    list every version of them: the v1 ledger, two `transaction_new` tables
+    and two `lot` tables, an index 0002 dropped, and not the unique index 0002
+    created. Held to the real database here, so the next rebuild cannot do it
+    again (ADR 0022).
+    """
+    import io
+    import re
+
+    from portable_core.schema import docgen
+
+    buffer = io.StringIO()
+    docgen.main(buffer)
+    rendered = buffer.getvalue()
+
+    con = sqlite3.connect(":memory:", isolation_level=None)
+    con.row_factory = sqlite3.Row
+    try:
+        M.initialise(con)
+        tables = sorted(
+            r[0]
+            for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        )
+        indexes = sorted(
+            r[0]
+            for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
+            )
+        )
+        columns = [r[1] for r in con.execute('PRAGMA table_info("transaction")')]
+    finally:
+        con.close()
+
+    assert sorted(re.findall(r"^## `(\w+)`$", rendered, re.MULTILINE)) == tables
+    assert sorted(re.findall(r"^- `(\w+)` on \(", rendered, re.MULTILINE)) == indexes
+    ledger = rendered.split("## `transaction`")[1].split("\n## ")[0]
+    assert re.findall(r"^\| `(\w+)` \|", ledger, re.MULTILINE) == columns
+    assert "- `CHECK (`" not in rendered, "a wrapped constraint is rendered whole"

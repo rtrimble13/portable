@@ -16,6 +16,16 @@
 --
 -- See 0002_external_ref_unique.sql for the note on why migrations are never
 -- edited once applied.
+--
+-- AMENDED (ADR 0022). As first shipped, the copy into transaction_new listed
+-- 0002's columns and not the four 0003 added -- original_basis,
+-- original_acquired_date, basis_source, basis_assumption -- so a file holding
+-- any transfer_in row failed the CHECK below and could not upgrade. Only a
+-- transfer_in carries those columns, so no file that did upgrade had a value
+-- in them to lose: the original text and this one leave every such file with
+-- the same schema and the same rows. The original's checksum is recorded in
+-- migrations.py and still accepted; the test that proves the equivalence
+-- applies both texts.
 
 -- ── The ledger ──────────────────────────────────────────────────────────────
 -- Triggers are dropped explicitly rather than left to fall with the table, so
@@ -160,7 +170,8 @@ INSERT INTO transaction_new (
     taxes_withheld, withholding_reclaimable, fee_class, net_cash_effect,
     position_id, counter_account_id, related_txn_id, reverses_txn_id,
     lot_selection, relief_method, ex_date, pay_date, is_qualified, note,
-    external_ref, source, created_at
+    external_ref, source, original_basis, original_acquired_date,
+    basis_source, basis_assumption, created_at
 )
 SELECT
     txn_id, account_id, trade_date, settlement_date, seq, txn_type,
@@ -168,7 +179,8 @@ SELECT
     taxes_withheld, withholding_reclaimable, fee_class, net_cash_effect,
     position_id, counter_account_id, related_txn_id, reverses_txn_id,
     lot_selection, relief_method, ex_date, pay_date, is_qualified, note,
-    external_ref, source, created_at
+    external_ref, source, original_basis, original_acquired_date,
+    basis_source, basis_assumption, created_at
 FROM "transaction";
 
 DROP TABLE "transaction";

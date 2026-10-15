@@ -131,9 +131,23 @@ and recorded in `schema_migration` with a **checksum**.
 - **Never renumbered, never edited once applied.** The checksum makes that
   enforceable rather than merely asked for: `pt validate` reports a migration
   whose file no longer matches what was applied, because the DDL on disk no
-  longer describes the database in front of you.
-- **Idempotent** — every statement uses `IF NOT EXISTS`, so a half-applied
-  migration can be re-run.
+  longer describes the database in front of you. The one exception is
+  [ADR 0022](adr/0022-amending-a-shipped-migration.md): a shipped migration
+  may be amended only when the amended text leaves every file the original
+  could migrate with the same schema and the same rows. A test applies both
+  texts to prove it, and the original's checksum stays accepted
+  (`SUPERSEDED_CHECKSUMS`). 0004 is the one amended so far.
+- **All or nothing.** Each migration runs in one transaction and is recorded
+  in the same one, so a failure leaves the file exactly as it was. Additive
+  statements also use `IF NOT EXISTS`.
+- **A table SQLite cannot alter is rebuilt**
+  ([ADR 0019](adr/0019-migrations-that-rebuild-a-table.md)): a `CHECK` or a
+  `NOT NULL` column is changed by building `x_new`, copying every row, and
+  renaming it over `x`. A migration declares this with `-- portable:rebuild`
+  in its header. The runner turns foreign keys off around it, checks every
+  reference once before commit, and refuses a rebuild that did not restore
+  every trigger and every index. 0003 and 0004 rebuild `"transaction"`; 0003
+  also rebuilds `lot`.
 - **Preconditions are checked first.** A migration is pure SQL and cannot
   branch, so a constraint added over existing data either applies or fails with
   whatever SQLite says — and `_apply`'s remedy, restore the backup, would

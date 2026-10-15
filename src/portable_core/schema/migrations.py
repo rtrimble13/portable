@@ -3,7 +3,12 @@
 Rules, from the bootstrap (§5) and `CLAUDE.md`:
 
 * Migrations are numbered and **never renumbered or edited once applied**. The
-  checksum is what makes that enforceable rather than merely asked for.
+  checksum is what makes that enforceable rather than merely asked for. The
+  one exception is ADR 0022's: a shipped migration with a defect may be
+  amended when the amended text leaves every file the original could migrate
+  with the same schema and the same rows. The original's checksum is then
+  recorded in :data:`SUPERSEDED_CHECKSUMS` and still accepted, and a test
+  applies both texts to prove the equivalence.
 * They are **idempotent** -- every statement uses ``IF NOT EXISTS`` or is
   guarded -- so a half-applied migration can be re-run.
 * `pt` **refuses to open a file with a newer schema version than it
@@ -45,6 +50,22 @@ REBUILD_MARKER: Final = "-- portable:rebuild"
 #: by every migration, in the same commit as the migration and its CHANGELOG
 #: entry.
 CURRENT_SCHEMA_VERSION: Final[int] = 4
+
+#: Checksums of shipped migration texts that were later amended under ADR 0022,
+#: by version, each with the reason. A file that applied one of these is
+#: indistinguishable from a file that applied the amended text -- that is the
+#: condition for amending at all, and the test that applies both texts is what
+#: shows it -- so :func:`verify_checksums` accepts either. Any other mismatch is
+#: still an edited migration.
+SUPERSEDED_CHECKSUMS: Final[dict[int, dict[str, str]]] = {
+    4: {
+        "3fa7ece69f196fdc63bce1935d4521f5155e74262872428c83ab1fbc26c43f2a": (
+            "0004 as first shipped did not copy the four basis-provenance columns "
+            "0003 added. Only a transfer_in carries them and its CHECK refused the "
+            "copy, so every file it did migrate had nothing in them to lose."
+        ),
+    },
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +265,25 @@ def _triggers(con: sqlite3.Connection) -> set[str]:
     }
 
 
+def _indexes(con: sqlite3.Connection) -> set[str]:
+    """Every explicitly created index in the file, by name.
+
+    Compared across a rebuild for the same reason as :func:`_triggers`: a
+    rebuild drops a table's indexes with it, and a file that lost
+    ``ux_txn_account_external_ref`` looks entirely fine while accepting the
+    duplicate references migration 0002 exists to refuse. SQLite's own
+    ``sqlite_autoindex_*`` entries (``sql IS NULL``) are implied by a table's
+    UNIQUE and PRIMARY KEY clauses, which the rebuilt table restates, and are
+    named after the table they were created on -- so they are left out.
+    """
+    return {
+        str(row[0])
+        for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL"
+        )
+    }
+
+
 def _check_foreign_keys(con: sqlite3.Connection, migration: Migration) -> None:
     """The enforcement a rebuild switches off, reinstated once at the end.
 
@@ -277,8 +317,9 @@ def _apply(con: sqlite3.Connection, migration: Migration) -> None:
         # rebuild migration could exist at all (ADR 0019).
         con.execute("PRAGMA foreign_keys = OFF")
     triggers_before = _triggers(con) if migration.rebuilds else set()
+    indexes_before = _indexes(con) if migration.rebuilds else set()
     try:
-        _run(con, migration, triggers_before)
+        _run(con, migration, triggers_before, indexes_before)
     finally:
         if migration.rebuilds:
             # `foreign_keys` is connection state, not file state. Leaving it OFF
@@ -288,7 +329,12 @@ def _apply(con: sqlite3.Connection, migration: Migration) -> None:
             con.execute("PRAGMA foreign_keys = ON")
 
 
-def _run(con: sqlite3.Connection, migration: Migration, triggers_before: set[str]) -> None:
+def _run(
+    con: sqlite3.Connection,
+    migration: Migration,
+    triggers_before: set[str],
+    indexes_before: set[str],
+) -> None:
     con.execute("BEGIN IMMEDIATE")
     try:
         for statement in split_statements(migration.sql):
@@ -305,6 +351,17 @@ def _run(con: sqlite3.Connection, migration: Migration, triggers_before: set[str
                     remedy="This is a bug in the migration, not in the file. Report it.",
                     version=migration.version,
                     triggers=sorted(lost),
+                )
+            lost_indexes = indexes_before - _indexes(con)
+            if lost_indexes:
+                raise PortfolioFileError(
+                    f"migration {migration.version:04d}_{migration.name} did not "
+                    f"restore index(es) {', '.join(sorted(lost_indexes))}; the file "
+                    f"is unchanged",
+                    code=E_MIGRATION_FAILED,
+                    remedy="This is a bug in the migration, not in the file. Report it.",
+                    version=migration.version,
+                    indexes=sorted(lost_indexes),
                 )
         # `meta.schema_version` is a required key that `pt validate` checks and
         # `pt export` carries. Nothing updated it after a migration, which never
@@ -326,7 +383,7 @@ def _run(con: sqlite3.Connection, migration: Migration, triggers_before: set[str
             ),
         )
     except PortfolioFileError:
-        # Raised by the two rebuild checks above, which have already said
+        # Raised by the rebuild checks above, which have already said
         # precisely what is wrong. Rolled back and re-raised unchanged rather
         # than wrapped in a generic "migration failed".
         con.execute("ROLLBACK")
@@ -370,7 +427,9 @@ def verify_checksums(con: sqlite3.Connection) -> list[str]:
                 f"migration {version:04d} was applied to this file but is not shipped "
                 "with this build of portable"
             )
-        elif migration.checksum != row["checksum"]:
+        elif migration.checksum != row["checksum"] and row["checksum"] not in (
+            SUPERSEDED_CHECKSUMS.get(version, {})
+        ):
             problems.append(
                 f"migration {version:04d}_{row['name']} has been edited since it was "
                 "applied: the DDL on disk no longer describes this database"

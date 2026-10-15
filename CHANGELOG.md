@@ -250,6 +250,27 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **Migration 0004 could not upgrade a portfolio holding an in-kind
+  transfer** (ADR 0022). Its rebuild of `"transaction"` copied the column list
+  from 0003, which predates 0003's own four columns (`original_basis`,
+  `original_acquired_date`, `basis_source`, `basis_assumption`). So the copy
+  wrote `NULL` into a `transfer_in`'s `basis_source`, the `CHECK` refused it,
+  and the file stayed at v3. That covers every portfolio seeded by
+  `pt import broker` or `pt transfer in`. Nothing was lost anywhere: only a
+  `transfer_in` carries those columns, so no file that did upgrade had a value
+  in them. 0004 is amended in place. The text that first shipped is kept as a
+  test fixture, a test applies both texts and finds the same schema and the
+  same rows, and its checksum is still accepted, so v4 files keep passing
+  `pt validate`.
+- **A rebuild migration could lose an index unnoticed.** The runner compared
+  triggers across a rebuild but not indexes; it now refuses a rebuild that does
+  not restore every explicitly created index (ADR 0019's open item).
+- **`docs/schema.md` described every version of a rebuilt table.** It listed
+  the v1 ledger, two `transaction_new` tables, two `lot` tables, an index 0002
+  dropped, and not the unique index 0002 created, and it rendered wrapped
+  `CHECK`s as `CHECK (`. `make docs` now describes the schema the migrations
+  produce, and a test holds it to a migrated file.
+- **`examples/sample.port` was still at schema 3**; regenerated at 4.
 - **A report for a past date read today's book** (ADR 0021). `pt value`,
   `pt mark`, and `pt holdings` / `pt pnl` / `pt lot list` under `--as-of` read
   *current* positions, lots and cash and labelled them with the earlier date.

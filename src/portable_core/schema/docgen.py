@@ -15,6 +15,13 @@ can remember does not get written:
   column.
 * A trailing ``-- decimal`` marks a column as canonical decimal ``TEXT``
   (ADR 0005) and is rendered as a type rather than as prose.
+
+Migrations are read in order and describe **the schema they produce**, not the
+history of it. A table re-created by a later migration -- by ``DROP`` and
+``CREATE``, or by building ``x_new`` and renaming it onto ``x`` (ADR 0019) --
+replaces the earlier entry, keeping the table's and each column's description
+where the new text does not restate it. Indexes and triggers a rebuild
+recreates are listed once.
 """
 
 from __future__ import annotations
@@ -22,7 +29,7 @@ from __future__ import annotations
 import re
 import sys
 from dataclasses import dataclass, field
-from typing import TextIO
+from typing import TextIO, TypeVar
 
 from portable_core.schema.migrations import CURRENT_SCHEMA_VERSION, available_migrations
 
@@ -38,6 +45,13 @@ _CREATE_INDEX = re.compile(
 _CREATE_TRIGGER = re.compile(
     r"^\s*CREATE\s+TRIGGER(\s+IF\s+NOT\s+EXISTS)?\s+(?P<name>\w+)", re.IGNORECASE
 )
+#: An index ``(name, columns)`` or a trigger ``(name, doc)``.
+_Named = TypeVar("_Named", tuple[str, str], tuple[str, list[str]])
+
+_ALTER_RENAME = re.compile(
+    r'^\s*ALTER\s+TABLE\s+"?(?P<old>\w+)"?\s+RENAME\s+TO\s+"?(?P<new>\w+)"?', re.IGNORECASE
+)
+_DROP_INDEX = re.compile(r"^\s*DROP\s+INDEX(\s+IF\s+EXISTS)?\s+(?P<name>\w+)", re.IGNORECASE)
 _COMMENT = re.compile(r"^\s*--\s?(?P<text>.*)$")
 _DECIMAL_MARKER = re.compile(r"--\s*decimal\s*$")
 # A column definition: an identifier followed by a type, at the table's
@@ -67,15 +81,22 @@ class Table:
     triggers: list[tuple[str, list[str]]] = field(default_factory=list)
 
 
-def parse(sql: str) -> list[Table]:
-    """Extract tables, columns, indexes, and triggers with their comments."""
-    tables: list[Table] = []
-    by_name: dict[str, Table] = {}
+def parse(sql: str, into: list[Table] | None = None) -> list[Table]:
+    """Extract tables, columns, indexes, and triggers with their comments.
 
-    lines = sql.splitlines()
+    Pass the tables parsed from earlier migrations as *into*, and a table this
+    text rebuilds replaces its entry there rather than appearing twice.
+    """
+    tables: list[Table] = into if into is not None else []
+    by_name: dict[str, Table] = {table.name: table for table in tables}
+    #: A table being re-created, until its body is parsed and it can inherit.
+    replacing: dict[int, Table] = {}
+
+    lines = _join_wrapped_indexes(sql.splitlines())
     pending_doc: list[str] = []
     pending_table_name: str | None = None
     current: Table | None = None
+    open_constraint = False
 
     for raw in lines:
         if current is None:
@@ -89,16 +110,42 @@ def parse(sql: str) -> list[Table]:
             if create:
                 name = create.group("name")
                 current = Table(name=name, doc=list(pending_doc))
-                tables.append(current)
+                previous = by_name.get(name)
+                if previous is None:
+                    tables.append(current)
+                else:
+                    tables[tables.index(previous)] = current
+                    replacing[id(current)] = previous
                 by_name[name] = current
                 pending_doc = []
                 pending_table_name = None
                 continue
 
+            rename = _ALTER_RENAME.match(raw)
+            if rename and rename.group("old") in by_name:
+                moved = by_name.pop(rename.group("old"))
+                moved.name = rename.group("new")
+                previous = by_name.get(moved.name)
+                if previous is not None:
+                    tables.remove(moved)
+                    tables[tables.index(previous)] = moved
+                    _inherit(moved, previous)
+                by_name[moved.name] = moved
+                pending_doc = []
+                continue
+
+            dropped = _DROP_INDEX.match(raw)
+            if dropped:
+                for table in tables:
+                    table.indexes = [i for i in table.indexes if i[0] != dropped.group("name")]
+                pending_doc = []
+                continue
+
             index = _CREATE_INDEX.match(raw)
             if index and index.group("table") in by_name:
-                by_name[index.group("table")].indexes.append(
-                    (index.group("name"), index.group("cols").strip())
+                _put(
+                    by_name[index.group("table")].indexes,
+                    (index.group("name"), index.group("cols").strip()),
                 )
                 pending_doc = []
                 continue
@@ -111,7 +158,7 @@ def parse(sql: str) -> list[Table]:
                 _pending_trigger = trigger.group("name")
                 for table in tables[::-1]:
                     if table.name in raw or _pending_trigger.startswith(f"trg_{table.name}"):
-                        table.triggers.append((_pending_trigger, list(pending_doc)))
+                        _put(table.triggers, (_pending_trigger, list(pending_doc)))
                         break
                 pending_doc = []
                 continue
@@ -130,8 +177,25 @@ def parse(sql: str) -> list[Table]:
 
         # Inside a CREATE TABLE body.
         if raw.startswith(");"):
+            previous = replacing.pop(id(current), None)
+            if previous is not None:
+                _inherit(current, previous)
             current = None
             pending_doc = []
+            open_constraint = False
+            continue
+
+        # A table-level CHECK wrapped over several lines continues as that
+        # constraint until its parentheses balance. Recognised first: its
+        # inner lines are indented like a column's continuation, and used to be
+        # glued onto whichever column preceded the constraint.
+        if open_constraint:
+            stripped = raw.strip()
+            if stripped and not stripped.startswith("--"):
+                current.constraints[-1] = f"{current.constraints[-1]} {stripped}"
+            if not _unbalanced(current.constraints[-1]):
+                current.constraints[-1] = _clean_constraint(current.constraints[-1])
+                open_constraint = False
             continue
 
         # A continuation line -- a CHECK or REFERENCES wrapped onto the next
@@ -157,6 +221,7 @@ def parse(sql: str) -> list[Table]:
 
         if _TABLE_CONSTRAINT.match(raw):
             current.constraints.append(raw.strip().rstrip(","))
+            open_constraint = _unbalanced(current.constraints[-1])
             pending_doc = []
             continue
 
@@ -174,6 +239,79 @@ def parse(sql: str) -> list[Table]:
             pending_doc = []
 
     return tables
+
+
+def _inherit(table: Table, previous: Table) -> None:
+    """Carry *previous*'s descriptions onto the table that replaces it.
+
+    A rebuild restates a table's shape but rarely its prose: the column
+    comments written when a column was added live in the migration that added
+    it. So a description the new text does not give is kept from the old one,
+    and indexes and triggers the rebuild does not mention are kept as well --
+    the migration runner refuses a rebuild that loses one (ADR 0019, ADR 0022).
+    """
+    if not table.doc:
+        table.doc = previous.doc
+    earlier = {column.name: column for column in previous.columns}
+    for column in table.columns:
+        prior = earlier.get(column.name)
+        if prior is not None and not column.doc:
+            column.doc = prior.doc
+    for index in previous.indexes:
+        if all(name != index[0] for name, _ in table.indexes):
+            table.indexes.insert(0, index)
+    for trigger in previous.triggers:
+        mine = [i for i, (name, _) in enumerate(table.triggers) if name == trigger[0]]
+        if not mine:
+            table.triggers.insert(0, trigger)
+        elif not table.triggers[mine[0]][1]:
+            table.triggers[mine[0]] = (trigger[0], trigger[1])
+
+
+def _put(items: list[_Named], item: _Named) -> None:
+    """Add *item*, replacing one of the same name: a rebuild recreates by name.
+
+    A recreation that says nothing about itself keeps the earlier
+    description: the comment explaining a trigger was written once, where the
+    trigger first appeared, and a rebuild's ``CREATE TRIGGER`` restates only
+    its SQL.
+    """
+    for position, existing in enumerate(items):
+        if existing[0] == item[0]:
+            if item[1]:
+                items[position] = item
+            return
+    items.append(item)
+
+
+_INDEX_START = re.compile(r"^\s*CREATE\s+(UNIQUE\s+)?INDEX\b", re.IGNORECASE)
+
+
+def _join_wrapped_indexes(lines: list[str]) -> list[str]:
+    """Rejoin a ``CREATE INDEX`` whose ``ON`` clause wrapped onto the next line.
+
+    Migration 0002's unique index on ``(account_id, external_ref)`` is written
+    that way, and a line-at-a-time match never saw it -- so the one index that
+    enforces duplicate detection was missing from the reference.
+    """
+    joined: list[str] = []
+    for line in lines:
+        if (
+            joined
+            and _INDEX_START.match(joined[-1])
+            and not _CREATE_INDEX.match(joined[-1])
+            and line.strip()
+        ):
+            joined[-1] = f"{joined[-1].rstrip()} {line.strip()}"
+            continue
+        joined.append(line)
+    return joined
+
+
+def _clean_constraint(text: str) -> str:
+    """One line, no padding inside parentheses, no trailing comma."""
+    text = re.sub(r"\s+", " ", text).strip().rstrip(",")
+    return re.sub(r"\(\s+", "(", re.sub(r"\s+\)", ")", text))
 
 
 def _unbalanced(text: str) -> bool:
@@ -297,7 +435,7 @@ def main(out: TextIO | None = None) -> int:
     stream = out or sys.stdout
     tables: list[Table] = []
     for migration in available_migrations():
-        tables.extend(parse(migration.sql))
+        parse(migration.sql, into=tables)
     render(tables, stream)
     return 0
 

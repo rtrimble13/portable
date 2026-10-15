@@ -374,6 +374,7 @@ test that fails without your change.
   | 0019 | A migration may rebuild a table, and what that costs |
   | 0020 | Historical price import: requirements and open questions (proposed) |
   | 0021 | Derived state as of a past date: the corrected ledger, replayed and rolled back |
+  | 0022 | Amending a shipped migration — only when both texts leave the same file |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager
