@@ -159,6 +159,28 @@ def scratch_transaction(con: sqlite3.Connection) -> Iterator[sqlite3.Connection]
         con.execute("ROLLBACK")
 
 
+@contextmanager
+def scratch_savepoint(con: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """Like :func:`scratch_transaction`, but usable inside a transaction too.
+
+    Outside one, it *is* a scratch transaction. Inside one, it is a savepoint
+    rolled back to and released, so the enclosing transaction carries on with
+    everything it wrote before the block and nothing written within it. That
+    is what lets `pt value` rewind derived state to a past date, read it, and
+    persist the snapshot it built -- all in one transaction (ADR 0021).
+    """
+    if not con.in_transaction:
+        with scratch_transaction(con):
+            yield con
+        return
+    con.execute("SAVEPOINT scratch")
+    try:
+        yield con
+    finally:
+        con.execute("ROLLBACK TO scratch")
+        con.execute("RELEASE scratch")
+
+
 def decimal_or_none(value: Any) -> Decimal | None:
     """Convert a nullable text column to a Decimal.
 

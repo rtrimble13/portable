@@ -653,6 +653,18 @@ class TransactionRepository(_Repository):
         ).fetchone()
         return int(row["n"])
 
+    def any_after(self, on: date) -> bool:
+        """Whether any ledger row is dated after *on*.
+
+        False means stored derived state is already the state as of *on*,
+        because nothing remains to be replayed past it (ADR 0021).
+        """
+        row = self.con.execute(
+            'SELECT EXISTS (SELECT 1 FROM "transaction" WHERE trade_date > ?) AS later',
+            (on.isoformat(),),
+        ).fetchone()
+        return bool(row["later"])
+
     def first_trade_date(self, account_id: int) -> date | None:
         """The account's earliest ledger row, or ``None`` for an account with none.
 

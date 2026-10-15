@@ -55,3 +55,4 @@ ADR (that document's §13), and `PORT-GIPS-xxx` identifiers are never reused.
 | [0018](0018-minimum-broker-dataset.md) | The minimum broker dataset, and capability-gated import |
 | [0019](0019-migrations-that-rebuild-a-table.md) | A migration may rebuild a table, and what that costs |
 | [0020](0020-historical-price-import.md) | Historical price import: requirements and open questions |
+| [0021](0021-derived-state-as-of-a-past-date.md) | Derived state as of a past date |

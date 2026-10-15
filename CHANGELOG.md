@@ -235,6 +235,10 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **`ReplayEngine.rebuild()` no longer takes `until`.** It had no caller, and
+  it answered "the ledger as booked through D" — with a reversal dated after D
+  not yet netting its original out — which is not the state as of D
+  (ADR 0021). Ask `ReplayEngine.walk` or `replay.state_on` instead.
 - **A synthesized `external_ref` no longer depends on the row's position in
   the batch.** ADR 0012's ordinal is now counted among identical source rows
   rather than taken from the batch index, so the same custodian row gets the
@@ -246,6 +250,24 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **A report for a past date read today's book** (ADR 0021). `pt value`,
+  `pt mark`, and `pt holdings` / `pt pnl` / `pt lot list` under `--as-of` read
+  *current* positions, lots and cash and labelled them with the earlier date.
+  So `pt value --date 2024-06-30` priced positions bought in 2025 at 2024
+  prices, added today's cash balance, and stored the result as a **complete**
+  snapshot: the substrate the return engine reads. It went unnoticed only
+  because old prices were missing, and ADR 0020 sets out to load them. State
+  as of a date is now one forward replay of the ledger in a savepoint that is
+  rolled back (`ReplayEngine.walk`), skipped when nothing is dated after that
+  date. **Snapshots of past dates written before this fix are wrong wherever a
+  later ledger row exists: re-run `pt value` over the range.**
+- **A reversed entry left a phantom flow in the snapshot.** Snapshot flows
+  counted a reversed deposit on its own date while replay, and so snapshot
+  value, had netted it out. That is a contribution that never reached market
+  value. Flows now come from the same reversal-netted rows as value, defined
+  once in `replay.effective_ledger`. `pt cash-flows` still lists the reversed
+  entry and its reversal on their own dates; ADR 0021 records that as open,
+  to be settled before the money-weighted return consumes either series.
 - **Two in-kind transfers on one date collided.** `record_transfer_in` and
   `record_transfer_out` set `seq = 0` where every other write path assigns it
   from the ledger, so the second transfer on a given day failed

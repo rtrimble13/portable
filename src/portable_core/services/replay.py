@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
+from typing import Generic, TypeVar
 
 from portable_core.decimals import money_context, quantize_money, quantize_quantity, to_text
 from portable_core.domain.enums import (
@@ -45,6 +47,7 @@ from portable_core.domain.models import (
 )
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import E_CASH_NOT_CONSERVED, E_REPLAY_MISMATCH
+from portable_core.persistence.connection import scratch_savepoint
 from portable_core.persistence.repositories import Repositories
 from portable_core.services.corporate_actions import CorporateActionEngine
 from portable_core.services.lots import LotEngine
@@ -54,9 +57,15 @@ from portable_core.services.tax import TaxEngine
 __all__ = [
     "ReplayEngine",
     "ReplayResult",
+    "Walk",
     "derived_state_digest",
     "derived_state_digests",
+    "effective_ledger",
+    "over_dates",
+    "state_on",
 ]
+
+T = TypeVar("T")
 
 ZERO = Decimal("0.00")
 
@@ -91,6 +100,52 @@ class ReplayResult:
     #: produces no derived state means derived state is not a function of the
     #: whole ledger.
     warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class Walk(Generic[T]):
+    """What :meth:`ReplayEngine.walk` saw: one result per date, in date order."""
+
+    results: tuple[T, ...]
+    #: Ledger rows the replay could not apply -- the same facts `pt rebuild`
+    #: reports as warnings, because the walk replays the same rows.
+    warnings: tuple[str, ...] = ()
+
+
+def effective_ledger(transactions: Iterable[Transaction]) -> list[Transaction]:
+    """The ledger with every reversal, and the entry it reverses, netted out.
+
+    **This is the one place that netting is defined** (ADR 0021). Replay
+    derives state from these rows, the cash-conservation check sums them, the
+    historical walk truncates them, and a valuation snapshot takes its flows
+    from them -- so a snapshot's market value and its flows cannot disagree
+    about whether a reversed entry happened.
+
+    Pass the **whole** ledger and truncate afterwards. A reversal dated after D
+    still nets its original out of the state as of D: a reversal corrects the
+    record, it is not an economic event on its own date. Both rows remain in
+    the ledger, which is the point -- history shows the mistake, the reversal
+    and the correction (CLAUDE.md invariant 2), while derived state reflects
+    only the net effect.
+
+    Netting the pair out is stronger than trying to unwind the original's
+    effect after the fact. Unwinding would have to decide what to do with lots
+    that a later trade had already consumed; netting surfaces that as an
+    unmatched closing trade, which is the honest answer -- reversing a purchase
+    whose shares were subsequently sold is a conflict a person has to resolve,
+    not something replay should paper over.
+    """
+    rows = list(transactions)
+    reversed_ids = {
+        txn.reverses_txn_id
+        for txn in rows
+        if txn.txn_type is TransactionType.REVERSAL and txn.reverses_txn_id
+    }
+    return [
+        txn
+        for txn in rows
+        if txn.txn_id not in reversed_ids and txn.txn_type is not TransactionType.REVERSAL
+    ]
 
 
 def derived_state_digest(repos: Repositories) -> str:
@@ -144,52 +199,30 @@ class ReplayEngine:
         self.positions = PositionEngine()
         self.tax = TaxEngine()
 
-    def rebuild(self, *, until: date | None = None) -> ReplayResult:
+    def rebuild(self) -> ReplayResult:
         """Drop every derived row and replay the ledger.
 
         Safe to run at any time, and the standard response to any suspected
         derived-state bug: after a fix, a rebuild recovers correct state from a
         ledger that was never wrong.
+
+        There is deliberately no ``until``. State as of an earlier date is
+        :meth:`walk`'s question, and a rebuild truncated at D answers a
+        different one -- the ledger *as booked* through D, with a reversal
+        dated after D not yet netting its original out (ADR 0021).
         """
         self.repos.clear_derived()
 
-        transactions = self.repos.transactions.in_ledger_order(until=until)
+        transactions = self.repos.transactions.in_ledger_order()
         counters = {"positions": 0, "lots": 0, "dispositions": 0}
         warnings: list[str] = []
         cash: dict[tuple[int, str], Decimal] = {}
 
-        # A reversal and the entry it reverses net to zero in DERIVED state.
-        # Both are skipped here -- and both remain in the ledger, which is the
-        # point: history shows the mistake, the reversal, and the correction,
-        # while the current position reflects only the net effect
-        # (CLAUDE.md invariant 2).
-        #
-        # Netting the pair out is stronger than trying to unwind the original's
-        # effect after the fact. Unwinding would have to decide what to do with
-        # lots that a later trade had already consumed; skipping surfaces that
-        # as an unmatched closing trade, which is the honest answer -- reversing
-        # a purchase whose shares were subsequently sold is a conflict a person
-        # has to resolve, not something replay should paper over.
-        reversed_ids = {
-            txn.reverses_txn_id
-            for txn in transactions
-            if txn.txn_type is TransactionType.REVERSAL and txn.reverses_txn_id
-        }
-
-        for txn in transactions:
-            if txn.txn_id in reversed_ids or txn.txn_type is TransactionType.REVERSAL:
-                continue
-            try:
-                self.apply_transaction(txn, counters=counters, cash=cash)
-            except ValidationError as exc:
-                # A replay that cannot apply a transaction reports it and
-                # continues, so that `pt rebuild` surfaces every problem in one
-                # pass rather than one per run. `pt validate` is what turns
-                # these into a non-zero exit.
-                warnings.append(f"txn {txn.txn_id} ({txn.txn_type}): {exc.message}")
-
-        for (account_id, currency), balance in sorted(cash.items()):
-            self.repos.valuations.set_cash(account_id, balance, currency=currency)
+        # A reversal and the entry it reverses net to zero in DERIVED state;
+        # effective_ledger() says why, once.
+        for txn in effective_ledger(transactions):
+            self._apply_reporting(txn, counters, cash, warnings)
+        self._write_cash(cash)
 
         return ReplayResult(
             transactions_replayed=len(transactions),
@@ -199,6 +232,70 @@ class ReplayEngine:
             digest=derived_state_digest(self.repos),
             warnings=tuple(warnings),
         )
+
+    def _apply_reporting(
+        self,
+        txn: Transaction,
+        counters: dict[str, int],
+        cash: dict[tuple[int, str], Decimal],
+        warnings: list[str],
+    ) -> None:
+        """Apply one row during a full replay, reporting rather than raising.
+
+        A replay that cannot apply a transaction reports it and continues, so
+        that `pt rebuild` surfaces every problem in one pass rather than one per
+        run. `pt validate` is what turns these into a non-zero exit.
+        """
+        try:
+            self.apply_transaction(txn, counters=counters, cash=cash)
+        except ValidationError as exc:
+            warnings.append(f"txn {txn.txn_id} ({txn.txn_type}): {exc.message}")
+
+    def _write_cash(self, cash: dict[tuple[int, str], Decimal]) -> None:
+        for (account_id, currency), balance in sorted(cash.items()):
+            self.repos.valuations.set_cash(account_id, balance, currency=currency)
+
+    # ── state as of a past date ──────────────────────────────────────────────
+
+    def walk(self, dates: Iterable[date], visit: Callable[[date], T]) -> Walk[T]:
+        """Call *visit* with derived state as it stood at the end of each date.
+
+        ADR 0021. One forward replay of the effective ledger, through the same
+        :meth:`apply_transaction` every other path uses, pausing at the end of
+        each requested date for *visit* to read state through the repositories
+        as it normally would. A whole range costs one replay, not one per day.
+
+        The replay runs inside :func:`scratch_savepoint`, so stored derived
+        state is byte-identical afterwards -- inside the caller's transaction
+        when there is one, so `pt value` can persist what it computed in the
+        same transaction. *visit* must therefore return plain values, not
+        anything that reads the database lazily.
+
+        Prefer :func:`over_dates`, which skips the replay when stored state
+        already is the answer.
+        """
+        wanted = sorted(set(dates))
+        if not wanted:
+            return Walk(())
+
+        transactions = effective_ledger(self.repos.transactions.in_ledger_order())
+        counters = {"positions": 0, "lots": 0, "dispositions": 0}
+        warnings: list[str] = []
+        cash: dict[tuple[int, str], Decimal] = {}
+        results: list[T] = []
+
+        with scratch_savepoint(self.repos.con):
+            self.repos.clear_derived()
+            pending = iter(transactions)
+            following = next(pending, None)
+            for on in wanted:
+                while following is not None and following.trade_date <= on:
+                    self._apply_reporting(following, counters, cash, warnings)
+                    following = next(pending, None)
+                self._write_cash(cash)
+                results.append(visit(on))
+
+        return Walk(tuple(results), tuple(warnings))
 
     # ── the live append path ─────────────────────────────────────────────────
 
@@ -752,20 +849,11 @@ class ReplayEngine:
         effect was computed one way when written and another when replayed --
         which is a wrong number that nothing else would surface.
         """
-        every = self.repos.transactions.in_ledger_order()
-        # The same netting rebuild() applies -- otherwise this check would
-        # disagree with the balances rebuild() just wrote, and report a break
-        # that is really a difference of opinion between two functions.
-        reversed_ids = {
-            txn.reverses_txn_id
-            for txn in every
-            if txn.txn_type is TransactionType.REVERSAL and txn.reverses_txn_id
-        }
-        effective = [
-            txn
-            for txn in every
-            if txn.txn_id not in reversed_ids and txn.txn_type is not TransactionType.REVERSAL
-        ]
+        # The same netting rebuild() applies, from the same function --
+        # otherwise this check would disagree with the balances rebuild() just
+        # wrote, and report a break that is really a difference of opinion
+        # between two functions.
+        effective = effective_ledger(self.repos.transactions.in_ledger_order())
 
         problems: list[str] = []
         for account in self.repos.accounts.all():
@@ -812,3 +900,33 @@ class ReplayEngine:
                 remedy="Run `pt rebuild`, then `pt validate` again.",
                 problems=problems,
             )
+
+
+def over_dates(
+    repos: Repositories, dates: Iterable[date], visit: Callable[[date], T]
+) -> Walk[T]:
+    """:meth:`ReplayEngine.walk`, skipping the replay when it cannot matter.
+
+    When no ledger row is dated after the earliest of *dates*, stored derived
+    state already is the state at every one of them: nothing remains to be
+    replayed past it, and ADR 0016 keeps stored state equal to a replay (which
+    `pt validate` checks). So *visit* reads it directly. Otherwise the walk
+    rewinds derived state in a savepoint and replays forward (ADR 0021).
+    """
+    wanted = sorted(set(dates))
+    if not wanted:
+        return Walk(())
+    if not repos.transactions.any_after(wanted[0]):
+        return Walk(tuple(visit(on) for on in wanted))
+    return ReplayEngine(repos).walk(wanted, visit)
+
+
+def state_on(repos: Repositories, on: date, read: Callable[[], T]) -> Walk[T]:
+    """Run *read* against derived state as it stood at the end of *on*.
+
+    For a command that reports positions, lots, cash or gains "as of" a date:
+    reading current state there and labelling it with the past date is the
+    defect ADR 0021 records -- today's book at yesterday's prices, marked
+    complete. ``results[0]`` is what *read* returned.
+    """
+    return over_dates(repos, (on,), lambda _on: read())

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -27,6 +28,7 @@ from portable_core.services.reconciliation import (
     RealizedTieLine,
     ReconciliationService,
 )
+from portable_core.services.replay import state_on
 from portable_core.services.tax import TaxEngine, TaxSummary
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, maybe_dry_run, money_arg, resolve_date
@@ -53,86 +55,101 @@ def holdings(
         repos = ctx.require_portfolio()
         accounts = [repos.accounts.resolve(account)] if account else repos.accounts.all()
 
-        rows: list[dict[str, object]] = []
-        warnings: list[str] = []
-        with money_context():
-            total = ZERO
-            for target in accounts:
-                for position in repos.positions.all(
-                    account_id=target.account_id, open_only=True
-                ):
-                    for leg in position.legs:
-                        if leg.quantity == 0:
-                            continue
-                        instrument = repos.instruments.get(leg.instrument_id)
-                        if instrument is None:
-                            continue
-                        price = repos.prices.newest_on_or_before(
-                            instrument.instrument_id, ctx.as_of
-                        )
-                        lots = repos.lots.by_leg(leg.leg_id)
-                        basis = sum((lot.adjusted_cost_basis for lot in lots), ZERO)
-                        value = (
-                            quantize_money(
-                                price.price * leg.quantity * instrument.contract_size
+        def read() -> tuple[list[dict[str, object]], list[str], Decimal]:
+            # Positions, lots and cash as they stood at the end of --as-of,
+            # not today's (ADR 0021): state_on runs this against a replay
+            # rewound to that date whenever the ledger has anything later.
+            rows: list[dict[str, object]] = []
+            warnings: list[str] = []
+            with money_context():
+                total = ZERO
+                for target in accounts:
+                    for position in repos.positions.all(
+                        account_id=target.account_id, open_only=True
+                    ):
+                        for leg in position.legs:
+                            if leg.quantity == 0:
+                                continue
+                            instrument = repos.instruments.get(leg.instrument_id)
+                            if instrument is None:
+                                continue
+                            price = repos.prices.newest_on_or_before(
+                                instrument.instrument_id, ctx.as_of
                             )
-                            if price
-                            else None
-                        )
-                        if price is None:
-                            warnings.append(
-                                f"{instrument.symbol}: no price on or before "
-                                f"{ctx.as_of.isoformat()}; market value shown as null, "
-                                "not as zero."
+                            lots = repos.lots.by_leg(leg.leg_id)
+                            basis = sum((lot.adjusted_cost_basis for lot in lots), ZERO)
+                            value = (
+                                quantize_money(
+                                    price.price * leg.quantity * instrument.contract_size
+                                )
+                                if price
+                                else None
                             )
-                        else:
-                            total += value or ZERO
+                            if price is None:
+                                warnings.append(
+                                    f"{instrument.symbol}: no price on or before "
+                                    f"{ctx.as_of.isoformat()}; market value shown as null, "
+                                    "not as zero."
+                                )
+                            else:
+                                total += value or ZERO
+                            rows.append(
+                                {
+                                    "account": target.name,
+                                    "position_id": position.position_id,
+                                    "symbol": instrument.symbol,
+                                    "sector": instrument.sector,
+                                    "asset_class": instrument.asset_class,
+                                    "role": str(leg.role),
+                                    "quantity": leg.quantity,
+                                    "price": price.price if price else None,
+                                    "price_date": (
+                                        price.price_date.isoformat() if price else None
+                                    ),
+                                    "market_value": value,
+                                    "cost_basis": basis,
+                                    "unrealized": (
+                                        quantize_money(value - basis)
+                                        if value is not None
+                                        else None
+                                    ),
+                                }
+                            )
+
+                    cash, margin = repos.valuations.cash(
+                        target.account_id, currency=target.currency
+                    )
+                    if cash != 0 or margin != 0:
+                        total += cash - margin
                         rows.append(
                             {
                                 "account": target.name,
-                                "position_id": position.position_id,
-                                "symbol": instrument.symbol,
-                                "sector": instrument.sector,
-                                "asset_class": instrument.asset_class,
-                                "role": str(leg.role),
-                                "quantity": leg.quantity,
-                                "price": price.price if price else None,
-                                "price_date": (price.price_date.isoformat() if price else None),
-                                "market_value": value,
-                                "cost_basis": basis,
-                                "unrealized": (
-                                    quantize_money(value - basis) if value is not None else None
-                                ),
+                                "position_id": None,
+                                "symbol": "CASH",
+                                "sector": None,
+                                "asset_class": "cash",
+                                "role": "cash",
+                                "quantity": None,
+                                "price": None,
+                                "price_date": None,
+                                "market_value": quantize_money(cash - margin),
+                                "cost_basis": quantize_money(cash - margin),
+                                "unrealized": ZERO,
                             }
                         )
 
-                cash, margin = repos.valuations.cash(
-                    target.account_id, currency=target.currency
-                )
-                if cash != 0 or margin != 0:
-                    total += cash - margin
-                    rows.append(
-                        {
-                            "account": target.name,
-                            "position_id": None,
-                            "symbol": "CASH",
-                            "sector": None,
-                            "asset_class": "cash",
-                            "role": "cash",
-                            "quantity": None,
-                            "price": None,
-                            "price_date": None,
-                            "market_value": quantize_money(cash - margin),
-                            "cost_basis": quantize_money(cash - margin),
-                            "unrealized": ZERO,
-                        }
+                for row in rows:
+                    row_value = row.get("market_value")
+                    row["weight"] = (
+                        (row_value / total)
+                        if isinstance(row_value, Decimal) and total
+                        else None
                     )
+            return rows, warnings, total
 
-            for row in rows:
-                row_value = row.get("market_value")
-                row["weight"] = (
-                    (row_value / total) if isinstance(row_value, Decimal) and total else None
-                )
+        as_of_state = state_on(repos, ctx.as_of, read)
+        rows, warnings, total = as_of_state.results[0]
+        warnings = [*warnings, *as_of_state.warnings]
 
         rows = _group_holdings(rows, by)
 
@@ -272,6 +289,21 @@ def _group_holdings(rows: list[dict[str, object]], by: str) -> list[dict[str, ob
 # ── pnl ──────────────────────────────────────────────────────────────────────
 
 
+@dataclass(frozen=True, slots=True)
+class _PnlFigures:
+    """What `pt pnl` reads from derived state, as of --as-of."""
+
+    rows: list[dict[str, object]]
+    realized: Decimal
+    unrealized: Decimal
+    estimated_tax: Decimal
+    unpriced: list[str]
+    #: Dispositions excluded from every total for want of a derivable basis
+    #: (ADR 0017 §2b).
+    unreportable: int
+    approximate_basis: Decimal
+
+
 def pnl(
     account: Annotated[str | None, typer.Option("--account", "-a")] = None,
     year: Annotated[int | None, typer.Option("--year")] = None,
@@ -290,62 +322,81 @@ def pnl(
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
         account_id = repos.accounts.resolve(account).account_id if account else None
-        gains = repos.lots.realized_gains(tax_year=year, account_id=account_id)
 
-        rows: list[dict[str, object]] = []
-        # ADR 0017 §2b, the same rule `pt tax` applies: a disposition whose lot
-        # carries no derivable basis contributes no realized gain here either.
-        # Its stored figure is the change since an arbitrary date, and summing
-        # it into a P&L total is the same wrong number under a different
-        # heading.
-        unreportable_pnl = [g for g in gains if g.basis_source is BasisSource.UNAVAILABLE]
-        reportable = [g for g in gains if g.basis_source is not BasisSource.UNAVAILABLE]
-        approximate_basis = ZERO
-        with money_context():
-            realized = ZERO
-            estimated_tax = ZERO
-            for gain in reportable:
-                instrument = repos.instruments.get(gain.instrument_id)
-                realized += gain.gain
-                estimated_tax += gain.estimated_tax or ZERO
-                if gain.basis_source is not BasisSource.DERIVED:
-                    approximate_basis += gain.cost_basis
-                rows.append(
-                    {
-                        "date": gain.disposition_date.isoformat(),
-                        "symbol": instrument.symbol if instrument else None,
-                        "holding_period": str(gain.holding_period),
-                        "proceeds": gain.proceeds,
-                        "cost_basis": gain.cost_basis,
-                        "gain": gain.gain,
-                        "basis_from": str(gain.basis_source),
-                        "estimated_tax": gain.estimated_tax,
-                        "net_of_tax": TaxEngine.net_of_tax(gain.gain, gain.estimated_tax),
-                    }
+        def read() -> _PnlFigures:
+            # Realized through --as-of and unrealized on it, from the state at
+            # the end of that date rather than today's (ADR 0021).
+            gains = repos.lots.realized_gains(tax_year=year, account_id=account_id)
+
+            rows: list[dict[str, object]] = []
+            # ADR 0017 §2b, the same rule `pt tax` applies: a disposition whose lot
+            # carries no derivable basis contributes no realized gain here either.
+            # Its stored figure is the change since an arbitrary date, and summing
+            # it into a P&L total is the same wrong number under a different
+            # heading.
+            unreportable_pnl = [g for g in gains if g.basis_source is BasisSource.UNAVAILABLE]
+            reportable = [g for g in gains if g.basis_source is not BasisSource.UNAVAILABLE]
+            approximate_basis = ZERO
+            with money_context():
+                realized = ZERO
+                estimated_tax = ZERO
+                for gain in reportable:
+                    instrument = repos.instruments.get(gain.instrument_id)
+                    realized += gain.gain
+                    estimated_tax += gain.estimated_tax or ZERO
+                    if gain.basis_source is not BasisSource.DERIVED:
+                        approximate_basis += gain.cost_basis
+                    rows.append(
+                        {
+                            "date": gain.disposition_date.isoformat(),
+                            "symbol": instrument.symbol if instrument else None,
+                            "holding_period": str(gain.holding_period),
+                            "proceeds": gain.proceeds,
+                            "cost_basis": gain.cost_basis,
+                            "gain": gain.gain,
+                            "basis_from": str(gain.basis_source),
+                            "estimated_tax": gain.estimated_tax,
+                            "net_of_tax": TaxEngine.net_of_tax(gain.gain, gain.estimated_tax),
+                        }
+                    )
+
+                unrealized = ZERO
+                unpriced: list[str] = []
+                accounts = (
+                    [repos.accounts.resolve(account)] if account else repos.accounts.all()
                 )
+                for target in accounts:
+                    for position in repos.positions.all(
+                        account_id=target.account_id, open_only=True
+                    ):
+                        for leg in position.legs:
+                            instrument = repos.instruments.get(leg.instrument_id)
+                            if instrument is None or leg.quantity == 0:
+                                continue
+                            price = repos.prices.newest_on_or_before(
+                                instrument.instrument_id, ctx.as_of
+                            )
+                            if price is None:
+                                unpriced.append(instrument.symbol)
+                                continue
+                            lots = repos.lots.by_leg(leg.leg_id)
+                            basis = sum((lot.adjusted_cost_basis for lot in lots), ZERO)
+                            unrealized += (
+                                price.price * leg.quantity * instrument.contract_size - basis
+                            )
+            return _PnlFigures(
+                rows=rows,
+                realized=realized,
+                unrealized=unrealized,
+                estimated_tax=estimated_tax,
+                unpriced=unpriced,
+                unreportable=len(unreportable_pnl),
+                approximate_basis=approximate_basis,
+            )
 
-            unrealized = ZERO
-            unpriced: list[str] = []
-            accounts = [repos.accounts.resolve(account)] if account else repos.accounts.all()
-            for target in accounts:
-                for position in repos.positions.all(
-                    account_id=target.account_id, open_only=True
-                ):
-                    for leg in position.legs:
-                        instrument = repos.instruments.get(leg.instrument_id)
-                        if instrument is None or leg.quantity == 0:
-                            continue
-                        price = repos.prices.newest_on_or_before(
-                            instrument.instrument_id, ctx.as_of
-                        )
-                        if price is None:
-                            unpriced.append(instrument.symbol)
-                            continue
-                        lots = repos.lots.by_leg(leg.leg_id)
-                        basis = sum((lot.adjusted_cost_basis for lot in lots), ZERO)
-                        unrealized += (
-                            price.price * leg.quantity * instrument.contract_size - basis
-                        )
+        as_of_state = state_on(repos, ctx.as_of, read)
+        figures = as_of_state.results[0]
+        rows = figures.rows
 
         return CommandResult(
             command="pnl",
@@ -374,39 +425,42 @@ def pnl(
                 ),
             ),
             data={
-                "realized": quantize_money(realized),
-                "unrealized": quantize_money(unrealized),
-                "estimated_tax": quantize_money(estimated_tax),
+                "realized": quantize_money(figures.realized),
+                "unrealized": quantize_money(figures.unrealized),
+                "estimated_tax": quantize_money(figures.estimated_tax),
                 "realized_net_of_tax": (
-                    quantize_money(realized - estimated_tax) if net_of_tax else None
+                    quantize_money(figures.realized - figures.estimated_tax)
+                    if net_of_tax
+                    else None
                 ),
-                "unpriced_instruments": sorted(set(unpriced)),
+                "unpriced_instruments": sorted(set(figures.unpriced)),
                 # ADR 0017 §3, carried as envelope fields for the same reason
                 # `pt tax` carries them: a consumer must not be able to take the
                 # totals without the qualification attached.
-                "is_complete": not unreportable_pnl,
-                "approximate_basis": quantize_money(approximate_basis),
-                "excluded_dispositions": len(unreportable_pnl),
+                "is_complete": not figures.unreportable,
+                "approximate_basis": quantize_money(figures.approximate_basis),
+                "excluded_dispositions": figures.unreportable,
             },
             warnings=(
                 *(
                     (
-                        f"{len(set(unpriced))} instrument(s) could not be priced; "
+                        f"{len(set(figures.unpriced))} instrument(s) could not be priced; "
                         "unrealized P&L excludes them rather than treating them as zero.",
                     )
-                    if unpriced
+                    if figures.unpriced
                     else ()
                 ),
                 *(
                     (
-                        f"{len(unreportable_pnl)} disposition(s) are excluded from "
+                        f"{figures.unreportable} disposition(s) are excluded from "
                         "realized P&L: no cost basis for them can be derived from the "
                         "available evidence, so the difference between proceeds and "
                         "the seeded value is not a gain (ADR 0017).",
                     )
-                    if unreportable_pnl
+                    if figures.unreportable
                     else ()
                 ),
+                *as_of_state.warnings,
             ),
             as_of=ctx.as_of,
             portfolio=ctx.portfolio_name(),
@@ -806,14 +860,14 @@ def reconcile(
 
         if state.current_options().as_of is not None:
             # Reconciliation compares what the portfolio holds *now* against the
-            # statement. There is no as-of position query, and silently ignoring
-            # the flag would answer a question nobody asked.
+            # statement. Positions as of a past date exist (ADR 0021), but the
+            # reconciliation service has not been built on them, and silently
+            # ignoring the flag would answer a question nobody asked.
             raise ValidationError(
                 "`pt reconcile` compares current holdings, so --as-of does not apply",
                 remedy=(
                     "Drop --as-of and reconcile against a current statement. Reconciling "
-                    "to a past date needs positions as they stood then, which portable "
-                    "does not yet reconstruct."
+                    "to a past statement is not built yet (ADR 0021, Consequences)."
                 ),
             )
 

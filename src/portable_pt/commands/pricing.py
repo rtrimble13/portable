@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated
@@ -15,6 +16,7 @@ from portable_core.domain.models import (
     Account,
     Price,
     SnapshotPrice,
+    Transaction,
     ValuationSnapshot,
 )
 from portable_core.errors import DataUnavailableError, ValidationError
@@ -22,6 +24,7 @@ from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.persistence.repositories import Repositories
 from portable_core.providers import as_eod_provider
+from portable_core.services.replay import effective_ledger, over_dates
 from portable_core.services.valuation import Holding, ValuationEngine
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, maybe_dry_run, resolve_date
@@ -236,11 +239,11 @@ def show(
 def _holdings_for(repos: Repositories, account_id: int) -> list[Holding]:
     """Open legs in an account, as holdings to be priced.
 
-    Takes no date on purpose. A leg's quantity is current derived state, so
-    accepting a date here would invite a caller to believe it were honoured.
-    Valuing a past date correctly means rebuilding derived state to that date,
-    not filtering here -- and a signature that implied otherwise would be the
-    more dangerous kind of wrong.
+    Takes no date on purpose. It reads derived state as it currently stands,
+    and the caller is what makes that the right date: :func:`_snapshots` runs
+    it inside :func:`over_dates`, which rewinds derived state to the date being
+    valued when anything later is in the ledger (ADR 0021). Filtering here
+    instead would mean re-deriving positions outside replay.
     """
     holdings: list[Holding] = []
     for position in repos.positions.all(account_id=account_id, open_only=True):
@@ -255,9 +258,22 @@ def _holdings_for(repos: Repositories, account_id: int) -> list[Holding]:
 
 
 def _build_snapshot(
-    ctx: CommandContext, repos: Repositories, account: Account, on: date
+    ctx: CommandContext,
+    repos: Repositories,
+    account: Account,
+    on: date,
+    *,
+    beginning: Decimal,
+    transactions: list[Transaction],
 ) -> ValuationSnapshot:
     """Price an account's holdings and assemble its snapshot for one date.
+
+    Reads positions and cash from derived state, so it must run where derived
+    state is the state at the end of *on* -- see :func:`_snapshots`.
+    *transactions* are the account's effective ledger rows dated *on*: the
+    same rows, with the same reversals netted out, that the positions and
+    cash were derived from. A flow taken from any other set is a flow the
+    market value does not reflect (ADR 0021).
 
     Instruments that cannot be priced are collected rather than raised on, so
     that one missing price does not hide the rest of the report -- but the
@@ -278,12 +294,6 @@ def _build_snapshot(
             missing.append(holding.instrument.symbol)
 
     cash, margin = repos.valuations.cash(account.account_id, currency=account.currency)
-    transactions = repos.transactions.in_ledger_order(until=on, account_id=account.account_id)
-    previous = repos.valuations.snapshot(account.account_id, on - timedelta(days=1))
-    beginning = (
-        from_text(str(previous["ending_market_value"])) if previous is not None else ZERO
-    )
-
     return engine.build_snapshot(
         account,
         on,
@@ -295,6 +305,58 @@ def _build_snapshot(
         policy=repos.policies.in_force(on),
         incomplete_symbols=tuple(missing),
     )
+
+
+def _snapshots(
+    ctx: CommandContext,
+    repos: Repositories,
+    accounts: Sequence[Account],
+    first: date,
+    last: date,
+) -> tuple[list[ValuationSnapshot], list[str]]:
+    """Every account's snapshot for every day from *first* to *last*.
+
+    Account-major, oldest first. Positions and cash on each day are the state
+    at the end of that day, not today's state at that day's prices: when the
+    ledger has anything dated after *first*, :func:`over_dates` replays it
+    forward in a savepoint that is rolled back afterwards (ADR 0021).
+
+    Beginning market value chains from one day's snapshot to the next in
+    memory. Only the day before *first* comes from a stored snapshot, read
+    before the walk rewinds derived state.
+    """
+    days = [first + timedelta(days=n) for n in range((last - first).days + 1)]
+
+    rows_on: dict[tuple[int, date], list[Transaction]] = {}
+    for txn in effective_ledger(repos.transactions.in_ledger_order()):
+        if first <= txn.trade_date <= last:
+            rows_on.setdefault((txn.account_id, txn.trade_date), []).append(txn)
+
+    beginning: dict[int, Decimal] = {}
+    for target in accounts:
+        previous = repos.valuations.snapshot(target.account_id, first - timedelta(days=1))
+        beginning[target.account_id] = (
+            from_text(str(previous["ending_market_value"])) if previous is not None else ZERO
+        )
+
+    def visit(on: date) -> list[ValuationSnapshot]:
+        built: list[ValuationSnapshot] = []
+        for target in accounts:
+            snapshot = _build_snapshot(
+                ctx,
+                repos,
+                target,
+                on,
+                beginning=beginning[target.account_id],
+                transactions=rows_on.get((target.account_id, on), []),
+            )
+            beginning[target.account_id] = snapshot.ending_market_value
+            built.append(snapshot)
+        return built
+
+    walked = over_dates(repos, days, visit)
+    by_account = [[day[index] for day in walked.results] for index in range(len(accounts))]
+    return [snapshot for series in by_account for snapshot in series], list(walked.warnings)
 
 
 def value(
@@ -329,36 +391,43 @@ def value(
             )
 
         accounts = [repos.accounts.resolve(account)] if account else repos.accounts.all()
-        rows: list[dict[str, object]] = []
-        warnings: list[str] = []
+        names = {target.account_id: target.name for target in accounts}
 
-        for target in accounts:
-            on = first
-            while on <= last:
-                snapshot = _build_snapshot(ctx, repos, target, on)
-                if not ctx.dry_run:
-                    with db_transaction(repos.con):
-                        repos.valuations.save_snapshot(snapshot)
-                if not snapshot.is_complete:
-                    warnings.append(
-                        f"{target.name} {on.isoformat()}: incomplete -- some positions "
-                        "could not be priced. This snapshot must not be used for a "
-                        "return."
-                    )
-                rows.append(
-                    {
-                        "account": target.name,
-                        "date": on.isoformat(),
-                        "securities": snapshot.securities_value,
-                        "cash": snapshot.cash_balance,
-                        "accrued": snapshot.accrued_income,
-                        "ending": snapshot.ending_market_value,
-                        "flow_account": snapshot.external_flow_account,
-                        "flow_portfolio": snapshot.external_flow_portfolio,
-                        "complete": snapshot.is_complete,
-                    }
+        if ctx.dry_run:
+            snapshots, warnings = _snapshots(ctx, repos, accounts, first, last)
+        else:
+            # One transaction: the walk rewinds derived state in a savepoint
+            # inside it, and the snapshots it built are written after the
+            # savepoint is rolled back -- so nothing can append to the ledger
+            # between valuing a day and recording the value.
+            with db_transaction(repos.con):
+                snapshots, warnings = _snapshots(ctx, repos, accounts, first, last)
+                for snapshot in snapshots:
+                    repos.valuations.save_snapshot(snapshot)
+
+        rows: list[dict[str, object]] = []
+        for snapshot in snapshots:
+            name = names[snapshot.account_id]
+            on = snapshot.snapshot_date
+            if not snapshot.is_complete:
+                warnings.append(
+                    f"{name} {on.isoformat()}: incomplete -- some positions "
+                    "could not be priced. This snapshot must not be used for a "
+                    "return."
                 )
-                on += timedelta(days=1)
+            rows.append(
+                {
+                    "account": name,
+                    "date": on.isoformat(),
+                    "securities": snapshot.securities_value,
+                    "cash": snapshot.cash_balance,
+                    "accrued": snapshot.accrued_income,
+                    "ending": snapshot.ending_market_value,
+                    "flow_account": snapshot.external_flow_account,
+                    "flow_portfolio": snapshot.external_flow_portfolio,
+                    "complete": snapshot.is_complete,
+                }
+            )
 
         result = CommandResult(
             command="value",
@@ -405,15 +474,18 @@ def mark(
         repos = ctx.require_portfolio()
         on = resolve_date(date_text, ctx)
 
+        accounts = repos.accounts.all(include_closed=False)
+        names = {target.account_id: target.name for target in accounts}
+        snapshots, warnings = _snapshots(ctx, repos, accounts, on, on)
+
         rows: list[dict[str, object]] = []
         with money_context():
             total = ZERO
-            for target in repos.accounts.all(include_closed=False):
-                snapshot = _build_snapshot(ctx, repos, target, on)
+            for snapshot in snapshots:
                 total += snapshot.ending_market_value
                 rows.append(
                     {
-                        "account": target.name,
+                        "account": names[snapshot.account_id],
                         "ending": snapshot.ending_market_value,
                         "cash": snapshot.cash_balance,
                         "complete": snapshot.is_complete,
@@ -433,6 +505,7 @@ def mark(
                 title=f"Marked to market, {on.isoformat()}",
             ),
             data={"total_market_value": quantize_money(total), "as_of": on.isoformat()},
+            warnings=tuple(warnings),
             as_of=on,
             portfolio=ctx.portfolio_name(),
         )

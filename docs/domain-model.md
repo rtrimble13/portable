@@ -206,7 +206,10 @@ independent P&L once the option resolves into stock.
 **The ledger. Append-only, immutable, and the only source of truth.** Database
 triggers reject `UPDATE` and `DELETE`. A mistake is corrected with a **reversing
 entry plus a new entry** — never by editing history. That is what makes the tax
-trail defensible, and it is why `--as-of` time travel works on every query.
+trail defensible, and it is why `--as-of` time travel works: a report for a past
+date replays the ledger up to that date, with every reversed entry netted out,
+and reads the state that replay produces (ADR 0021). `pt reconcile` is the one
+report that still refuses a past date.
 
 The ledger covers:
 

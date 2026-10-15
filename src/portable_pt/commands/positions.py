@@ -11,6 +11,7 @@ from portable_core.errors import ValidationError
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.services.positions import PositionEngine
+from portable_core.services.replay import state_on
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, maybe_dry_run
 
@@ -217,36 +218,43 @@ def list_lots(
         repos = ctx.require_portfolio()
         from portable_core.domain.dates import days_between, holding_period
 
-        rows: list[dict[str, object]] = []
-        accounts = [repos.accounts.resolve(account)] if account else repos.accounts.all()
-        for target in accounts:
-            instruments = (
-                [repos.instruments.resolve(symbol, on=ctx.as_of)]
-                if symbol
-                else repos.instruments.all()
-            )
-            for instrument in instruments:
-                for lot in repos.lots.open_lots(
-                    target.account_id, instrument.instrument_id, as_of=ctx.as_of
-                ):
-                    if open_only and not lot.is_open:
-                        continue
-                    period = holding_period(
-                        lot.holding_period_start, ctx.as_of, is_short_sale=lot.is_short
-                    )
-                    rows.append(
-                        {
-                            "lot_id": lot.lot_id,
-                            "account": target.name,
-                            "symbol": instrument.symbol,
-                            "open_date": lot.open_date.isoformat(),
-                            "quantity": lot.remaining_quantity,
-                            "basis": lot.adjusted_cost_basis,
-                            "per_unit": lot.basis_per_unit,
-                            "holding_period": str(period),
-                            "days_held": days_between(lot.holding_period_start, ctx.as_of),
-                        }
-                    )
+        def read() -> list[dict[str, object]]:
+            # Lots as they stood at the end of --as-of: a lot sold since is
+            # listed, and one bought since is not (ADR 0021).
+            rows: list[dict[str, object]] = []
+            accounts = [repos.accounts.resolve(account)] if account else repos.accounts.all()
+            for target in accounts:
+                instruments = (
+                    [repos.instruments.resolve(symbol, on=ctx.as_of)]
+                    if symbol
+                    else repos.instruments.all()
+                )
+                for instrument in instruments:
+                    for lot in repos.lots.open_lots(
+                        target.account_id, instrument.instrument_id, as_of=ctx.as_of
+                    ):
+                        if open_only and not lot.is_open:
+                            continue
+                        period = holding_period(
+                            lot.holding_period_start, ctx.as_of, is_short_sale=lot.is_short
+                        )
+                        rows.append(
+                            {
+                                "lot_id": lot.lot_id,
+                                "account": target.name,
+                                "symbol": instrument.symbol,
+                                "open_date": lot.open_date.isoformat(),
+                                "quantity": lot.remaining_quantity,
+                                "basis": lot.adjusted_cost_basis,
+                                "per_unit": lot.basis_per_unit,
+                                "holding_period": str(period),
+                                "days_held": days_between(lot.holding_period_start, ctx.as_of),
+                            }
+                        )
+            return rows
+
+        as_of_state = state_on(repos, ctx.as_of, read)
+        rows = as_of_state.results[0]
 
         return CommandResult(
             command="lot list",
@@ -271,6 +279,7 @@ def list_lots(
                     "Designate lots on a sale with --lots 'lot_id:qty;lot_id:qty'.",
                 ),
             ),
+            warnings=as_of_state.warnings,
             as_of=ctx.as_of,
             portfolio=ctx.portfolio_name(),
         )
