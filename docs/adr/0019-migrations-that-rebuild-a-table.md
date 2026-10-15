@@ -1,6 +1,6 @@
 # ADR 0019 — A migration may rebuild a table, and what that costs
 
-- **Status:** Proposed
+- **Status:** Accepted — implemented in `schema/migrations.py` and used by migrations 0003 and 0004. Not done: `pt migrate` does not report which tables a migration rebuilt, and the runner compares the trigger inventory before and after but not the index inventory
 - **Date:** 2026-09-09
 - **Milestone:** v0.2
 - **Governs:** `CLAUDE.md` invariants 2, 3

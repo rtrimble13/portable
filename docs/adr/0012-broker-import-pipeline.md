@@ -1,6 +1,6 @@
 # ADR 0012 — Broker import is a staged pipeline with a human gate, not a command
 
-- **Status:** Accepted — all three stages implemented: `pt import broker` extracts (and `--incremental` re-extracts, with the overlap shown as skips), the batch file is the review, `pt import batch` commits
+- **Status:** Accepted — all three stages implemented: `pt import broker` extracts (and `--incremental` re-extracts, with the overlap shown as skips), the batch file is the review, `pt import batch` commits. The *Provenance* section is not: there is no `import_batch` table and no `transaction.import_batch_id`, so a committed row's source-file hash lives only in the batch file
 - **Date:** 2026-09-08
 - **Milestone:** v0.2
 - **Governs:** `CLAUDE.md` invariants 2, 9, 10; `PORT-GIPS-D01`, `PORT-GIPS-J03`

@@ -46,3 +46,12 @@ ADR (that document's §13), and `PORT-GIPS-xxx` identifiers are never reused.
 | [0009](0009-position-spans-instruments.md) | A position spans instruments; lots hang off legs |
 | [0010](0010-derived-state-and-replay.md) | Derived state, the replay contract, and what `pt rebuild` guarantees |
 | [0011](0011-tax-estimation-boundary.md) | What the tax engine estimates and what it refuses |
+| [0012](0012-broker-import-pipeline.md) | Broker import is a staged pipeline with a human gate, not a command |
+| [0013](0013-cash-sweep-is-cash.md) | A cash sweep vehicle is cash, not an instrument |
+| [0014](0014-advisory-fees-paid-across-accounts.md) | Advisory fees paid by one account for another |
+| [0015](0015-in-kind-transfers-and-opening-positions.md) | In-kind transfers, and how a position that predates the ledger enters it |
+| [0016](0016-out-of-order-appends-and-validation.md) | Out-of-order appends force a rebuild; `pt validate` compares stored state against replay |
+| [0017](0017-cutover-reconstruction-and-basis-provenance.md) | Cutover reconstruction by roll-back, and where each basis came from |
+| [0018](0018-minimum-broker-dataset.md) | The minimum broker dataset, and capability-gated import |
+| [0019](0019-migrations-that-rebuild-a-table.md) | A migration may rebuild a table, and what that costs |
+| [0020](0020-historical-price-import.md) | Historical price import: requirements and open questions |
