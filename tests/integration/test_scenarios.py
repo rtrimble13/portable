@@ -392,7 +392,14 @@ def test_6_transfer_is_external_at_account_level_only(
     assert "transfer" not in portfolio_types, (
         "a transfer between the owner's own accounts is NOT an external flow at portfolio level"
     )
-    assert D(account_level["net_external_flow"]) == D("400000.00")
+    # Two flows at account level, one per side (ADR 0007). This used to assert
+    # a 400,000 total across accounts: B's figure alone, because the IRA's
+    # inflow was produced nowhere.
+    per_account: dict[str, Decimal] = {}
+    for row in account_level["rows"]:
+        per_account[row["account"]] = per_account.get(row["account"], D("0")) + D(row["amount"])
+    assert per_account == {"B": D("400000.00"), "IRA": D("100000.00")}
+    assert D(account_level["net_external_flow"]) == D("500000.00")
     assert D(portfolio_level["net_external_flow"]) == D("500000.00")
 
 

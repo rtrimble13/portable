@@ -11,7 +11,7 @@ import typer
 
 from portable_core.cli.context import CommandContext
 from portable_core.decimals import from_text, money_context, quantize_money
-from portable_core.domain.enums import ValuationBasis
+from portable_core.domain.enums import TransactionType, ValuationBasis
 from portable_core.domain.models import (
     Account,
     Price,
@@ -327,10 +327,17 @@ def _snapshots(
     """
     days = [first + timedelta(days=n) for n in range((last - first).days + 1)]
 
+    # Filed under every account a row touches: a transfer is one row with two
+    # sides, and the receiving account's snapshot needs its inflow (ADR 0007).
     rows_on: dict[tuple[int, date], list[Transaction]] = {}
     for txn in effective_ledger(repos.transactions.in_ledger_order()):
-        if first <= txn.trade_date <= last:
-            rows_on.setdefault((txn.account_id, txn.trade_date), []).append(txn)
+        if not first <= txn.trade_date <= last:
+            continue
+        sides = [txn.account_id]
+        if txn.txn_type is TransactionType.TRANSFER and txn.counter_account_id is not None:
+            sides.append(txn.counter_account_id)
+        for side in sides:
+            rows_on.setdefault((side, txn.trade_date), []).append(txn)
 
     beginning: dict[int, Decimal] = {}
     for target in accounts:

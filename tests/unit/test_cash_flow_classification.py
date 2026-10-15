@@ -127,6 +127,65 @@ def test_internal_transfer_is_flow_neutral_at_portfolio_level() -> None:
     assert portfolio.is_external is False
 
 
+def test_a_transfer_is_two_flows_at_account_level() -> None:
+    """PORT-GIPS-B02, ADR 0007 -- -amount for the source AND +amount for the destination.
+
+    `classify` answers for the row's own account, which is the source. The
+    destination's half used to be produced nowhere, so the receiving account's
+    cash rose with no external flow beside it: a 20,000 transfer into a
+    50,000 account read as a 40% gain on the day.
+    """
+    transfer = txn(TransactionType.TRANSFER, amount="-100000.00", counter=2)
+
+    source = cash_flow.classify_for_account(transfer, 1, FlowLevel.ACCOUNT)
+    destination = cash_flow.classify_for_account(transfer, 2, FlowLevel.ACCOUNT)
+    assert (source.classification, source.amount) == (
+        FlowClassification.EXTERNAL,
+        D("-100000.00"),
+    )
+    assert (destination.classification, destination.amount) == (
+        FlowClassification.EXTERNAL,
+        D("100000.00"),
+    )
+
+    for side in (1, 2):
+        portfolio = cash_flow.classify_for_account(transfer, side, FlowLevel.PORTFOLIO)
+        assert portfolio.is_external is False, "still no flow at all at portfolio level"
+        assert portfolio.amount == D("0.00")
+
+
+def test_an_account_a_row_does_not_touch_is_refused_not_zeroed() -> None:
+    """Asking an unrelated account's view means the caller selected the wrong rows."""
+    deposit = txn(TransactionType.DEPOSIT, amount="5000.00")
+    transfer = txn(TransactionType.TRANSFER, amount="-100.00", counter=2)
+
+    with pytest.raises(ValueError, match="does not touch account 2"):
+        cash_flow.classify_for_account(deposit, 2, FlowLevel.ACCOUNT)
+    with pytest.raises(ValueError, match="does not touch account 3"):
+        cash_flow.classify_for_account(transfer, 3, FlowLevel.ACCOUNT)
+
+
+def test_reversing_a_transfer_reverses_both_sides() -> None:
+    """The reversal's destination half is the destination's inflow, negated."""
+    transfer = txn(TransactionType.TRANSFER, amount="-100000.00", counter=2, txn_id=1)
+    reversal = Transaction(
+        txn_id=2,
+        account_id=1,
+        trade_date=date(2025, 7, 1),
+        seq=1,
+        txn_type=TransactionType.REVERSAL,
+        net_cash_effect=D("100000.00"),
+        reverses_txn_id=1,
+    )
+
+    source = cash_flow.classify_reversal(reversal, transfer, FlowLevel.ACCOUNT)
+    destination = cash_flow.classify_reversal(
+        reversal, transfer, FlowLevel.ACCOUNT, account_id=2
+    )
+    assert (source.amount, destination.amount) == (D("100000.00"), D("-100000.00"))
+    assert source.flow_date == destination.flow_date == date(2025, 7, 1)
+
+
 def test_a_100k_shuffle_does_not_reach_the_portfolio_flow_series() -> None:
     """The concrete failure this exists to prevent.
 

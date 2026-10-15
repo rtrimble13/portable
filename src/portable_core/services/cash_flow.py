@@ -37,7 +37,14 @@ from portable_core.domain.enums import (
 )
 from portable_core.domain.models import Transaction
 
-__all__ = ["FlowResult", "classify", "flow_amount", "is_external"]
+__all__ = [
+    "FlowResult",
+    "classify",
+    "classify_for_account",
+    "classify_reversal",
+    "flow_amount",
+    "is_external",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,10 +252,45 @@ def classify(
     assert_never(kind)
 
 
+def classify_for_account(
+    txn: Transaction,
+    account_id: int,
+    level: FlowLevel,
+    *,
+    in_kind_value: Decimal | None = None,
+) -> FlowResult:
+    """Classify *txn* from the side of one account it touches.
+
+    :func:`classify` answers for the row's own account. A transfer is the one
+    row that touches two (ADR 0007), and at ``ACCOUNT`` level it is two flows:
+    the amount leaving the source and the same amount arriving at the
+    destination. This is the destination's half -- the original amount,
+    negated. At ``PORTFOLIO`` level it is no flow for either side, which
+    negating the source's internal zero already gives.
+
+    Without the destination half, the receiving account's cash rises with no
+    external flow beside it, and its account-level return counts the transfer
+    as investment gain.
+
+    Raises:
+        ValueError: *txn* does not touch *account_id*. A caller asking for an
+            unrelated account's view has selected the wrong rows, and a zero
+            here would hide that.
+    """
+    own = classify(txn, level, in_kind_value=in_kind_value)
+    if txn.account_id == account_id:
+        return own
+    if txn.txn_type is TransactionType.TRANSFER and txn.counter_account_id == account_id:
+        return FlowResult(own.classification, -own.amount, own.flow_date, own.is_in_kind)
+    raise ValueError(f"transaction {txn.txn_id} does not touch account {account_id}")
+
+
 def classify_reversal(
     reversal: Transaction,
     reversed_txn: Transaction,
     level: FlowLevel,
+    *,
+    account_id: int | None = None,
 ) -> FlowResult:
     """Classify a reversal by reference to what it reverses, negated.
 
@@ -256,8 +298,12 @@ def classify_reversal(
     :func:`classify` is deliberately pure over one. A reversal of a deposit
     really is an outward external flow; treating every reversal as internal
     would leave a phantom contribution in the record.
+
+    *account_id* chooses the side, as in :func:`classify_for_account`; by
+    default it is the reversed row's own account.
     """
-    original = classify(reversed_txn, level)
+    side = reversed_txn.account_id if account_id is None else account_id
+    original = classify_for_account(reversed_txn, side, level)
     return FlowResult(
         original.classification,
         -original.amount,

@@ -720,32 +720,45 @@ def cash_flows(
             for txn in repos.transactions.in_ledger_order(until=last):
                 if txn.trade_date < first:
                     continue
-                if txn.txn_type is TransactionType.REVERSAL and txn.reverses_txn_id:
-                    original = repos.transactions.get(txn.reverses_txn_id)
-                    classified = (
-                        cash_flow.classify_reversal(txn, original, flow_level)
-                        if original
-                        else cash_flow.classify(txn, flow_level)
-                    )
-                else:
-                    classified = cash_flow.classify(txn, flow_level)
-
-                if external_only and not classified.is_external:
-                    continue
-
-                target = repos.accounts.get(txn.account_id)
-                total += classified.amount
-                rows.append(
-                    {
-                        "date": classified.flow_date.isoformat(),
-                        "txn_id": txn.txn_id,
-                        "account": target.name if target else None,
-                        "type": str(txn.txn_type),
-                        "classification": str(classified.classification),
-                        "amount": classified.amount,
-                        "in_kind": classified.is_in_kind,
-                    }
+                original = (
+                    repos.transactions.get(txn.reverses_txn_id)
+                    if txn.txn_type is TransactionType.REVERSAL and txn.reverses_txn_id
+                    else None
                 )
+                # At account level a transfer is two flows, one per side
+                # (ADR 0007), and so is the reversal of one. At portfolio level
+                # it is none, so one row stating that is enough.
+                subject = original or txn
+                sides = [subject.account_id]
+                if (
+                    flow_level is FlowLevel.ACCOUNT
+                    and subject.txn_type is TransactionType.TRANSFER
+                    and subject.counter_account_id is not None
+                ):
+                    sides.append(subject.counter_account_id)
+
+                for side in sides:
+                    classified = (
+                        cash_flow.classify_reversal(txn, original, flow_level, account_id=side)
+                        if original
+                        else cash_flow.classify_for_account(txn, side, flow_level)
+                    )
+                    if external_only and not classified.is_external:
+                        continue
+
+                    target = repos.accounts.get(side)
+                    total += classified.amount
+                    rows.append(
+                        {
+                            "date": classified.flow_date.isoformat(),
+                            "txn_id": txn.txn_id,
+                            "account": target.name if target else None,
+                            "type": str(txn.txn_type),
+                            "classification": str(classified.classification),
+                            "amount": classified.amount,
+                            "in_kind": classified.is_in_kind,
+                        }
+                    )
 
         return CommandResult(
             command="cash-flows",

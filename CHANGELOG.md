@@ -261,6 +261,17 @@ Two rules specific to this repository:
   rolled back (`ReplayEngine.walk`), skipped when nothing is dated after that
   date. **Snapshots of past dates written before this fix are wrong wherever a
   later ledger row exists: re-run `pt value` over the range.**
+- **A transfer's receiving account recorded no inflow** (ADR 0007,
+  `PORT-GIPS-B02`). At account level a transfer is two flows, `-amount` for the
+  source and `+amount` for the destination, but `classify` answers only for
+  the row's own account, which is the source, and nothing produced the
+  destination's half. So the receiving account's snapshot showed its cash
+  rising with no external flow, and its account-level return counted the
+  transfer as investment gain: 20,000 into a 50,000 account read as +40% on
+  the day. `pt cash-flows --level account` omitted the same half.
+  `cash_flow.classify_for_account` now answers for either side, and
+  `classify_reversal` takes the side too, so reversing a transfer reverses
+  both halves. Portfolio level is unchanged: still no flow at all.
 - **A reversed entry left a phantom flow in the snapshot.** Snapshot flows
   counted a reversed deposit on its own date while replay, and so snapshot
   value, had netted it out. That is a contribution that never reached market

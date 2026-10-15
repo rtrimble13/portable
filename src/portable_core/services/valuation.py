@@ -251,6 +251,7 @@ class ValuationEngine:
         flows = self._flows_for(
             transactions or [],
             as_of,
+            account_id=account.account_id,
             policy=policy,
             portfolio_value=beginning_market_value or ending,
         )
@@ -290,14 +291,18 @@ class ValuationEngine:
         transactions: list[Transaction],
         as_of: date,
         *,
+        account_id: int,
         policy: ReturnPolicy | None,
         portfolio_value: Decimal,
     ) -> dict[FlowLevel, list[CashFlow]]:
-        """External flows on *as_of*, at both levels.
+        """External flows on *as_of* for one account, at both levels.
 
         Classification comes from :mod:`portable_core.services.cash_flow` and
         is not re-derived here -- that is the whole point of ADR 0007, and this
-        is the call site most likely to be tempted.
+        is the call site most likely to be tempted. It is asked from
+        *account_id*'s side, because a transfer arriving here is a row filed
+        under the account it left: its inflow is the destination's half,
+        which ``classify`` alone does not give.
         """
         result: dict[FlowLevel, list[CashFlow]] = {
             FlowLevel.ACCOUNT: [],
@@ -307,13 +312,13 @@ class ValuationEngine:
             if txn.trade_date != as_of:
                 continue
             for level in FlowLevel:
-                classified = cash_flow.classify(txn, level)
+                classified = cash_flow.classify_for_account(txn, account_id, level)
                 if not classified.is_external:
                     continue
                 result[level].append(
                     CashFlow(
                         txn_id=txn.txn_id,
-                        account_id=txn.account_id,
+                        account_id=account_id,
                         flow_date=classified.flow_date,
                         amount=classified.amount,
                         is_large=(
