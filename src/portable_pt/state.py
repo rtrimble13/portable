@@ -14,7 +14,14 @@ from portable_core.cli.context import CommandContext, GlobalOptions, build_conte
 from portable_core.errors import UsageError
 from portable_core.formatters import OutputFormat
 
-__all__ = ["current_options", "forget_opened", "opened", "set_options", "with_portfolio"]
+__all__ = [
+    "close_opened",
+    "current_options",
+    "forget_opened",
+    "opened",
+    "set_options",
+    "with_portfolio",
+]
 
 _OPTIONS = GlobalOptions()
 
@@ -82,3 +89,9 @@ def opened() -> tuple[CommandContext, ...]:
 def forget_opened() -> None:
     """Start a command with nothing opened."""
     _OPENED.clear()
+
+
+def close_opened() -> None:
+    """Close every context opened for this command, and forget them."""
+    while _OPENED:
+        _OPENED.pop().close()

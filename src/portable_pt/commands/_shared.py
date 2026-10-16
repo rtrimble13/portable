@@ -62,12 +62,17 @@ def dispatch(action: Callable[[], CommandResult]) -> None:
         )
         return replace(result, warnings=(*result.warnings, *notices)) if notices else result
 
-    code = run_command(
-        reported,
-        output_format=options.output_format,
-        no_color=options.no_color,
-        verbose=options.verbose,
-    )
+    try:
+        code = run_command(
+            reported,
+            output_format=options.output_format,
+            no_color=options.no_color,
+            verbose=options.verbose,
+        )
+    finally:
+        # Every connection the command opened, closed whether it succeeded or
+        # not. An open handle keeps the file locked on Windows.
+        state.close_opened()
     raise typer.Exit(code)
 
 

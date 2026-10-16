@@ -11,8 +11,8 @@ from typing import Annotated, Any
 import typer
 
 from portable_core import __version__
-from portable_core.cli.context import build_context, parse_date
-from portable_core.cli.runner import dry_run_note, run_command
+from portable_core.cli.context import parse_date
+from portable_core.cli.runner import dry_run_note
 from portable_core.errors import PortfolioFileError, ValidationError
 from portable_core.errors.kinds import (
     E_INVARIANT_BROKEN,
@@ -31,6 +31,7 @@ from portable_core.schema import migrations as M
 from portable_core.services import snapshots
 from portable_core.services.replay import ReplayEngine, derived_state_digests
 from portable_pt import state
+from portable_pt.commands._shared import dispatch
 
 app = typer.Typer(help="Portfolio-level operations.", no_args_is_help=True)
 
@@ -102,22 +103,24 @@ def init(
             file.unlink()
 
         con = open_portfolio(file, must_exist=False)
-        version = M.initialise(con)
-        repos = Repositories(con)
-        with transaction(con):
-            for key, value in {
-                "portfolio_name": name,
-                "description": description,
-                "inception_date": inception_date.isoformat(),
-                "base_currency": base_currency.upper(),
-                "fiscal_year_end": fiscal_year_end,
-                "schema_version": str(version),
-                "created_at": _now(),
-                "updated_at": _now(),
-                "portable_version": __version__,
-            }.items():
-                repos.meta.set(key, value)
-        con.close()
+        try:
+            version = M.initialise(con)
+            repos = Repositories(con)
+            with transaction(con):
+                for key, value in {
+                    "portfolio_name": name,
+                    "description": description,
+                    "inception_date": inception_date.isoformat(),
+                    "base_currency": base_currency.upper(),
+                    "fiscal_year_end": fiscal_year_end,
+                    "schema_version": str(version),
+                    "created_at": _now(),
+                    "updated_at": _now(),
+                    "portable_version": __version__,
+                }.items():
+                    repos.meta.set(key, value)
+        finally:
+            con.close()
 
         return CommandResult(
             command="init",
@@ -132,20 +135,12 @@ def init(
             portfolio=name,
         )
 
-    raise typer.Exit(
-        run_command(
-            action,
-            output_format=options.output_format,
-            no_color=options.no_color,
-            verbose=options.verbose,
-        )
-    )
+    dispatch(action)
 
 
 @app.command()
 def info() -> None:
     """Summary: accounts, market value, cash, positions, last valuation."""
-    options = state.current_options()
 
     def action() -> CommandResult:
         ctx = state.with_portfolio()
@@ -217,14 +212,7 @@ def info() -> None:
             portfolio=meta.get("portfolio_name"),
         )
 
-    raise typer.Exit(
-        run_command(
-            action,
-            output_format=options.output_format,
-            no_color=options.no_color,
-            verbose=options.verbose,
-        )
-    )
+    dispatch(action)
 
 
 @app.command()
@@ -238,7 +226,7 @@ def migrate(
     options = state.current_options()
 
     def action() -> CommandResult:
-        ctx = build_context(options, require_portfolio=True, check_schema=False)
+        ctx = state.with_portfolio(check_schema=False)
         repos = ctx.require_portfolio()
         path = Path(str(ctx.config.get("port")))
 
@@ -257,14 +245,7 @@ def migrate(
         )
         return dry_run_note(result) if options.dry_run else result
 
-    raise typer.Exit(
-        run_command(
-            action,
-            output_format=options.output_format,
-            no_color=options.no_color,
-            verbose=options.verbose,
-        )
-    )
+    dispatch(action)
 
 
 @app.command()
@@ -278,7 +259,6 @@ def validate(
     Exits 4 when an invariant is broken. This is the command to run after any
     surprising number, and after any upgrade.
     """
-    options = state.current_options()
 
     def action() -> CommandResult:
         ctx = state.with_portfolio()
@@ -422,14 +402,7 @@ def validate(
             )
         return result
 
-    raise typer.Exit(
-        run_command(
-            action,
-            output_format=options.output_format,
-            no_color=options.no_color,
-            verbose=options.verbose,
-        )
-    )
+    dispatch(action)
 
 
 @app.command()
@@ -472,14 +445,7 @@ def rebuild() -> None:
             portfolio=ctx.portfolio_name(),
         )
 
-    raise typer.Exit(
-        run_command(
-            action,
-            output_format=options.output_format,
-            no_color=options.no_color,
-            verbose=options.verbose,
-        )
-    )
+    dispatch(action)
 
 
 @app.command(name="export")
@@ -493,7 +459,6 @@ def export_portfolio(
     Round-trips exactly through `pt import`: export, import, export produces
     identical bytes, and there is a test asserting it.
     """
-    options = state.current_options()
 
     def action() -> CommandResult:
         ctx = state.with_portfolio()
@@ -510,14 +475,7 @@ def export_portfolio(
             )
         return CommandResult(command="export", data=payload, portfolio=ctx.portfolio_name())
 
-    raise typer.Exit(
-        run_command(
-            action,
-            output_format=options.output_format,
-            no_color=options.no_color,
-            verbose=options.verbose,
-        )
-    )
+    dispatch(action)
 
 
 def _export_payload(repos: Repositories) -> dict[str, Any]:
@@ -567,24 +525,19 @@ def import_portfolio(
             )
 
         con = open_portfolio(target, must_exist=False)
-        M.initialise(con)
-        repos = Repositories(con)
-        with transaction(con):
-            counts = repos.import_tables(payload)
-        with transaction(con):
-            ReplayEngine(repos).rebuild()
-        con.close()
+        try:
+            M.initialise(con)
+            repos = Repositories(con)
+            with transaction(con):
+                counts = repos.import_tables(payload)
+            with transaction(con):
+                ReplayEngine(repos).rebuild()
+        finally:
+            con.close()
 
         return CommandResult(command="import", data={"target": str(target), **counts})
 
-    raise typer.Exit(
-        run_command(
-            action,
-            output_format=options.output_format,
-            no_color=options.no_color,
-            verbose=options.verbose,
-        )
-    )
+    dispatch(action)
 
 
 @app.command()
@@ -622,11 +575,4 @@ def backup(
             portfolio=ctx.portfolio_name(),
         )
 
-    raise typer.Exit(
-        run_command(
-            action,
-            output_format=options.output_format,
-            no_color=options.no_color,
-            verbose=options.verbose,
-        )
-    )
+    dispatch(action)

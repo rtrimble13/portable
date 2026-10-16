@@ -11,6 +11,8 @@ PORT-GIPS-J03 and PORT-GIPS-J06.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -143,7 +145,10 @@ def test_replay_is_deterministic_across_connections(
     for txn in repos.transactions.in_ledger_order():
         clone.transactions.append(txn)
 
-    assert ReplayEngine(clone).rebuild().digest == original.digest
+    try:
+        assert ReplayEngine(clone).rebuild().digest == original.digest
+    finally:
+        other_con.close()
 
 
 def test_replay_is_order_stable(
@@ -290,7 +295,8 @@ def test_realized_gain_rows_reference_their_stored_disposition(
 # ── generated sequences ──────────────────────────────────────────────────────
 
 
-def _fresh_repos() -> Repositories:
+@contextmanager
+def _fresh_repos() -> Iterator[Repositories]:
     """A migrated, in-memory portfolio.
 
     Built inside the test body rather than taken from a fixture: pytest
@@ -301,10 +307,13 @@ def _fresh_repos() -> Repositories:
     the worst kind of test infrastructure.
     """
     con = sqlite3.connect(":memory:", isolation_level=None)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA foreign_keys = ON")
-    M.initialise(con)
-    return Repositories(con)
+    try:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA foreign_keys = ON")
+        M.initialise(con)
+        yield Repositories(con)
+    finally:
+        con.close()
 
 
 @settings(max_examples=40, deadline=None)
@@ -330,61 +339,61 @@ def test_replay_properties_over_generated_sequences(
     than expected to fail: the refusal path has its own tests, and here we want
     sequences that get all the way through.
     """
-    repos = _fresh_repos()
-    account_id = repos.accounts.add(
-        Account(
-            account_id=0,
-            name="Generated",
-            account_type=AccountType.TAX_EXEMPT,  # no rate schedule needed
-            opened_date=START,
-            # FIFO rather than the spec-ID default: a generated sell carries no
-            # lot designation, and spec-ID correctly refuses one that does not
-            # (tested in test_lot_engine.py). Here we want sequences that get
-            # all the way through, so the relief method has to be one that can.
-            default_relief_method=ReliefMethod.FIFO,
-        )
-    )
-    instrument_id = repos.instruments.add(
-        Instrument(instrument_id=0, symbol="GEN", instrument_type=InstrumentType.EQUITY)
-    )
-
-    held = D(0)
-    applied = 0
-    # Sorted by trade date before applying. The holdings tracker below decides
-    # whether a sell is legal, and it has to make that decision in the order
-    # replay will apply the trades -- not the order they were generated in.
-    # Hypothesis found this: a buy on day 1 and a sell on day 0 leaves the sell
-    # with no lots, which is correct behaviour and a broken generator.
-    for offset, quantity, price_cents, is_buy in sorted(trades, key=lambda t: t[0]):
-        on = START + timedelta(days=offset)
-        qty, price = D(quantity), D(price_cents) / D(100)
-        if is_buy:
-            _buy(repos, account_id, instrument_id, on, str(qty), str(price))
-            held += qty
-            applied += 1
-        elif held >= qty:
-            _sell(repos, account_id, instrument_id, on, str(qty), str(price))
-            held -= qty
-            applied += 1
-
-    assume(applied > 0)
-
-    engine = ReplayEngine(repos)
-    first = engine.rebuild()
-    second = engine.rebuild()
-
-    assert first.digest == second.digest, "replay is not idempotent"
-    assert first.warnings == (), first.warnings
-    assert engine.check_cash_conservation() == []
-    assert engine.check_leg_invariants() == []
-
-    # And the invariant stated directly, rather than through the checker.
-    for position in repos.positions.all():
-        for leg in position.legs:
-            lots = repos.lots.by_leg(leg.leg_id)
-            assert leg.quantity == sum(
-                (lot.remaining_quantity for lot in lots if lot.is_open), D(0)
+    with _fresh_repos() as repos:
+        account_id = repos.accounts.add(
+            Account(
+                account_id=0,
+                name="Generated",
+                account_type=AccountType.TAX_EXEMPT,  # no rate schedule needed
+                opened_date=START,
+                # FIFO rather than the spec-ID default: a generated sell carries no
+                # lot designation, and spec-ID correctly refuses one that does not
+                # (tested in test_lot_engine.py). Here we want sequences that get
+                # all the way through, so the relief method has to be one that can.
+                default_relief_method=ReliefMethod.FIFO,
             )
+        )
+        instrument_id = repos.instruments.add(
+            Instrument(instrument_id=0, symbol="GEN", instrument_type=InstrumentType.EQUITY)
+        )
+
+        held = D(0)
+        applied = 0
+        # Sorted by trade date before applying. The holdings tracker below decides
+        # whether a sell is legal, and it has to make that decision in the order
+        # replay will apply the trades -- not the order they were generated in.
+        # Hypothesis found this: a buy on day 1 and a sell on day 0 leaves the sell
+        # with no lots, which is correct behaviour and a broken generator.
+        for offset, quantity, price_cents, is_buy in sorted(trades, key=lambda t: t[0]):
+            on = START + timedelta(days=offset)
+            qty, price = D(quantity), D(price_cents) / D(100)
+            if is_buy:
+                _buy(repos, account_id, instrument_id, on, str(qty), str(price))
+                held += qty
+                applied += 1
+            elif held >= qty:
+                _sell(repos, account_id, instrument_id, on, str(qty), str(price))
+                held -= qty
+                applied += 1
+
+        assume(applied > 0)
+
+        engine = ReplayEngine(repos)
+        first = engine.rebuild()
+        second = engine.rebuild()
+
+        assert first.digest == second.digest, "replay is not idempotent"
+        assert first.warnings == (), first.warnings
+        assert engine.check_cash_conservation() == []
+        assert engine.check_leg_invariants() == []
+
+        # And the invariant stated directly, rather than through the checker.
+        for position in repos.positions.all():
+            for leg in position.legs:
+                lots = repos.lots.by_leg(leg.leg_id)
+                assert leg.quantity == sum(
+                    (lot.remaining_quantity for lot in lots if lot.is_open), D(0)
+                )
 
 
 def test_no_relief_method_can_leave_a_negative_lot(
@@ -596,8 +605,7 @@ def test_groupings_made_live_are_what_replay_reproduces(
     from portable_core.services.regrouping import Regroup, record_regroup
     from portable_core.services.trading import TradeIntent, TradingService
 
-    repos = _fresh_repos()
-    try:
+    with _fresh_repos() as repos:
         account_id = repos.accounts.add(
             Account(
                 account_id=0,
@@ -666,5 +674,3 @@ def test_groupings_made_live_are_what_replay_reproduces(
         assert result.warnings == ()
         assert result.digest == live, "a grouping made live must be what replay rebuilds"
         assert engine.check_leg_invariants() == []
-    finally:
-        repos.con.close()

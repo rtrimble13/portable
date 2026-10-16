@@ -275,6 +275,17 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **Commands left the portfolio open.** No command closed the connection it
+  opened. A process exiting closes it, so nothing failed on Python 3.11 or
+  3.12, but Python 3.13 reports it as a `ResourceWarning`, which the suite
+  treats as an error, and on Windows an open handle keeps the file locked.
+  Every command now closes what it opened, whether it succeeded or failed;
+  so do `pt init` and `pt import` on an error, and a file refused as too old.
+  The test helpers that leaked are fixed too, and CI now runs Python 3.13.
+- **A file that is not a database reached the user as an unexpected error.**
+  `open_portfolio` caught only `OperationalError`, and SQLite reports "file is
+  not a database" as its base class. It is now `PT-E-PORTFOLIO-CORRUPT`,
+  exit 3, with the handle closed.
 - **A tax rate dated before a recorded sale did not change the sale's
   estimated tax** (ADR 0025). The schedule was stored and the estimate was
   not, so `pt tax` went on reporting tax at the old rate, with no warning,

@@ -10,6 +10,7 @@ remembered.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -24,11 +25,12 @@ NOW = "2026-08-27T00:00:00Z"
 
 
 @pytest.fixture
-def db(tmp_path: Path) -> sqlite3.Connection:
-    """A fresh, migrated portfolio file."""
+def db(tmp_path: Path) -> Iterator[sqlite3.Connection]:
+    """A fresh, migrated portfolio file, closed afterwards."""
     con = open_portfolio(tmp_path / "t.port", must_exist=False)
     M.initialise(con)
-    return con
+    yield con
+    con.close()
 
 
 def _account(con: sqlite3.Connection, account_id: int = 1, name: str = "Brokerage") -> None:
@@ -343,6 +345,7 @@ def test_every_table_is_documented_in_the_generated_reference() -> None:
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
         )
     ]
+    con.close()
     missing = [t for t in tables if f"## `{t}`" not in rendered]
     assert missing == [], missing
 

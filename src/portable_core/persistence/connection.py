@@ -95,6 +95,7 @@ def open_portfolio(
             path=str(file_path),
         )
 
+    con: sqlite3.Connection | None = None
     try:
         if read_only:
             uri = f"file:{file_path.as_posix()}?mode=ro"
@@ -102,7 +103,13 @@ def open_portfolio(
         else:
             con = sqlite3.connect(file_path, isolation_level=None)
         _configure(con, read_only=read_only)
-    except sqlite3.OperationalError as exc:
+    except sqlite3.DatabaseError as exc:
+        # Closed before raising: an open handle keeps the file locked on
+        # Windows. DatabaseError rather than only OperationalError, because a
+        # file that is not a database ("file is not a database") raises the
+        # base class, and reached the user as an unexpected error.
+        if con is not None:
+            con.close()
         message = str(exc)
         if "locked" in message or "busy" in message:
             raise PortfolioFileError(

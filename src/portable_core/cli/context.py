@@ -177,7 +177,11 @@ def build_context(
         path = Path(str(path_text))
         connection = open_portfolio(path)
         if check_schema:
-            M.check_openable(connection, path)
+            try:
+                M.check_openable(connection, path)
+            except BaseException:
+                connection.close()
+                raise
         repos = Repositories(connection)
     elif require_portfolio:
         raise PortfolioFileError(

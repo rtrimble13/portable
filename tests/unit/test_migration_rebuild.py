@@ -17,6 +17,7 @@ append-only, and no test of the migration's data would notice.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -27,8 +28,22 @@ from portable_core.schema import migrations as M
 pytestmark = pytest.mark.unit
 
 
+#: Every connection the helpers below open, closed after each test. Tests hand
+#: these to code that may raise mid-migration, so closing at the call site
+#: would need a try/finally in each of them.
+_OPENED: list[sqlite3.Connection] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_what_was_opened() -> Iterator[None]:
+    yield
+    while _OPENED:
+        _OPENED.pop().close()
+
+
 def _connection(path: Path) -> sqlite3.Connection:
     con = sqlite3.connect(path)
+    _OPENED.append(con)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     con.execute("PRAGMA legacy_alter_table = OFF")
