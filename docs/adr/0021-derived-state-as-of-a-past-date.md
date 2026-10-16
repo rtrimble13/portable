@@ -98,13 +98,14 @@ on that day.
 
 - Snapshots of past dates that were written before this change are wrong
   wherever a later ledger row exists. Re-run `pt value` over the range.
-- **`pt cash-flows` still uses the as-booked view, and that is not decided
-  here.** For a reversed external flow, its series and the snapshots now
-  differ in timing only: +X on the original's date and −X on the reversal's,
-  against nothing at all. The money-weighted solve (`PORT-GIPS-C01`–`C05`)
-  is sensitive to timing, so this must be settled before it consumes either
-  series. The recommendation is the effective ledger there too, with the
-  netted pair still visible in `pt activity`.
+- **`pt cash-flows` used the as-booked view, and this ADR left it open.**
+  For a reversed external flow, its series and the snapshots differed in
+  timing only: +X on the original's date and −X on the reversal's, against
+  nothing at all. The money-weighted solve (`PORT-GIPS-C01`–`C05`) is
+  sensitive to timing. **Decided by the owner (2026-10-16): the corrected
+  ledger there too.** `pt cash-flows` nets every reversal and its original
+  out over the whole ledger, as snapshots do, and a test holds the two
+  series equal. The netted pair is still visible in `pt activity`.
 - `pt reconcile --as-of` is still refused, but it could now be built on the
   walk. ADR 0020 R10's anchor, the custodian's 2026-08-27 holdings snapshot,
   wants exactly that.

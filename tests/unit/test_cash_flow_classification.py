@@ -165,27 +165,6 @@ def test_an_account_a_row_does_not_touch_is_refused_not_zeroed() -> None:
         cash_flow.classify_for_account(transfer, 3, FlowLevel.ACCOUNT)
 
 
-def test_reversing_a_transfer_reverses_both_sides() -> None:
-    """The reversal's destination half is the destination's inflow, negated."""
-    transfer = txn(TransactionType.TRANSFER, amount="-100000.00", counter=2, txn_id=1)
-    reversal = Transaction(
-        txn_id=2,
-        account_id=1,
-        trade_date=date(2025, 7, 1),
-        seq=1,
-        txn_type=TransactionType.REVERSAL,
-        net_cash_effect=D("100000.00"),
-        reverses_txn_id=1,
-    )
-
-    source = cash_flow.classify_reversal(reversal, transfer, FlowLevel.ACCOUNT)
-    destination = cash_flow.classify_reversal(
-        reversal, transfer, FlowLevel.ACCOUNT, account_id=2
-    )
-    assert (source.amount, destination.amount) == (D("100000.00"), D("-100000.00"))
-    assert source.flow_date == destination.flow_date == date(2025, 7, 1)
-
-
 def test_a_100k_shuffle_does_not_reach_the_portfolio_flow_series() -> None:
     """The concrete failure this exists to prevent.
 
@@ -252,34 +231,6 @@ def test_every_transaction_type_is_classified_at_every_level() -> None:
         for level in FlowLevel:
             result = cash_flow.classify(txn(txn_type, counter=counter), level)
             assert isinstance(result.classification, FlowClassification), txn_type
-
-
-def test_a_reversal_is_classified_by_what_it_reverses() -> None:
-    """A reversed deposit is an outward flow, not a non-event.
-
-    Treating every reversal as internal would leave a phantom contribution in
-    the record -- the deposit's flow would stand and its undoing would not.
-    """
-    deposit = txn(TransactionType.DEPOSIT, amount="50000.00", txn_id=1)
-    reversal = Transaction(
-        txn_id=2,
-        account_id=1,
-        trade_date=date(2025, 7, 1),
-        seq=1,
-        txn_type=TransactionType.REVERSAL,
-        net_cash_effect=D("-50000.00"),
-        reverses_txn_id=1,
-    )
-
-    result = cash_flow.classify_reversal(reversal, deposit, FlowLevel.PORTFOLIO)
-    assert result.classification is FlowClassification.EXTERNAL
-    assert result.amount == D("-50000.00")
-    assert result.flow_date == date(2025, 7, 1)
-
-    trade = txn(TransactionType.BUY, amount="-10000.00", txn_id=3)
-    trade_reversal = cash_flow.classify_reversal(reversal, trade, FlowLevel.PORTFOLIO)
-    assert trade_reversal.classification is FlowClassification.INTERNAL
-    assert trade_reversal.amount == D("0.00")
 
 
 def test_level_is_a_required_argument() -> None:

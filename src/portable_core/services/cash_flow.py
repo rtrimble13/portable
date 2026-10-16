@@ -41,7 +41,6 @@ __all__ = [
     "FlowResult",
     "classify",
     "classify_for_account",
-    "classify_reversal",
     "flow_amount",
     "is_external",
 ]
@@ -288,33 +287,6 @@ def classify_for_account(
     if txn.txn_type is TransactionType.TRANSFER and txn.counter_account_id == account_id:
         return FlowResult(own.classification, -own.amount, own.flow_date, own.is_in_kind)
     raise ValueError(f"transaction {txn.txn_id} does not touch account {account_id}")
-
-
-def classify_reversal(
-    reversal: Transaction,
-    reversed_txn: Transaction,
-    level: FlowLevel,
-    *,
-    account_id: int | None = None,
-) -> FlowResult:
-    """Classify a reversal by reference to what it reverses, negated.
-
-    Kept separate from :func:`classify` because it needs two transactions and
-    :func:`classify` is deliberately pure over one. A reversal of a deposit
-    really is an outward external flow; treating every reversal as internal
-    would leave a phantom contribution in the record.
-
-    *account_id* chooses the side, as in :func:`classify_for_account`; by
-    default it is the reversed row's own account.
-    """
-    side = reversed_txn.account_id if account_id is None else account_id
-    original = classify_for_account(reversed_txn, side, level)
-    return FlowResult(
-        original.classification,
-        -original.amount,
-        reversal.trade_date,
-        is_in_kind=original.is_in_kind,
-    )
 
 
 def is_external(txn: Transaction, level: FlowLevel) -> bool:

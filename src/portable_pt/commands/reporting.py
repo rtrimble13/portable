@@ -28,7 +28,7 @@ from portable_core.services.reconciliation import (
     RealizedTieLine,
     ReconciliationService,
 )
-from portable_core.services.replay import state_on
+from portable_core.services.replay import effective_ledger, state_on
 from portable_core.services.tax import TaxEngine, TaxSummary
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, maybe_dry_run, money_arg, resolve_date
@@ -697,6 +697,10 @@ def cash_flows(
 
     The classification comes from one service function and is not re-derived
     here (ADR 0007). The full matrix is PORT-GIPS-B02.
+
+    The series is the corrected ledger, the same rows snapshots take their
+    flows from: a reversed entry and its reversal are netted out, wherever the
+    reversal falls (ADR 0021).
     """
 
     def action() -> CommandResult:
@@ -717,32 +721,27 @@ def cash_flows(
         rows: list[dict[str, object]] = []
         with money_context():
             total = ZERO
-            for txn in repos.transactions.in_ledger_order(until=last):
-                if txn.trade_date < first:
+            # The corrected ledger, as snapshots read it (ADR 0021): a reversal
+            # and the entry it reverses are netted out over the WHOLE ledger,
+            # so neither is a flow -- even when the reversal falls after --to.
+            # The two series the return engine reads then cannot disagree in
+            # timing. `pt activity` still lists both rows.
+            for txn in effective_ledger(repos.transactions.in_ledger_order()):
+                if not first <= txn.trade_date <= last:
                     continue
-                original = (
-                    repos.transactions.get(txn.reverses_txn_id)
-                    if txn.txn_type is TransactionType.REVERSAL and txn.reverses_txn_id
-                    else None
-                )
                 # At account level a transfer is two flows, one per side
-                # (ADR 0007), and so is the reversal of one. At portfolio level
-                # it is none, so one row stating that is enough.
-                subject = original or txn
-                sides = [subject.account_id]
+                # (ADR 0007). At portfolio level it is none, so one row stating
+                # that is enough.
+                sides = [txn.account_id]
                 if (
                     flow_level is FlowLevel.ACCOUNT
-                    and subject.txn_type is TransactionType.TRANSFER
-                    and subject.counter_account_id is not None
+                    and txn.txn_type is TransactionType.TRANSFER
+                    and txn.counter_account_id is not None
                 ):
-                    sides.append(subject.counter_account_id)
+                    sides.append(txn.counter_account_id)
 
                 for side in sides:
-                    classified = (
-                        cash_flow.classify_reversal(txn, original, flow_level, account_id=side)
-                        if original
-                        else cash_flow.classify_for_account(txn, side, flow_level)
-                    )
+                    classified = cash_flow.classify_for_account(txn, side, flow_level)
                     if external_only and not classified.is_external:
                         continue
 
@@ -775,6 +774,8 @@ def cash_flows(
                 title=f"Cash flows at {flow_level} level",
                 footnotes=(
                     "Income is never an external cash flow, at any level.",
+                    "A reversed entry and its reversal are netted out and not listed; "
+                    "`pt activity` shows both.",
                     "An inter-account transfer is external at account level and NOT "
                     "at portfolio level -- it nets to zero (PORT-GIPS-B02).",
                 ),

@@ -242,6 +242,14 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **`pt cash-flows` nets a reversed entry and its reversal out**, as snapshots
+  do (ADR 0021, decided by the owner). It listed the ledger as booked: a
+  reversed deposit appeared as +X on its own date and −X on the reversal's,
+  and a reversal dated after `--to` left +X standing alone, while snapshots
+  showed neither. The two series the return engine reads disagreed in timing,
+  which is what a money-weighted return is sensitive to. A test now holds them
+  equal. `pt activity` still lists both rows. `cash_flow.classify_reversal`,
+  used only here, is removed.
 - **Valuation snapshots are a class of their own: kept by `pt rebuild`, removed
   when a ledger write makes them stale, and checked by `pt validate`**
   (ADR 0024). They depend on the prices they recorded as well as the ledger, so
