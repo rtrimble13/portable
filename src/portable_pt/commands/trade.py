@@ -17,7 +17,6 @@ from portable_core.domain.enums import (
 from portable_core.domain.models import Instrument, Transaction
 from portable_core.errors import ValidationError
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
-from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.persistence.repositories import Repositories
 from portable_core.services.regrouping import Regroup, record_regroup
 from portable_core.services.replay import ReplayEngine, state_on
@@ -26,7 +25,6 @@ from portable_pt import state
 from portable_pt.commands._shared import (
     RefOpt,
     dispatch,
-    maybe_dry_run,
     money_arg,
     resolve_date,
 )
@@ -116,10 +114,7 @@ def _trade(
         )
 
         result = _plan_result(txn_type, symbol, plan, ctx.portfolio_name())
-        if ctx.dry_run:
-            return maybe_dry_run(result)
-
-        with db_transaction(repos.con):
+        with ctx.write():
             committed = service.commit(plan)
             if into is not None:
                 # ADR 0023: joining a position is a regroup recorded beside the
@@ -442,10 +437,7 @@ def reverse(
             "reversal_cash_effect": reversal.net_cash_effect,
             "trade_date": reversal_date.isoformat(),
         }
-        if ctx.dry_run:
-            return maybe_dry_run(CommandResult(command="trade reverse", data=payload))
-
-        with db_transaction(repos.con):
+        with ctx.write():
             new_id = repos.transactions.append(reversal)
             # A reversal changes which lots later trades should have consumed,
             # so derived state is rebuilt rather than patched. The ledger is

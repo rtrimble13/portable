@@ -41,12 +41,11 @@ from portable_core.domain.models import (
 from portable_core.errors import DataUnavailableError, ValidationError
 from portable_core.errors.kinds import E_PRICE_MISSING
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
-from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.providers import as_corporate_action_provider
 from portable_core.services import price_history
 from portable_core.services.corporate_actions import CorporateActionEngine
 from portable_pt import state
-from portable_pt.commands._shared import RefOpt, dispatch, maybe_dry_run, resolve_date
+from portable_pt.commands._shared import RefOpt, dispatch, resolve_date
 
 app = typer.Typer(help="Corporate actions.", no_args_is_help=True)
 
@@ -98,93 +97,88 @@ def split(
         rows: list[dict[str, object]] = []
         warnings: list[str] = []
 
-        for target in accounts:
-            lots = _held_lots(repos, target.account_id, instrument.instrument_id, on)
-            if not lots:
-                continue
-            result = ENGINE.split(
-                lots,
-                numerator=numerator,
-                denominator=denominator,
-                ex_date=on,
-                allows_fractional=target.allows_fractional,
-            )
-            if result.fractional_shares > 0 and not target.allows_fractional:
-                warnings.append(
-                    f"{target.name}: {result.fractional_shares} fractional share(s) "
-                    "dropped by the split. Record the cash in lieu with `pt sell` -- "
-                    "it is a taxable disposition, not a rounding."
+        with ctx.write():
+            for target in accounts:
+                lots = _held_lots(repos, target.account_id, instrument.instrument_id, on)
+                if not lots:
+                    continue
+                result = ENGINE.split(
+                    lots,
+                    numerator=numerator,
+                    denominator=denominator,
+                    ex_date=on,
+                    allows_fractional=target.allows_fractional,
                 )
+                if result.fractional_shares > 0 and not target.allows_fractional:
+                    warnings.append(
+                        f"{target.name}: {result.fractional_shares} fractional share(s) "
+                        "dropped by the split. Record the cash in lieu with `pt sell` -- "
+                        "it is a taxable disposition, not a rounding."
+                    )
 
-            for before, after, adjustment in zip(
-                lots, result.lots, result.adjustments, strict=True
-            ):
-                rows.append(
-                    {
-                        "account": target.name,
-                        "lot_id": before.lot_id,
-                        "quantity_before": before.remaining_quantity,
-                        "quantity_after": after.remaining_quantity,
-                        "basis": after.adjusted_cost_basis,
-                        "holding_period_start": after.holding_period_start.isoformat(),
-                    }
+                for before, after, adjustment in zip(
+                    lots, result.lots, result.adjustments, strict=True
+                ):
+                    rows.append(
+                        {
+                            "account": target.name,
+                            "lot_id": before.lot_id,
+                            "quantity_before": before.remaining_quantity,
+                            "quantity_after": after.remaining_quantity,
+                            "basis": after.adjusted_cost_basis,
+                            "holding_period_start": after.holding_period_start.isoformat(),
+                        }
+                    )
+
+                    repos.lots.update_basis(after)
+                    repos.lots.add_adjustment(replace(adjustment, adjustment_id=0))
+
+                txn = Transaction(
+                    txn_id=0,
+                    account_id=target.account_id,
+                    trade_date=on,
+                    seq=repos.transactions.next_seq(on),
+                    txn_type=(
+                        TransactionType.SPLIT
+                        if numerator > denominator
+                        else TransactionType.REVERSE_SPLIT
+                    ),
+                    net_cash_effect=ZERO,
+                    instrument_id=instrument.instrument_id,
+                    quantity=result.lots[0].remaining_quantity if result.lots else None,
+                    ex_date=on,
+                    note=f"{ratio} split",
+                    external_ref=ref,
+                    source=TransactionSource.DERIVED,
+                    created_at=_now(),
                 )
-
-                if not ctx.dry_run:
-                    with db_transaction(repos.con):
-                        repos.lots.update_basis(after)
-                        repos.lots.add_adjustment(replace(adjustment, adjustment_id=0))
-
-            if not ctx.dry_run:
-                with db_transaction(repos.con):
-                    txn = Transaction(
-                        txn_id=0,
-                        account_id=target.account_id,
-                        trade_date=on,
-                        seq=repos.transactions.next_seq(on),
-                        txn_type=(
-                            TransactionType.SPLIT
-                            if numerator > denominator
-                            else TransactionType.REVERSE_SPLIT
-                        ),
-                        net_cash_effect=ZERO,
+                txn_id = repos.transactions.append(txn)
+                # The ledger says a split happened; the corporate_action
+                # row says WHAT split, which is what lets `pt rebuild`
+                # reproduce it rather than silently reverting it
+                # (ADR 0010, CLAUDE.md invariant 3).
+                repos.corporate_actions.add(
+                    CorporateAction(
                         instrument_id=instrument.instrument_id,
-                        quantity=result.lots[0].remaining_quantity if result.lots else None,
+                        action_type=("split" if numerator > denominator else "reverse_split"),
                         ex_date=on,
-                        note=f"{ratio} split",
-                        external_ref=ref,
-                        source=TransactionSource.DERIVED,
-                        created_at=_now(),
+                        split_numerator=numerator,
+                        split_denominator=denominator,
+                        applied_txn_id=txn_id,
                     )
-                    txn_id = repos.transactions.append(txn)
-                    # The ledger says a split happened; the corporate_action
-                    # row says WHAT split, which is what lets `pt rebuild`
-                    # reproduce it rather than silently reverting it
-                    # (ADR 0010, CLAUDE.md invariant 3).
-                    repos.corporate_actions.add(
-                        CorporateAction(
-                            instrument_id=instrument.instrument_id,
-                            action_type=(
-                                "split" if numerator > denominator else "reverse_split"
+                )
+                for leg in {lot.leg_id for lot in lots}:
+                    repos.positions.update_leg_quantity(
+                        leg,
+                        sum(
+                            (
+                                lot.remaining_quantity
+                                for lot in repos.lots.by_leg(leg)
+                                if lot.is_open
                             ),
-                            ex_date=on,
-                            split_numerator=numerator,
-                            split_denominator=denominator,
-                            applied_txn_id=txn_id,
-                        )
+                            Decimal(0),
+                        ),
                     )
-                    for leg in {lot.leg_id for lot in lots}:
-                        repos.positions.update_leg_quantity(
-                            leg,
-                            sum(
-                                (
-                                    lot.remaining_quantity
-                                    for lot in repos.lots.by_leg(leg)
-                                    if lot.is_open
-                                ),
-                                Decimal(0),
-                            ),
-                        )
 
         result_obj = CommandResult(
             command="ca split",
@@ -209,7 +203,7 @@ def split(
             warnings=tuple(warnings),
             portfolio=ctx.portfolio_name(),
         )
-        return maybe_dry_run(result_obj) if ctx.dry_run else result_obj
+        return result_obj
 
     dispatch(action)
 
@@ -248,152 +242,135 @@ def spinoff(
         on = resolve_date(ex_date, ctx, what="--ex-date")
         parent = repos.instruments.resolve(symbol, on=on)
 
-        try:
-            child = repos.instruments.resolve(spun, on=on)
-        except ValidationError:
-            if ctx.dry_run:
-                child = Instrument(
-                    instrument_id=0,
-                    symbol=spun.upper(),
-                    instrument_type=InstrumentType.EQUITY,
-                )
-            else:
-                with db_transaction(repos.con):
-                    child_id = repos.instruments.add(
-                        Instrument(
-                            instrument_id=0,
-                            symbol=spun.upper(),
-                            instrument_type=InstrumentType.EQUITY,
-                            source="derived:spinoff",
-                        )
+        with ctx.write():
+            try:
+                child = repos.instruments.resolve(spun, on=on)
+            except ValidationError:
+                child_id = repos.instruments.add(
+                    Instrument(
+                        instrument_id=0,
+                        symbol=spun.upper(),
+                        instrument_type=InstrumentType.EQUITY,
+                        source="derived:spinoff",
                     )
+                )
                 child = repos.instruments.get(child_id)  # type: ignore[assignment]
 
-        accounts = [repos.accounts.resolve(account)] if account else repos.accounts.all()
-        rows: list[dict[str, object]] = []
-        warnings: list[str] = []
+            accounts = [repos.accounts.resolve(account)] if account else repos.accounts.all()
+            rows: list[dict[str, object]] = []
+            warnings: list[str] = []
 
-        for target in accounts:
-            lots = _held_lots(repos, target.account_id, parent.instrument_id, on)
-            if not lots:
-                continue
+            for target in accounts:
+                lots = _held_lots(repos, target.account_id, parent.instrument_id, on)
+                if not lots:
+                    continue
 
-            if ctx.dry_run:
-                position_id, leg_id = 0, 0
-            else:
-                with db_transaction(repos.con):
-                    position_id = repos.positions.add(
-                        Position(
-                            position_id=0,
-                            account_id=target.account_id,
-                            strategy_type=StrategyType.SINGLE,
-                            opened_date=on,
-                            status=PositionStatus.OPEN,
-                            note=f"spun off from {parent.symbol}",
-                        )
+                position_id = repos.positions.add(
+                    Position(
+                        position_id=0,
+                        account_id=target.account_id,
+                        strategy_type=StrategyType.SINGLE,
+                        opened_date=on,
+                        status=PositionStatus.OPEN,
+                        note=f"spun off from {parent.symbol}",
                     )
-                    leg_id = repos.positions.add_leg(
-                        PositionLeg(
-                            leg_id=0,
-                            position_id=position_id,
-                            instrument_id=child.instrument_id,
-                            role=LegRole.LONG_STOCK,
-                            sign=1,
-                            quantity=Decimal(0),
-                            opened_date=on,
-                        )
+                )
+                leg_id = repos.positions.add_leg(
+                    PositionLeg(
+                        leg_id=0,
+                        position_id=position_id,
+                        instrument_id=child.instrument_id,
+                        role=LegRole.LONG_STOCK,
+                        sign=1,
+                        quantity=Decimal(0),
+                        opened_date=on,
                     )
-
-            outcome = ENGINE.spinoff(
-                lots,
-                ratio=from_text(ratio),
-                parent_fmv=from_text(parent_fmv),
-                spun_fmv=from_text(spun_fmv),
-                ex_date=on,
-                spun_instrument_id=child.instrument_id,
-                spun_leg_id=leg_id,
-                spun_position_id=position_id,
-                allows_fractional=target.allows_fractional,
-            )
-            if outcome.fractional_shares > 0 and not target.allows_fractional:
-                warnings.append(
-                    f"{target.name}: {outcome.fractional_shares} fractional spun "
-                    "share(s). Record the cash in lieu as a disposition."
                 )
 
-            for before, after, adjustment in zip(
-                lots, outcome.parent_lots, outcome.adjustments, strict=True
-            ):
-                rows.append(
-                    {
-                        "account": target.name,
-                        "lot_id": before.lot_id,
-                        "symbol": parent.symbol,
-                        "basis_before": before.adjusted_cost_basis,
-                        "basis_after": after.adjusted_cost_basis,
-                        "holding_period_start": after.holding_period_start.isoformat(),
-                    }
+                outcome = ENGINE.spinoff(
+                    lots,
+                    ratio=from_text(ratio),
+                    parent_fmv=from_text(parent_fmv),
+                    spun_fmv=from_text(spun_fmv),
+                    ex_date=on,
+                    spun_instrument_id=child.instrument_id,
+                    spun_leg_id=leg_id,
+                    spun_position_id=position_id,
+                    allows_fractional=target.allows_fractional,
                 )
-                if not ctx.dry_run:
-                    with db_transaction(repos.con):
-                        repos.lots.update_basis(after)
-                        repos.lots.add_adjustment(replace(adjustment, adjustment_id=0))
-
-            for spun_lot in outcome.spun_lots:
-                rows.append(
-                    {
-                        "account": target.name,
-                        "lot_id": None,
-                        "symbol": child.symbol,
-                        "basis_before": ZERO,
-                        "basis_after": spun_lot.adjusted_cost_basis,
-                        "holding_period_start": spun_lot.holding_period_start.isoformat(),
-                    }
-                )
-                if not ctx.dry_run:
-                    with db_transaction(repos.con):
-                        repos.lots.add(replace(spun_lot, lot_id=0))
-
-            if not ctx.dry_run:
-                with db_transaction(repos.con):
-                    spinoff_txn_id = repos.transactions.append(
-                        Transaction(
-                            txn_id=0,
-                            account_id=target.account_id,
-                            trade_date=on,
-                            seq=repos.transactions.next_seq(on),
-                            txn_type=TransactionType.SPINOFF,
-                            net_cash_effect=ZERO,
-                            instrument_id=parent.instrument_id,
-                            ex_date=on,
-                            note=(
-                                f"spinoff of {child.symbol} at {ratio} per share; "
-                                f"basis allocated by FMV {parent_fmv}/{spun_fmv}"
-                            ),
-                            external_ref=ref,
-                            source=TransactionSource.DERIVED,
-                            created_at=_now(),
-                        )
+                if outcome.fractional_shares > 0 and not target.allows_fractional:
+                    warnings.append(
+                        f"{target.name}: {outcome.fractional_shares} fractional spun "
+                        "share(s). Record the cash in lieu as a disposition."
                     )
-                    repos.corporate_actions.add(
-                        CorporateAction(
-                            instrument_id=parent.instrument_id,
-                            action_type="spinoff",
-                            ex_date=on,
-                            target_instrument_id=child.instrument_id,
-                            target_ratio=from_text(ratio),
-                            parent_fmv=from_text(parent_fmv),
-                            target_fmv=from_text(spun_fmv),
-                            applied_txn_id=spinoff_txn_id,
-                        )
+
+                for before, after, adjustment in zip(
+                    lots, outcome.parent_lots, outcome.adjustments, strict=True
+                ):
+                    rows.append(
+                        {
+                            "account": target.name,
+                            "lot_id": before.lot_id,
+                            "symbol": parent.symbol,
+                            "basis_before": before.adjusted_cost_basis,
+                            "basis_after": after.adjusted_cost_basis,
+                            "holding_period_start": after.holding_period_start.isoformat(),
+                        }
                     )
-                    repos.positions.update_leg_quantity(
-                        leg_id,
-                        sum(
-                            (lot.remaining_quantity for lot in outcome.spun_lots),
-                            Decimal(0),
+                    repos.lots.update_basis(after)
+                    repos.lots.add_adjustment(replace(adjustment, adjustment_id=0))
+
+                for spun_lot in outcome.spun_lots:
+                    rows.append(
+                        {
+                            "account": target.name,
+                            "lot_id": None,
+                            "symbol": child.symbol,
+                            "basis_before": ZERO,
+                            "basis_after": spun_lot.adjusted_cost_basis,
+                            "holding_period_start": spun_lot.holding_period_start.isoformat(),
+                        }
+                    )
+                    repos.lots.add(replace(spun_lot, lot_id=0))
+
+                spinoff_txn_id = repos.transactions.append(
+                    Transaction(
+                        txn_id=0,
+                        account_id=target.account_id,
+                        trade_date=on,
+                        seq=repos.transactions.next_seq(on),
+                        txn_type=TransactionType.SPINOFF,
+                        net_cash_effect=ZERO,
+                        instrument_id=parent.instrument_id,
+                        ex_date=on,
+                        note=(
+                            f"spinoff of {child.symbol} at {ratio} per share; "
+                            f"basis allocated by FMV {parent_fmv}/{spun_fmv}"
                         ),
+                        external_ref=ref,
+                        source=TransactionSource.DERIVED,
+                        created_at=_now(),
                     )
+                )
+                repos.corporate_actions.add(
+                    CorporateAction(
+                        instrument_id=parent.instrument_id,
+                        action_type="spinoff",
+                        ex_date=on,
+                        target_instrument_id=child.instrument_id,
+                        target_ratio=from_text(ratio),
+                        parent_fmv=from_text(parent_fmv),
+                        target_fmv=from_text(spun_fmv),
+                        applied_txn_id=spinoff_txn_id,
+                    )
+                )
+                repos.positions.update_leg_quantity(
+                    leg_id,
+                    sum(
+                        (lot.remaining_quantity for lot in outcome.spun_lots),
+                        Decimal(0),
+                    ),
+                )
 
         result_obj = CommandResult(
             command="ca spinoff",
@@ -426,7 +403,7 @@ def spinoff(
             warnings=tuple(warnings),
             portfolio=ctx.portfolio_name(),
         )
-        return maybe_dry_run(result_obj) if ctx.dry_run else result_obj
+        return result_obj
 
     dispatch(action)
 
@@ -484,92 +461,85 @@ def convert(
                 remedy="Nothing to convert. Check the date and the account.",
             )
 
-        if ctx.dry_run:
-            position_id, leg_id = 0, 0
-        else:
-            with db_transaction(repos.con):
-                leg = repos.positions.leg_for(found.account_id, target.instrument_id)
-                if leg is not None:
-                    position_id, leg_id = leg.position_id, leg.leg_id
-                else:
-                    position_id = repos.positions.add(
-                        Position(
-                            position_id=0,
-                            account_id=found.account_id,
-                            strategy_type=StrategyType.SINGLE,
-                            opened_date=on,
-                            status=PositionStatus.OPEN,
-                            note=f"converted from {source.symbol}",
-                        )
+        with ctx.write():
+            leg = repos.positions.leg_for(found.account_id, target.instrument_id)
+            if leg is not None:
+                position_id, leg_id = leg.position_id, leg.leg_id
+            else:
+                position_id = repos.positions.add(
+                    Position(
+                        position_id=0,
+                        account_id=found.account_id,
+                        strategy_type=StrategyType.SINGLE,
+                        opened_date=on,
+                        status=PositionStatus.OPEN,
+                        note=f"converted from {source.symbol}",
                     )
-                    leg_id = repos.positions.add_leg(
-                        PositionLeg(
-                            leg_id=0,
-                            position_id=position_id,
-                            instrument_id=target.instrument_id,
-                            role=LegRole.LONG_STOCK,
-                            sign=1,
-                            quantity=Decimal(0),
-                            opened_date=on,
-                        )
+                )
+                leg_id = repos.positions.add_leg(
+                    PositionLeg(
+                        leg_id=0,
+                        position_id=position_id,
+                        instrument_id=target.instrument_id,
+                        role=LegRole.LONG_STOCK,
+                        sign=1,
+                        quantity=Decimal(0),
+                        opened_date=on,
                     )
+                )
 
-        outcome = ENGINE.convert(
-            lots,
-            target_units=received,
-            ex_date=on,
-            target_instrument_id=target.instrument_id,
-            target_leg_id=leg_id,
-            target_position_id=position_id,
-        )
-
-        rows: list[dict[str, object]] = []
-        for before, after in zip(lots, outcome.new_lots, strict=True):
-            rows.append(
-                {
-                    "lot_id": before.lot_id,
-                    "from_quantity": before.remaining_quantity,
-                    "to_quantity": after.remaining_quantity,
-                    "basis": after.adjusted_cost_basis,
-                    "holding_period_start": after.holding_period_start.isoformat(),
-                    "basis_source": after.basis_source.value,
-                }
+            outcome = ENGINE.convert(
+                lots,
+                target_units=received,
+                ex_date=on,
+                target_instrument_id=target.instrument_id,
+                target_leg_id=leg_id,
+                target_position_id=position_id,
             )
 
-        with money_context():
-            converted = sum((lot.remaining_quantity for lot in lots), Decimal(0))
-            ratio = received / converted
+            rows: list[dict[str, object]] = []
+            for before, after in zip(lots, outcome.new_lots, strict=True):
+                rows.append(
+                    {
+                        "lot_id": before.lot_id,
+                        "from_quantity": before.remaining_quantity,
+                        "to_quantity": after.remaining_quantity,
+                        "basis": after.adjusted_cost_basis,
+                        "holding_period_start": after.holding_period_start.isoformat(),
+                        "basis_source": after.basis_source.value,
+                    }
+                )
 
-        payload: dict[str, object] = {
-            "from": source.symbol,
-            "to": target.symbol,
-            "account": found.name,
-            "date": on.isoformat(),
-            "converted": converted,
-            "received": received,
-            "ratio": ratio,
-            "lots": rows,
-        }
-        table = Table(
-            columns=(
-                Column("lot_id", "Lot", ColumnKind.INTEGER),
-                Column("from_quantity", f"{source.symbol} out", ColumnKind.QUANTITY),
-                Column("to_quantity", f"{target.symbol} in", ColumnKind.QUANTITY),
-                Column("basis", "Basis", ColumnKind.MONEY),
-                Column("holding_period_start", "HP Start", ColumnKind.DATE),
-                Column("basis_source", "Basis Source"),
-            ),
-            rows=tuple(rows),
-            title=f"{source.symbol} → {target.symbol} in {found.name}, {on.isoformat()}",
-            footnotes=(
-                "Nothing is realised: each lot's basis, acquisition date, holding "
-                "period and provenance carry to the units it became.",
-            ),
-        )
-        if ctx.dry_run:
-            return maybe_dry_run(CommandResult(command="ca convert", data=payload, table=table))
+            with money_context():
+                converted = sum((lot.remaining_quantity for lot in lots), Decimal(0))
+                ratio = received / converted
 
-        with db_transaction(repos.con):
+            payload: dict[str, object] = {
+                "from": source.symbol,
+                "to": target.symbol,
+                "account": found.name,
+                "date": on.isoformat(),
+                "converted": converted,
+                "received": received,
+                "ratio": ratio,
+                "lots": rows,
+            }
+            table = Table(
+                columns=(
+                    Column("lot_id", "Lot", ColumnKind.INTEGER),
+                    Column("from_quantity", f"{source.symbol} out", ColumnKind.QUANTITY),
+                    Column("to_quantity", f"{target.symbol} in", ColumnKind.QUANTITY),
+                    Column("basis", "Basis", ColumnKind.MONEY),
+                    Column("holding_period_start", "HP Start", ColumnKind.DATE),
+                    Column("basis_source", "Basis Source"),
+                ),
+                rows=tuple(rows),
+                title=f"{source.symbol} → {target.symbol} in {found.name}, {on.isoformat()}",
+                footnotes=(
+                    "Nothing is realised: each lot's basis, acquisition date, holding "
+                    "period and provenance carry to the units it became.",
+                ),
+            )
             txn_id = repos.transactions.append(
                 Transaction(
                     txn_id=0,
@@ -608,7 +578,10 @@ def convert(
                 repos.lots.add(replace(opened, lot_id=0, open_txn_id=txn_id))
             repos.positions.update_leg_quantity(
                 leg_id,
-                sum((lot.remaining_quantity for lot in repos.lots.by_leg(leg_id)), Decimal(0)),
+                sum(
+                    (lot.remaining_quantity for lot in repos.lots.by_leg(leg_id)),
+                    Decimal(0),
+                ),
             )
             for old_leg in {lot.leg_id for lot in lots}:
                 repos.positions.close_leg(old_leg, on)
@@ -652,10 +625,7 @@ def symbol_change(
             "to": to.upper(),
             "effective": on.isoformat(),
         }
-        if ctx.dry_run:
-            return maybe_dry_run(CommandResult(command="ca symbol-change", data=payload))
-
-        with db_transaction(repos.con):
+        with ctx.write():
             repos.instruments.rename(instrument.instrument_id, to.upper(), on)
             repos.transactions.append(
                 Transaction(

@@ -29,14 +29,12 @@ from portable_core.domain.enums import BasisSource, ReliefMethod, TransactionTyp
 from portable_core.domain.models import Transaction
 from portable_core.errors import UsageError
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
-from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.services.replay import ReplayEngine
 from portable_core.services.trading import TradingService
 from portable_pt import state
 from portable_pt.commands._shared import (
     RefOpt,
     dispatch,
-    maybe_dry_run,
     money_arg,
     resolve_date,
 )
@@ -241,10 +239,7 @@ def _record(
             )
 
         result = _result(symbol, txn, quantity, market_value, ctx.portfolio_name())
-        if ctx.dry_run:
-            return maybe_dry_run(result)
-
-        with db_transaction(repos.con):
+        with ctx.write():
             txn_id = repos.transactions.append(txn)
             rebuilt = ReplayEngine(repos).apply_or_rebuild(replace(txn, txn_id=txn_id))
 

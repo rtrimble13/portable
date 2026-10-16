@@ -21,7 +21,6 @@ from portable_core.errors.kinds import E_GIPS_NO_FLOW_POLICY, E_RECONCILE_BREAK
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.importers import TabularAdapter
 from portable_core.importers.source import REALIZED
-from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.services import cash_flow, restatement
 from portable_core.services.reconciliation import (
     ExternalHolding,
@@ -31,7 +30,7 @@ from portable_core.services.reconciliation import (
 from portable_core.services.replay import effective_ledger, state_on
 from portable_core.services.tax import TaxEngine, TaxSummary
 from portable_pt import state
-from portable_pt.commands._shared import dispatch, maybe_dry_run, money_arg, resolve_date
+from portable_pt.commands._shared import dispatch, money_arg, resolve_date
 
 policy_app = typer.Typer(help="Return policy thresholds.", no_args_is_help=True)
 
@@ -1195,10 +1194,7 @@ def set_policy(
             "large_flow_value": policy.large_flow_value,
             "materiality_return_bps": policy.materiality_return_bps,
         }
-        if ctx.dry_run:
-            return maybe_dry_run(CommandResult(command="policy set", data=payload))
-
-        with db_transaction(repos.con):
+        with ctx.write():
             recorded = restatement.record_policy(repos, policy, restate=restate)
 
         return CommandResult(

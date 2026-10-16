@@ -242,6 +242,21 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **`--dry-run` is the real write, rolled back** (ADR 0026, decided by the
+  owner). Most commands returned before writing, so a dry run could not say
+  that a back-dated entry would rebuild derived state or remove valuation
+  snapshots, and it accepted what the real run refuses at write time: a tax
+  rate that restates history, a duplicate `--ref`. Every mutating command now
+  writes through `CommandContext.write()`, which under `--dry-run` is a
+  savepoint in one transaction that is never committed. The result is the
+  real result, marked `"dry_run": true`, with every warning the real run would
+  give; a refusal is raised exactly as the real run raises it. A dry run no
+  longer asks for confirmation. Commands that write files (`init`, `export`,
+  `backup`, `migrate`) keep their own dry run.
+- **`pt ca split`, `spinoff` and `convert` write in one transaction.** Each
+  updated lots, opened positions and appended its ledger row in separate
+  transactions, so a refusal partway through -- a duplicate `--ref` on the
+  ledger row, say -- left the lots changed with no ledger row behind them.
 - **`pt cash-flows` nets a reversed entry and its reversal out**, as snapshots
   do (ADR 0021, decided by the owner). It listed the ledger as booked: a
   reversed deposit appeared as +X on its own date and −X on the reversal's,

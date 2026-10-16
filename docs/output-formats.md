@@ -183,7 +183,7 @@ Everything else an agent needs is already true:
   a flag that supplies the answer, and refuses rather than blocking on a
   non-TTY;
 - `--dry-run` on every mutating command prints the exact effects, because it is
-  the same code path with the write suppressed rather than a separate estimate;
+  the real write, rolled back, rather than a separate estimate (ADR 0026);
 - exit codes are meaningful and documented;
 - output is deterministic, so a diff of two runs shows the change and nothing
   else.

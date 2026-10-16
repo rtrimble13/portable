@@ -12,11 +12,10 @@ from portable_core.domain.models import BondDetail, Instrument, OptionDetail
 from portable_core.errors import DataUnavailableError, ValidationError
 from portable_core.errors.kinds import E_PRICE_MISSING
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
-from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.providers import as_security_master
 from portable_core.services import price_history
 from portable_pt import state
-from portable_pt.commands._shared import dispatch, maybe_dry_run, resolve_date
+from portable_pt.commands._shared import dispatch, resolve_date
 
 app = typer.Typer(help="Instruments: the local security master.", no_args_is_help=True)
 
@@ -133,10 +132,7 @@ def add(
             "name": name,
             "contract_size": instrument.contract_size,
         }
-        if ctx.dry_run:
-            return maybe_dry_run(CommandResult(command="instrument add", data=payload))
-
-        with db_transaction(repos.con):
+        with ctx.write():
             instrument_id = repos.instruments.add(instrument)
 
         return CommandResult(

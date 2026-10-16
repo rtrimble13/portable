@@ -11,10 +11,9 @@ from portable_core.domain.enums import AccountType, CashTreatment, ReliefMethod
 from portable_core.domain.models import Account, TaxRateSchedule
 from portable_core.errors import ValidationError
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
-from portable_core.persistence.connection import transaction
 from portable_core.services import restatement
 from portable_pt import state
-from portable_pt.commands._shared import dispatch, maybe_dry_run, resolve_date
+from portable_pt.commands._shared import dispatch, resolve_date
 
 app = typer.Typer(help="Accounts: definition, status, and tax rates.", no_args_is_help=True)
 rates_app = typer.Typer(help="Effective-dated tax rates.", no_args_is_help=True)
@@ -90,12 +89,7 @@ def add(
             note=note,
         )
 
-        if ctx.dry_run:
-            return maybe_dry_run(
-                CommandResult(command="account add", data=_account_row(account))
-            )
-
-        with transaction(repos.con):
+        with ctx.write():
             account_id = repos.accounts.add(account)
 
         return CommandResult(
@@ -234,17 +228,10 @@ def close(
         found = repos.accounts.resolve(account)
         closing_date = resolve_date(on, ctx)
 
-        if ctx.dry_run:
-            return maybe_dry_run(
-                CommandResult(
-                    command="account close",
-                    data={"account": found.name, "closed_date": closing_date.isoformat()},
-                )
-            )
         if not ctx.confirm(f"Close account {found.name!r} on {closing_date.isoformat()}?"):
             raise ValidationError("cancelled", remedy="Pass --yes to confirm.")
 
-        with transaction(repos.con):
+        with ctx.write():
             repos.accounts.close(found.account_id, closing_date)
 
         return CommandResult(
@@ -316,10 +303,7 @@ def set_rates(
             ),
         }
 
-        if ctx.dry_run:
-            return maybe_dry_run(CommandResult(command="account tax-rates set", data=payload))
-
-        with transaction(repos.con):
+        with ctx.write():
             recorded = restatement.record_rate_schedule(repos, schedule, restate=restate)
 
         return CommandResult(

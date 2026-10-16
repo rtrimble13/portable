@@ -414,22 +414,11 @@ def rebuild() -> None:
     ledger that was never wrong (ADR 0010). Valuation snapshots are kept: a
     replay cannot produce them, and `pt validate` checks them (ADR 0024).
     """
-    options = state.current_options()
 
     def action() -> CommandResult:
         ctx = state.with_portfolio()
-        repos = ctx.require_portfolio()
 
-        if options.dry_run:
-            return dry_run_note(
-                CommandResult(
-                    command="rebuild",
-                    data={"transactions": repos.transactions.count()},
-                    portfolio=ctx.portfolio_name(),
-                )
-            )
-
-        with transaction(repos.con):
+        with ctx.write() as repos:
             result = ReplayEngine(repos).rebuild()
 
         return CommandResult(

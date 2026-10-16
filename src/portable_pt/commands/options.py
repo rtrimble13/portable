@@ -33,7 +33,6 @@ from portable_core.domain.enums import (
 from portable_core.domain.models import Lot, LotDisposition, Transaction
 from portable_core.errors import ValidationError
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
-from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.services.corporate_actions import CorporateActionEngine
 from portable_core.services.lots import LotEngine, parse_lot_selection
 from portable_core.services.positions import PositionEngine
@@ -42,7 +41,6 @@ from portable_pt import state
 from portable_pt.commands._shared import (
     RefOpt,
     dispatch,
-    maybe_dry_run,
     money_arg,
     resolve_date,
 )
@@ -126,12 +124,7 @@ def expire(
             "date": when.isoformat(),
             "realized_gain": quantize_money(total_gain),
         }
-        if ctx.dry_run:
-            return maybe_dry_run(
-                CommandResult(command="option expire", data=payload, table=_expire_table(rows))
-            )
-
-        with db_transaction(repos.con):
+        with ctx.write():
             txn = Transaction(
                 txn_id=0,
                 account_id=target.account_id,
@@ -328,12 +321,7 @@ def assign(
             ),
         )
 
-        if ctx.dry_run:
-            return maybe_dry_run(
-                CommandResult(command="option assign", table=table, data=payload)
-            )
-
-        with db_transaction(repos.con):
+        with ctx.write():
             txn_id = repos.transactions.append(
                 Transaction(
                     txn_id=0,
@@ -478,10 +466,7 @@ def exercise(
             "stock_basis": basis,
             "date": when.isoformat(),
         }
-        if ctx.dry_run:
-            return maybe_dry_run(CommandResult(command="option exercise", data=payload))
-
-        with db_transaction(repos.con):
+        with ctx.write():
             txn_id = repos.transactions.append(
                 Transaction(
                     txn_id=0,

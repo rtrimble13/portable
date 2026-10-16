@@ -21,13 +21,12 @@ from portable_core.domain.models import (
 from portable_core.errors import DataUnavailableError, ValidationError
 from portable_core.errors.kinds import E_PRICE_MISSING
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
-from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.persistence.repositories import Repositories
 from portable_core.providers import as_eod_provider
 from portable_core.services import price_history
 from portable_core.services import snapshots as snapshots_service
 from portable_pt import state
-from portable_pt.commands._shared import dispatch, maybe_dry_run, resolve_date
+from portable_pt.commands._shared import dispatch, resolve_date
 
 price_app = typer.Typer(help="Prices: set, load, show.", no_args_is_help=True)
 
@@ -95,10 +94,7 @@ def set_price(
             "valuation_level": level,
             "is_estimate": estimate,
         }
-        if ctx.dry_run:
-            return maybe_dry_run(CommandResult(command="price set", data=payload))
-
-        with db_transaction(repos.con):
+        with ctx.write():
             price_id = repos.prices.add(record)
 
         return CommandResult(
@@ -187,12 +183,11 @@ def load(
                     missing.append(f"{request.symbol} {span}: {exc.message}")
                 continue
 
-            if not ctx.dry_run:
-                with db_transaction(repos.con):
-                    for price in prices:
-                        repos.prices.add(
-                            replace(price, instrument_id=request.instrument.instrument_id)
-                        )
+            with ctx.write():
+                for price in prices:
+                    repos.prices.add(
+                        replace(price, instrument_id=request.instrument.instrument_id)
+                    )
             loaded.append(
                 {
                     "symbol": request.symbol,
@@ -246,7 +241,7 @@ def load(
             warnings=tuple(warnings),
             portfolio=ctx.portfolio_name(),
         )
-        return maybe_dry_run(result) if ctx.dry_run else result
+        return result
 
     dispatch(action)
 
@@ -357,16 +352,13 @@ def value(
         accounts = [repos.accounts.resolve(account)] if account else repos.accounts.all()
         names = {target.account_id: target.name for target in accounts}
 
-        if ctx.dry_run:
+        # One transaction: the walk rewinds derived state in a savepoint inside
+        # it, and the snapshots it built are written after the savepoint is
+        # rolled back -- so nothing can append to the ledger between valuing a
+        # day and recording the value.
+        with ctx.write():
             snapshots, warnings = _snapshots(ctx, repos, accounts, first, last)
-        else:
-            # One transaction: the walk rewinds derived state in a savepoint
-            # inside it, and the snapshots it built are written after the
-            # savepoint is rolled back -- so nothing can append to the ledger
-            # between valuing a day and recording the value.
-            with db_transaction(repos.con):
-                snapshots, warnings = _snapshots(ctx, repos, accounts, first, last)
-                warnings.extend(snapshots_service.store(repos, snapshots))
+            warnings.extend(snapshots_service.store(repos, snapshots))
 
         rows: list[dict[str, object]] = []
         for snapshot in snapshots:
@@ -422,7 +414,7 @@ def value(
             as_of=ctx.as_of,
             portfolio=ctx.portfolio_name(),
         )
-        return maybe_dry_run(result) if ctx.dry_run else result
+        return result
 
     dispatch(action)
 

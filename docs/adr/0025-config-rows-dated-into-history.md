@@ -73,9 +73,8 @@ the user told to rebuild explicitly. Nothing did that. Reproduced:
   (`AccountRepository.update` allows the column and has no caller). A command
   that does must refuse or restate in the same way, because changing it would
   re-relieve every such lot. No derivation reads benchmark rows.
-- A dry run of either command previews the write without performing it, so
-  it does not show the refusal. Dry runs that rehearse the real write are the
-  next change.
+- A dry run of either command raises the same refusal, because it is the
+  real write rolled back (ADR 0026).
 
 ## Alternatives considered
 

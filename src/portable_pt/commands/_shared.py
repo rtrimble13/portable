@@ -48,6 +48,14 @@ def dispatch(action: Callable[[], CommandResult]) -> None:
 
     def reported() -> CommandResult:
         result = action()
+        # ADR 0026. A dry run is the real write, rolled back, so its result is
+        # the real result -- marked here, once, for every command that wrote.
+        if (
+            options.dry_run
+            and any(ctx.wrote for ctx in state.opened())
+            and not result.data.get("dry_run")
+        ):
+            result = dry_run_note(result)
         # ADR 0024. A ledger write removes the valuation snapshots it makes
         # stale, in whichever command wrote it; saying so here means no command
         # can remove valuation history without the user being told.
@@ -97,7 +105,3 @@ def money_arg(value: str | None, *, what: str) -> Decimal:
         raise UsageError(
             f"{what} must be a decimal number, got {value!r}", value=value
         ) from exc
-
-
-def maybe_dry_run(result: CommandResult) -> CommandResult:
-    return dry_run_note(result) if state.current_options().dry_run else result

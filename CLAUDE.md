@@ -381,6 +381,7 @@ test that fails without your change.
   | 0023 | A change of grouping is a ledger row, naming positions by their opening transaction |
   | 0024 | Valuation snapshots are valued state: kept by rebuild, removed when stale, checked by validate |
   | 0025 | A config row dated into history is refused, or restated on request |
+  | 0026 | A dry run is the real write, rolled back |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

@@ -97,10 +97,14 @@ A representative path — `pt sell AAPL --qty 50 --price 190.00 --date 2026-03-1
 5. **`formatters/`** — renders per `--format`. Number presentation rules live
    here and nowhere else.
 
-**`--dry-run` cuts between 3 and 4.** The service computes the full effect and
-returns it; persistence is never called. This is why the effect of a dry run is
-exactly the effect of the real run — it is the same code path with the write
-suppressed, not a separate estimate.
+**`--dry-run` runs 3 and 4 and then rolls them back** (ADR 0026). The command
+writes through `CommandContext.write()`, which under `--dry-run` is a savepoint
+in one outer transaction that is never committed. This is why the effect of a
+dry run is exactly the effect of the real run: it is the same code, writes
+included, so whatever happens at write time — a rebuild, a snapshot removal, a
+refusal — happens in the dry run too, and is then discarded. Commands that
+write files (`init`, `export`, `backup`, `migrate`) report what they would do
+without doing it, because a rollback does not undo a file.
 
 ---
 

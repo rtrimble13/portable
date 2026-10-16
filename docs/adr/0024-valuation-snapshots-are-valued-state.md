@@ -146,12 +146,10 @@ they just upserted on.
   row restates. ADR 0025 then made the write itself refuse such a row, or
   restate the snapshots with `--restate`, and did the same for tax-rate
   rows.
-- **Most dry runs do not report the snapshots they would remove.** Under
-  `--dry-run`, most writers return before appending, so the removal never
-  runs. The back-dated rebuild notice has the same gap. `pt import batch` is
-  the exception: its dry run is the real commit, rolled back, so it reports
-  what it *would* remove. That covers the path most likely to be back-dated.
-  Closing the gap elsewhere would need a rolled-back append in every writer.
+- **A dry run reports the snapshots it would remove.** At first only
+  `pt import batch` could, because only its dry run was the real commit,
+  rolled back; every other writer returned before appending. ADR 0026 made
+  every dry run work that way.
 - `pt export` still leaves snapshots out. They are reproducible from what it
   carries, prices included, by `pt value` (ADR 0010).
 - Snapshots stored before this change were never checked. Run `pt validate`

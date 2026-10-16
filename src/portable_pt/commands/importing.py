@@ -20,8 +20,6 @@ from portable_core.errors import ValidationError
 from portable_core.errors.kinds import E_IMPORT_SOURCE_INVALID
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.importers import ABSENCE_MEANS, TabularAdapter
-from portable_core.persistence.connection import scratch_transaction
-from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.services.import_batch import (
     BatchImporter,
     ImportBatch,
@@ -35,7 +33,7 @@ from portable_core.services.import_extract import (
 )
 from portable_core.services.reconstruction import Reconstruction, reconstruct
 from portable_pt import state
-from portable_pt.commands._shared import dispatch, maybe_dry_run
+from portable_pt.commands._shared import dispatch
 
 app = typer.Typer(help="Import into a portfolio.", no_args_is_help=True)
 
@@ -91,23 +89,11 @@ def import_batch(
             title=f"Batch from {batch.source.broker}",
         )
 
-        if ctx.dry_run:
-            # The real commit, rolled back. Validating each row against the
-            # state *before* the batch would refuse a batch that commits
-            # perfectly well -- a sale's lot relief has to see the purchase
-            # earlier in the same batch. Running it for real and discarding the
-            # result is the only dry run that answers the question asked.
-            with scratch_transaction(repos.con):
-                rehearsal = importer.commit(batch, batch_path=source)
-            return maybe_dry_run(
-                CommandResult(
-                    command="import batch",
-                    data={**payload, "digest": rehearsal.digest},
-                    table=table,
-                )
-            )
-
-        with db_transaction(repos.con):
+        # The real commit -- rolled back under --dry-run (ADR 0026). Validating
+        # each row against the state *before* the batch would refuse a batch
+        # that commits perfectly well: a sale's lot relief has to see the
+        # purchase earlier in the same batch.
+        with ctx.write():
             outcome = importer.commit(batch, batch_path=source)
 
         warnings = list(outcome.warnings)

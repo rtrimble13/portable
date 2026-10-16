@@ -10,12 +10,11 @@ import typer
 from portable_core.domain.enums import StrategyType
 from portable_core.errors import ValidationError
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
-from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.persistence.repositories import Repositories
 from portable_core.services.regrouping import Regroup, record_regroup
 from portable_core.services.replay import state_on
 from portable_pt import state
-from portable_pt.commands._shared import dispatch, maybe_dry_run, resolve_date
+from portable_pt.commands._shared import dispatch, resolve_date
 
 position_app = typer.Typer(help="Positions.", no_args_is_help=True)
 lot_app = typer.Typer(help="Tax lots.", no_args_is_help=True)
@@ -190,10 +189,7 @@ def group(
             "date": on.isoformat(),
             "strategy": str(chosen) if chosen else None,
         }
-        if ctx.dry_run:
-            return maybe_dry_run(CommandResult(command="position group", data=payload))
-
-        with db_transaction(repos.con):
+        with ctx.write():
             recorded = [record_regroup(repos, move) for move in moves]
 
         regrouped = repos.positions.opened_by(target.opened_txn_id)
@@ -245,10 +241,7 @@ def ungroup(
             moves.append(_regroup_for(repos, leg_id, on, None, None, note))
 
         payload: dict[str, object] = {"legs": legs, "date": on.isoformat()}
-        if ctx.dry_run:
-            return maybe_dry_run(CommandResult(command="position ungroup", data=payload))
-
-        with db_transaction(repos.con):
+        with ctx.write():
             recorded = [record_regroup(repos, move) for move in moves]
 
         return CommandResult(
