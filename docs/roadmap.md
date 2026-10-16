@@ -41,9 +41,10 @@ fixtures has been validated against the easy case. Designed in
 `docs/broker-import.md`; decided in ADRs 0012–0015.
 
 0. **The replay defect** ([ADR 0016](adr/0016-out-of-order-appends-and-validation.md))
-   — a back-dated append leaves derived state disagreeing with the ledger, and
-   `pt validate` cannot see it because it rebuilds before it compares. This blocks
-   everything below it: a historical import is out-of-order by construction.
+   — *done*. A back-dated append left derived state disagreeing with the ledger,
+   and `pt validate` could not see it because it rebuilt before it compared. Every
+   live append now goes through `apply_or_rebuild`, and `pt validate` compares
+   stored state against a replay in a rolled-back transaction.
 1. **Import prerequisites** — *done*. `source` on every write path; `--ref` on
    all twenty ledger-writing commands; a `taxes_withheld` path with the
    reclaimable split and its refusals; schema **0002**, `UNIQUE (account_id,
@@ -113,6 +114,13 @@ fixtures has been validated against the easy case. Designed in
    adapter, three accounts, four years of history, positions and cash
    reconciled and realized gains tied per sale. **A second custodian is the
    only real test of item 4** — the first one always fits.
+
+Then, **historical price import**
+([ADR 0020](adr/0020-historical-price-import.md), proposed): a price on every
+instrument ever held, for every account-day since inception. Nothing below
+computes a return until that history is priced and reconciled, and ADR 0020's
+open questions — whether a fafnir instance exists, what it carries for mutual
+funds and delisted symbols, which benchmark — are the owner's to answer first.
 
 Then:
 

@@ -19,7 +19,7 @@ from portable_core.providers.base import (
     require_capability,
 )
 from portable_core.providers.file import FileProvider
-from portable_core.providers.null import NullProvider
+from portable_core.providers.null import NullProvider, OfflineProvider
 
 __all__ = [
     "BenchmarkSeries",
@@ -28,6 +28,7 @@ __all__ = [
     "FileProvider",
     "MarketDataProvider",
     "NullProvider",
+    "OfflineProvider",
     "RiskFreeRate",
     "as_benchmark_provider",
     "as_corporate_action_provider",

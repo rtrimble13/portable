@@ -10,6 +10,7 @@ remembered.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -24,11 +25,12 @@ NOW = "2026-08-27T00:00:00Z"
 
 
 @pytest.fixture
-def db(tmp_path: Path) -> sqlite3.Connection:
-    """A fresh, migrated portfolio file."""
+def db(tmp_path: Path) -> Iterator[sqlite3.Connection]:
+    """A fresh, migrated portfolio file, closed afterwards."""
     con = open_portfolio(tmp_path / "t.port", must_exist=False)
     M.initialise(con)
-    return con
+    yield con
+    con.close()
 
 
 def _account(con: sqlite3.Connection, account_id: int = 1, name: str = "Brokerage") -> None:
@@ -343,5 +345,58 @@ def test_every_table_is_documented_in_the_generated_reference() -> None:
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
         )
     ]
+    con.close()
     missing = [t for t in tables if f"## `{t}`" not in rendered]
     assert missing == [], missing
+
+
+def test_schema_reference_describes_the_schema_a_migrated_file_has() -> None:
+    """Each table and index once, as the latest migration leaves it -- and no other.
+
+    Rebuild migrations (ADR 0019) re-create tables, and the reference used to
+    list every version of them: the v1 ledger, two `transaction_new` tables
+    and two `lot` tables, an index 0002 dropped, and not the unique index 0002
+    created. Held to the real database here, so the next rebuild cannot do it
+    again (ADR 0022).
+    """
+    import io
+    import re
+
+    from portable_core.schema import docgen
+
+    buffer = io.StringIO()
+    docgen.main(buffer)
+    rendered = buffer.getvalue()
+
+    con = sqlite3.connect(":memory:", isolation_level=None)
+    con.row_factory = sqlite3.Row
+    try:
+        M.initialise(con)
+        tables = sorted(
+            r[0]
+            for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        )
+        indexes = sorted(
+            r[0]
+            for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
+            )
+        )
+        # Every column of every table, in order: a column added by ALTER TABLE
+        # (migration 0007) was missing from the reference until this asked.
+        columns = {
+            table: [r[1] for r in con.execute(f'PRAGMA table_info("{table}")')]
+            for table in tables
+        }
+    finally:
+        con.close()
+
+    assert sorted(re.findall(r"^## `(\w+)`$", rendered, re.MULTILINE)) == tables
+    assert sorted(re.findall(r"^- `(\w+)` on \(", rendered, re.MULTILINE)) == indexes
+    for table, expected in columns.items():
+        section = rendered.split(f"## `{table}`\n")[1].split("\n## ")[0]
+        documented = re.findall(r"^\| `(\w+)` \|", section, re.MULTILINE)
+        assert documented == expected, table
+    assert "- `CHECK (`" not in rendered, "a wrapped constraint is rendered whole"

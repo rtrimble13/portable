@@ -1,11 +1,15 @@
 # ADR 0010 — Derived state, the replay contract, and what `pt rebuild` guarantees
 
-- **Status:** Accepted
+- **Status:** Accepted — the partition, the replay order and the three replay properties are implemented and property-tested. Valuation snapshots were in the derived class and nothing rebuilt them; they are now a valued class of their own (ADR 0024). A policy or tax-rate row dated before existing derived state is refused unless `--restate` restates it in the same transaction (ADR 0025)
 - **Date:** 2026-08-27
 - **Milestone:** v0.1
 - **Governs:** `CLAUDE.md` invariants 2, 3, 6; `PORT-GIPS-J03`, `PORT-GIPS-J06`
 - **Amended by:** [ADR 0016](0016-out-of-order-appends-and-validation.md) — the contract
-  here is unchanged; 0016 adds the operational obligations that make the code uphold it
+  here is unchanged; 0016 adds the operational obligations that make the code uphold it.
+  [ADR 0024](0024-valuation-snapshots-are-valued-state.md) — snapshots move to a valued
+  class: kept by rebuild, removed by the writes that make them stale, checked by validate.
+  [ADR 0025](0025-config-rows-dated-into-history.md) — a config row dated into history is
+  refused, or restated with `--restate`; validate does not refuse anything
 
 ## Context
 
@@ -26,7 +30,8 @@ derived state are *not* in the ledger: **prices** and **policy rows**.
 | **Ledger** (append-only, immutable) | `transaction` | Never touched by rebuild. `UPDATE`/`DELETE` rejected by trigger. |
 | **Reference** (externally sourced, immutable once written) | `instrument`, `instrument_option`, `instrument_bond`, `instrument_symbol_history`, `price`, `corporate_action` | Never touched by rebuild. A price is a fact about the world, not a derivation. |
 | **Config** (effective-dated, immutable once effective) | `account`, `tax_rate_schedule`, `benchmark`, `benchmark_component`, `portfolio_benchmark`, `return_policy`, `portfolio_event`, `settings`, `meta` | Never touched by rebuild. |
-| **Derived** | `position`, `position_leg`, `lot`, `lot_basis_adjustment`, `lot_disposition`, `realized_gain`, `cash_balance`, `valuation_snapshot`, `valuation_snapshot_price`, `snapshot_flow` | **Dropped and rebuilt** from ledger + reference + config. |
+| **Derived** | `position`, `position_leg`, `lot`, `lot_basis_adjustment`, `lot_disposition`, `realized_gain`, `cash_balance` | **Dropped and rebuilt** from ledger + reference + config. |
+| **Valued** (ADR 0024) | `valuation_snapshot`, `valuation_snapshot_price`, `snapshot_flow` | **Kept.** Derived from the ledger *and* the prices each recorded, which replay does not read. Removed by a ledger write that makes them stale, checked by `pt validate`, recreated by `pt value`. |
 
 `pt rebuild` deletes every derived row and replays. If a table is not in the
 derived row of that table, `pt rebuild` must not write to it. If you add derived
@@ -59,20 +64,22 @@ Properties 1–3 are hypothesis tests over generated transaction sequences.
 
 ### The two inputs that are not in the ledger
 
-- **Prices.** A snapshot rebuilt after a better price arrives will legitimately
-  differ. That is not a determinism violation — it is `PORT-GIPS-A09` working:
-  an estimate was superseded, the snapshot was rebuilt, and the change must be
-  *reported*. Each snapshot therefore records the exact set of prices it consumed
-  in `valuation_snapshot_price` (`price_id`, source, as-of, valuation level,
-  `is_estimate`). Replay determinism is asserted **holding the price set fixed**;
-  the price-changed path is asserted separately by
-  `test_stale_price_then_correction_rebuilds`.
+- **Prices.** A snapshot valued again after a better price arrives will
+  legitimately differ. That is not a determinism violation — it is
+  `PORT-GIPS-A09` working: an estimate was superseded, the snapshot was valued
+  again, and the change must be *reported*. Each snapshot therefore records the
+  exact set of prices it consumed in `valuation_snapshot_price` (`price_id`,
+  source, as-of, valuation level, `is_estimate`). Reproducibility is asserted
+  **holding the price set fixed**, which is what `pt validate` checks of every
+  stored snapshot (ADR 0024). A recorded price its price row no longer agrees
+  with is named there. The return half, `test_stale_price_then_correction_rebuilds`,
+  waits on `pert`.
 - **Policy rows.** `return_policy` and `tax_rate_schedule` are effective-dated
   and immutable once effective, precisely so that a policy change cannot
   retroactively restate history. Adding a row effective from a future date
-  changes no past derived value; `pt validate` refuses a row whose
-  `effective_from` precedes the latest already-derived state and tells the user
-  to rebuild explicitly.
+  changes no past derived value. A row that would change a recorded figure is
+  refused when it is written, and `--restate` records it and restates the
+  figures in the same transaction (ADR 0025).
 
 ### Corrections
 
@@ -88,11 +95,11 @@ transactions to reports.
   suspected derived-state bug. After a bug fix, rebuild recovers correct state
   from a ledger that was never wrong.
 - Derived tables carry no user-authored data. Anything a human types goes in the
-  ledger or in config, or it is lost on the next rebuild. `pt position --label`
-  therefore writes to `position` — so **`label` and `note` are ledger-carried**,
-  set by the transaction that opened the position, and re-derived on replay.
+  ledger or in config, or it is lost on the next rebuild. So **a position's
+  `label` is a ledger row** (`position_label`, ADR 0027) and its `note` comes
+  from the transaction that opened it; both are re-derived on replay.
 - Materialized derived state can be dropped entirely to shrink a `.port` file;
-  `pt rebuild` restores it.
+  `pt rebuild` restores it. Valued state is restored by `pt value` (ADR 0024).
 
 ## Alternatives considered
 

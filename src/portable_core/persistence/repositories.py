@@ -17,15 +17,18 @@ Two disciplines apply throughout:
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, ClassVar, cast
 
 from portable_core.decimals import to_text
+from portable_core.domain.enums import TransactionType
 from portable_core.domain.models import (
     Account,
     BasisAdjustment,
     Benchmark,
+    CashFlow,
     CorporateAction,
     Instrument,
     Lot,
@@ -35,6 +38,7 @@ from portable_core.domain.models import (
     Price,
     RealizedGain,
     ReturnPolicy,
+    SnapshotPrice,
     TaxRateSchedule,
     Transaction,
     ValuationSnapshot,
@@ -58,6 +62,7 @@ __all__ = [
     "PolicyRepository",
     "PositionRepository",
     "PriceRepository",
+    "RemovedSnapshots",
     "Repositories",
     "TransactionRepository",
     "ValuationRepository",
@@ -281,12 +286,20 @@ class AccountRepository(_Repository):
 
 
 class InstrumentRepository(_Repository):
+    def set_market_price(self, instrument_id: int, has_market_price: bool) -> None:
+        """Say whether anything quotes this instrument (ADR 0028)."""
+        self.con.execute(
+            "UPDATE instrument SET has_market_price = ?, updated_at = ? "
+            "WHERE instrument_id = ?",
+            (int(has_market_price), _now(), instrument_id),
+        )
+
     def add(self, instrument: Instrument) -> int:
         cursor = self.con.execute(
             "INSERT INTO instrument (symbol, instrument_type, name, currency, exchange, "
             "cusip, isin, figi, sector, industry, asset_class, country, is_active, "
-            "source, provider_ref, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "source, provider_ref, has_market_price, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 instrument.symbol,
                 str(instrument.instrument_type),
@@ -303,6 +316,7 @@ class InstrumentRepository(_Repository):
                 int(instrument.is_active),
                 instrument.source,
                 instrument.provider_ref,
+                int(instrument.has_market_price),
                 _now(),
                 _now(),
             ),
@@ -449,6 +463,24 @@ class InstrumentRepository(_Repository):
             )
         return self._hydrate(candidates[0])
 
+    def symbol_history(self, instrument_id: int) -> list[tuple[str, date, date | None]]:
+        """``(symbol, valid_from, valid_to)`` per period, oldest first.
+
+        ``valid_to`` is inclusive and ``None`` while the symbol is current.
+        """
+        return [
+            (
+                str(r["symbol"]),
+                date.fromisoformat(r["valid_from"]),
+                date.fromisoformat(r["valid_to"]) if r["valid_to"] else None,
+            )
+            for r in self.con.execute(
+                "SELECT symbol, valid_from, valid_to FROM instrument_symbol_history "
+                "WHERE instrument_id = ? ORDER BY valid_from, symbol",
+                (instrument_id,),
+            )
+        ]
+
     def all(self, *, active_only: bool = False) -> list[Instrument]:
         sql = "SELECT * FROM instrument"
         if active_only:
@@ -559,7 +591,8 @@ class CorporateActionRepository(_Repository):
 
 class PriceRepository(_Repository):
     def add(self, price: Price) -> int:
-        cursor = self.con.execute(
+        """Record a price, replacing the one from the same source on the same date."""
+        self.con.execute(
             "INSERT INTO price (instrument_id, price_date, price, currency, source, "
             "as_of, valuation_level, valuation_basis, is_estimate, provider_ref, "
             "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
@@ -582,7 +615,25 @@ class PriceRepository(_Repository):
                 _now(),
             ),
         )
-        return int(cursor.lastrowid or 0)
+        # Looked up, not `lastrowid`: a replacement takes the upsert's update
+        # path, which leaves the last-insert rowid at some earlier row.
+        row = self.con.execute(
+            "SELECT price_id FROM price WHERE instrument_id = ? AND price_date = ? "
+            "AND source = ?",
+            (price.instrument_id, price.price_date.isoformat(), price.source),
+        ).fetchone()
+        return int(row["price_id"])
+
+    def span(self, instrument_id: int) -> tuple[int, date | None, date | None]:
+        """How many prices an instrument has, and the first and last dates."""
+        row = self.con.execute(
+            "SELECT COUNT(*) AS n, MIN(price_date) AS first, MAX(price_date) AS last "
+            "FROM price WHERE instrument_id = ?",
+            (instrument_id,),
+        ).fetchone()
+        if not row["n"]:
+            return 0, None, None
+        return int(row["n"]), date.fromisoformat(row["first"]), date.fromisoformat(row["last"])
 
     def newest_on_or_before(self, instrument_id: int, on: date) -> Price | None:
         """The most recent price at or before *on*.
@@ -621,8 +672,29 @@ class PriceRepository(_Repository):
 # ── the ledger ───────────────────────────────────────────────────────────────
 
 
+#: Ledger rows that change what a position is called or how it is grouped, and
+#: nothing a snapshot records -- no quantity, no cash (ADR 0023, ADR 0027).
+_NAMES_ONLY = frozenset({TransactionType.POSITION_REGROUP, TransactionType.POSITION_LABEL})
+
+
+@dataclass(frozen=True, slots=True)
+class RemovedSnapshots:
+    """Valuation snapshots one ledger write made stale, and removed (ADR 0024)."""
+
+    account: str
+    first: date
+    last: date
+    count: int
+
+
 class TransactionRepository(_Repository):
     """The ledger. Append-only, enforced by trigger as well as by this class."""
+
+    def __init__(self, con: sqlite3.Connection) -> None:
+        super().__init__(con)
+        #: What :meth:`append` removed, for the command to report. A snapshot
+        #: removed in silence is valuation history lost in silence.
+        self.removed_snapshots: list[RemovedSnapshots] = []
 
     def next_seq(self, trade_date: date) -> int:
         """The next sequence number for *trade_date*.
@@ -652,6 +724,18 @@ class TransactionRepository(_Repository):
             (trade_date.isoformat(), trade_date.isoformat(), seq),
         ).fetchone()
         return int(row["n"])
+
+    def any_after(self, on: date) -> bool:
+        """Whether any ledger row is dated after *on*.
+
+        False means stored derived state is already the state as of *on*,
+        because nothing remains to be replayed past it (ADR 0021).
+        """
+        row = self.con.execute(
+            'SELECT EXISTS (SELECT 1 FROM "transaction" WHERE trade_date > ?) AS later',
+            (on.isoformat(),),
+        ).fetchone()
+        return bool(row["later"])
 
     def first_trade_date(self, account_id: int) -> date | None:
         """The account's earliest ledger row, or ``None`` for an account with none.
@@ -722,7 +806,8 @@ class TransactionRepository(_Repository):
 
         Every writer passes through here, so the duplicate-reference refusal
         does too -- including the corporate-action and options commands, which
-        build their rows directly rather than through a service.
+        build their rows directly rather than through a service. So does the
+        removal of the valuation snapshots the row makes stale (ADR 0024).
         """
         self.refuse_if_ref_taken(txn.account_id, txn.external_ref)
         cursor = self.con.execute(
@@ -732,9 +817,9 @@ class TransactionRepository(_Repository):
             "position_id, counter_account_id, related_txn_id, reverses_txn_id, "
             "lot_selection, relief_method, ex_date, pay_date, is_qualified, note, "
             "external_ref, source, original_basis, original_acquired_date, "
-            "basis_source, basis_assumption, created_at) VALUES "
+            "basis_source, basis_assumption, strategy_type, label, created_at) VALUES "
             "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "?, ?, ?, ?, ?, ?, ?, ?)",
+            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 txn.account_id,
                 txn.trade_date.isoformat(),
@@ -771,10 +856,80 @@ class TransactionRepository(_Repository):
                 ),
                 str(txn.basis_source) if txn.basis_source else None,
                 txn.basis_assumption,
+                str(txn.strategy_type) if txn.strategy_type else None,
+                txn.label,
                 txn.created_at or _now(),
             ),
         )
+        self._remove_stale_snapshots(txn)
         return int(cursor.lastrowid or 0)
+
+    def _remove_stale_snapshots(self, txn: Transaction) -> None:
+        """Remove every stored snapshot *txn* changes. ADR 0024.
+
+        A snapshot describes an account at the end of its date. A row dated D
+        changes every snapshot of every account it touches dated D or later,
+        and a reversal also changes them from the date of the entry it
+        reverses, because :func:`effective_ledger` nets that entry out of
+        history rather than unwinding it on the reversal's date (ADR 0021).
+
+        Here rather than in a service because this is the one write every
+        ledger writer goes through, which is what makes it impossible to skip.
+        A regroup or a label is exempt, and so is its reversal: it changes no
+        quantity and no cash (ADR 0023, ADR 0027), and a snapshot records
+        neither positions nor their names.
+        """
+        affected = [txn]
+        if txn.txn_type is TransactionType.REVERSAL and txn.reverses_txn_id is not None:
+            original = self.get(txn.reverses_txn_id)
+            if original is not None:
+                affected.append(original)
+        if any(row.txn_type in _NAMES_ONLY for row in affected):
+            return
+
+        since = min(row.trade_date for row in affected)
+        accounts = sorted(
+            {
+                side
+                for row in affected
+                for side in (row.account_id, row.counter_account_id)
+                if side is not None
+            }
+        )
+        for account_id in accounts:
+            dates = [
+                date.fromisoformat(str(row["snapshot_date"]))
+                for row in self.con.execute(
+                    "SELECT snapshot_date FROM valuation_snapshot "
+                    "WHERE account_id = ? AND snapshot_date >= ? ORDER BY snapshot_date",
+                    (account_id, since.isoformat()),
+                )
+            ]
+            if not dates:
+                continue
+            # Children first: neither table cascades from valuation_snapshot.
+            for child in ("snapshot_flow", "valuation_snapshot_price"):
+                self.con.execute(
+                    f"DELETE FROM {child} WHERE snapshot_id IN ("  # noqa: S608 -- fixed literal list
+                    "SELECT snapshot_id FROM valuation_snapshot "
+                    "WHERE account_id = ? AND snapshot_date >= ?)",
+                    (account_id, since.isoformat()),
+                )
+            self.con.execute(
+                "DELETE FROM valuation_snapshot WHERE account_id = ? AND snapshot_date >= ?",
+                (account_id, since.isoformat()),
+            )
+            name = self.con.execute(
+                "SELECT name FROM account WHERE account_id = ?", (account_id,)
+            ).fetchone()
+            self.removed_snapshots.append(
+                RemovedSnapshots(
+                    account=str(name["name"]) if name is not None else str(account_id),
+                    first=dates[0],
+                    last=dates[-1],
+                    count=len(dates),
+                )
+            )
 
     def get(self, txn_id: int) -> Transaction | None:
         row = self.con.execute(
@@ -932,6 +1087,16 @@ class PositionRepository(_Repository):
             (on.isoformat(), position_id),
         )
 
+    def set_label(self, position_id: int, label: str | None) -> None:
+        """Name a position, or clear its name. Replay's, for ``position_label``.
+
+        Derived state like the rest of the row: a label set anywhere but in
+        replay is gone after the next rebuild (ADR 0027).
+        """
+        self.con.execute(
+            "UPDATE position SET label = ? WHERE position_id = ?", (label, position_id)
+        )
+
     def set_strategy(self, position_id: int, strategy_type: str) -> None:
         """Restate a position's strategy after a regroup.
 
@@ -942,6 +1107,12 @@ class PositionRepository(_Repository):
             "UPDATE position SET strategy_type = ? WHERE position_id = ?",
             (strategy_type, position_id),
         )
+
+    def leg(self, leg_id: int) -> PositionLeg | None:
+        row = self.con.execute(
+            "SELECT * FROM position_leg WHERE leg_id = ?", (leg_id,)
+        ).fetchone()
+        return None if row is None else mappers.to_position_leg(row)
 
     def position_id_for_leg(self, leg_id: int) -> int | None:
         """The position a leg belongs to.
@@ -956,11 +1127,34 @@ class PositionRepository(_Repository):
         return None if row is None else int(row["position_id"])
 
     def move_leg(self, leg_id: int, position_id: int) -> None:
-        """Regroup: one column, no lot touched, no basis touched (ADR 0009)."""
+        """Regroup a leg, and the denormalised position id its lots carry.
+
+        No quantity, basis or holding period is touched (ADR 0009); the lots'
+        copy of the position id moves with the leg so the two never disagree.
+        Called by replay for a ``position_regroup`` row (ADR 0023), never as an
+        edit of its own -- derived state changed outside replay is undone by
+        the next rebuild.
+        """
         self.con.execute(
             "UPDATE position_leg SET position_id = ? WHERE leg_id = ?",
             (position_id, leg_id),
         )
+        self.con.execute(
+            "UPDATE lot SET position_id = ? WHERE leg_id = ?",
+            (position_id, leg_id),
+        )
+
+    def opened_by(self, txn_id: int) -> Position | None:
+        """The position a ledger row opened: its identity across rebuilds.
+
+        ``position_id`` is a surrogate key that a rebuild replaying in a
+        different order renumbers. The opening transaction is in the ledger and
+        does not move, so that is how a ledger row names a position (ADR 0023).
+        """
+        row = self.con.execute(
+            "SELECT position_id FROM position WHERE opened_txn_id = ?", (txn_id,)
+        ).fetchone()
+        return None if row is None else self.get(int(row["position_id"]))
 
 
 class LotRepository(_Repository):
@@ -1217,6 +1411,122 @@ class LotRepository(_Repository):
 # ── balances and valuations ──────────────────────────────────────────────────
 
 
+#: The columns of a stored snapshot that :func:`_snapshot_values` fills, in
+#: order. One list for writing and for reading back, so `pt validate` compares
+#: exactly what `pt value` wrote (ADR 0024).
+_SNAPSHOT_FIELDS: tuple[str, ...] = (
+    "beginning_market_value",
+    "ending_market_value",
+    "securities_value",
+    "cash_balance",
+    "margin_loan",
+    "accrued_interest",
+    "accrued_dividends",
+    "accrued_income",
+    "external_flow_account",
+    "external_flow_portfolio",
+    "income_amount",
+    "fees_amount",
+    "level5_market_value",
+    "is_complete",
+    "uses_estimates",
+)
+_PRICE_FIELDS: tuple[str, ...] = (
+    "instrument_id",
+    "price_id",
+    "price",
+    "quantity",
+    "market_value",
+    "source",
+    "as_of",
+    "valuation_level",
+    "is_estimate",
+    "staleness_days",
+)
+_FLOW_FIELDS: tuple[str, ...] = (
+    "txn_id",
+    "account_id",
+    "flow_date",
+    "level",
+    "classification",
+    "amount",
+    "is_large",
+    "is_in_kind",
+)
+
+
+def _snapshot_values(snapshot: ValuationSnapshot) -> tuple[Any, ...]:
+    return (
+        to_text(snapshot.beginning_market_value),
+        to_text(snapshot.ending_market_value),
+        to_text(snapshot.securities_value),
+        to_text(snapshot.cash_balance),
+        to_text(snapshot.margin_loan),
+        to_text(snapshot.accrued_interest),
+        to_text(snapshot.accrued_dividends),
+        to_text(snapshot.accrued_income),
+        to_text(snapshot.external_flow_account),
+        to_text(snapshot.external_flow_portfolio),
+        to_text(snapshot.income_amount),
+        to_text(snapshot.fees_amount),
+        to_text(snapshot.level5_market_value),
+        int(snapshot.is_complete),
+        int(snapshot.uses_estimates),
+    )
+
+
+def _price_values(entry: SnapshotPrice) -> tuple[Any, ...]:
+    return (
+        entry.instrument_id,
+        entry.price_id,
+        to_text(entry.price),
+        to_text(entry.quantity),
+        to_text(entry.market_value),
+        entry.source,
+        entry.as_of.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        entry.valuation_level,
+        int(entry.is_estimate),
+        entry.staleness_days,
+    )
+
+
+def _flow_values(flow: CashFlow) -> tuple[Any, ...]:
+    # Every stored flow is account level and external; the portfolio-level view
+    # is the snapshot's `external_flow_portfolio` (ADR 0007).
+    return (
+        flow.txn_id,
+        flow.account_id,
+        flow.flow_date.isoformat(),
+        "account",
+        "external",
+        to_text(flow.amount),
+        int(flow.is_large),
+        int(flow.is_in_kind),
+    )
+
+
+def _record(
+    snapshot: tuple[Any, ...],
+    prices: list[tuple[Any, ...]],
+    flows: list[tuple[Any, ...]],
+) -> dict[str, Any]:
+    """One comparable form for a snapshot: every value as text, rows sorted."""
+
+    def text(values: tuple[Any, ...]) -> tuple[str, ...]:
+        return tuple("" if value is None else str(value) for value in values)
+
+    return {
+        **dict(zip(_SNAPSHOT_FIELDS, text(snapshot), strict=True)),
+        "prices": sorted(text(entry) for entry in prices),
+        "flows": sorted(text(flow) for flow in flows),
+    }
+
+
+def _price_label(price: Any, is_estimate: Any, level: Any) -> str:
+    estimate = " (estimate)" if int(is_estimate) else ""
+    return f"{price}{estimate} at level {level}"
+
+
 class ValuationRepository(_Repository):
     def set_cash(
         self,
@@ -1253,56 +1563,29 @@ class ValuationRepository(_Repository):
         return mappers.to_decimal(row["balance"]), mappers.to_decimal(row["margin_loan"])
 
     def save_snapshot(self, snapshot: ValuationSnapshot) -> int:
-        cursor = self.con.execute(
-            "INSERT INTO valuation_snapshot (account_id, snapshot_date, "
-            "beginning_market_value, ending_market_value, securities_value, "
-            "cash_balance, margin_loan, accrued_interest, accrued_dividends, "
-            "accrued_income, external_flow_account, external_flow_portfolio, "
-            "income_amount, fees_amount, level5_market_value, is_complete, "
-            "uses_estimates) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(account_id, snapshot_date) DO UPDATE SET "
-            "beginning_market_value = excluded.beginning_market_value, "
-            "ending_market_value = excluded.ending_market_value, "
-            "securities_value = excluded.securities_value, "
-            "cash_balance = excluded.cash_balance, margin_loan = excluded.margin_loan, "
-            "accrued_interest = excluded.accrued_interest, "
-            "accrued_dividends = excluded.accrued_dividends, "
-            "accrued_income = excluded.accrued_income, "
-            "external_flow_account = excluded.external_flow_account, "
-            "external_flow_portfolio = excluded.external_flow_portfolio, "
-            "income_amount = excluded.income_amount, "
-            "fees_amount = excluded.fees_amount, "
-            "level5_market_value = excluded.level5_market_value, "
-            "is_complete = excluded.is_complete, "
-            "uses_estimates = excluded.uses_estimates",
+        fields = ", ".join(_SNAPSHOT_FIELDS)
+        updates = ", ".join(f"{name} = excluded.{name}" for name in _SNAPSHOT_FIELDS)
+        self.con.execute(
+            f"INSERT INTO valuation_snapshot (account_id, snapshot_date, {fields}) "  # noqa: S608 -- columns from _SNAPSHOT_FIELDS
+            f"VALUES (?, ?, {', '.join('?' for _ in _SNAPSHOT_FIELDS)}) "
+            f"ON CONFLICT(account_id, snapshot_date) DO UPDATE SET {updates}",
             (
                 snapshot.account_id,
                 snapshot.snapshot_date.isoformat(),
-                to_text(snapshot.beginning_market_value),
-                to_text(snapshot.ending_market_value),
-                to_text(snapshot.securities_value),
-                to_text(snapshot.cash_balance),
-                to_text(snapshot.margin_loan),
-                to_text(snapshot.accrued_interest),
-                to_text(snapshot.accrued_dividends),
-                to_text(snapshot.accrued_income),
-                to_text(snapshot.external_flow_account),
-                to_text(snapshot.external_flow_portfolio),
-                to_text(snapshot.income_amount),
-                to_text(snapshot.fees_amount),
-                to_text(snapshot.level5_market_value),
-                int(snapshot.is_complete),
-                int(snapshot.uses_estimates),
+                *_snapshot_values(snapshot),
             ),
         )
-        snapshot_id = int(cursor.lastrowid or 0)
-        if snapshot_id == 0:
-            row = self.con.execute(
-                "SELECT snapshot_id FROM valuation_snapshot "
-                "WHERE account_id = ? AND snapshot_date = ?",
-                (snapshot.account_id, snapshot.snapshot_date.isoformat()),
-            ).fetchone()
-            snapshot_id = int(row["snapshot_id"])
+        # Looked up, never taken from `lastrowid`. When the upsert updates,
+        # SQLite leaves the connection's last-insert rowid at whatever was
+        # inserted before -- typically the previous snapshot's last price or
+        # flow row -- and the price set below would be written under that id,
+        # over another snapshot's.
+        row = self.con.execute(
+            "SELECT snapshot_id FROM valuation_snapshot "
+            "WHERE account_id = ? AND snapshot_date = ?",
+            (snapshot.account_id, snapshot.snapshot_date.isoformat()),
+        ).fetchone()
+        snapshot_id = int(row["snapshot_id"])
 
         # The price set is rewritten wholesale: a rebuilt snapshot consumed a
         # different set of prices, and a merge would leave the old ones behind
@@ -1312,42 +1595,119 @@ class ValuationRepository(_Repository):
         )
         for entry in snapshot.prices:
             self.con.execute(
-                "INSERT INTO valuation_snapshot_price (snapshot_id, instrument_id, "
-                "price_id, price, quantity, market_value, source, as_of, "
-                "valuation_level, is_estimate, staleness_days) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    snapshot_id,
-                    entry.instrument_id,
-                    entry.price_id,
-                    to_text(entry.price),
-                    to_text(entry.quantity),
-                    to_text(entry.market_value),
-                    entry.source,
-                    entry.as_of.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    entry.valuation_level,
-                    int(entry.is_estimate),
-                    entry.staleness_days,
-                ),
+                f"INSERT INTO valuation_snapshot_price (snapshot_id, "  # noqa: S608 -- columns from _PRICE_FIELDS
+                f"{', '.join(_PRICE_FIELDS)}) "
+                f"VALUES (?, {', '.join('?' for _ in _PRICE_FIELDS)})",
+                (snapshot_id, *_price_values(entry)),
             )
 
         self.con.execute("DELETE FROM snapshot_flow WHERE snapshot_id = ?", (snapshot_id,))
         for flow in snapshot.flows:
             self.con.execute(
-                "INSERT INTO snapshot_flow (snapshot_id, txn_id, account_id, flow_date, "
-                "level, classification, amount, is_large, is_in_kind) "
-                "VALUES (?, ?, ?, ?, 'account', 'external', ?, ?, ?)",
-                (
-                    snapshot_id,
-                    flow.txn_id,
-                    flow.account_id,
-                    flow.flow_date.isoformat(),
-                    to_text(flow.amount),
-                    int(flow.is_large),
-                    int(flow.is_in_kind),
-                ),
+                f"INSERT INTO snapshot_flow (snapshot_id, {', '.join(_FLOW_FIELDS)}) "  # noqa: S608 -- columns from _FLOW_FIELDS
+                f"VALUES (?, {', '.join('?' for _ in _FLOW_FIELDS)})",
+                (snapshot_id, *_flow_values(flow)),
             )
         return snapshot_id
+
+    # ── checking what was stored (ADR 0024) ──────────────────────────────────
+
+    def stored_snapshots(self) -> list[tuple[int, int, date]]:
+        """``(snapshot_id, account_id, snapshot_date)`` of every snapshot, oldest first."""
+        return [
+            (int(row["snapshot_id"]), int(row["account_id"]), date.fromisoformat(row["d"]))
+            for row in self.con.execute(
+                "SELECT snapshot_id, account_id, snapshot_date AS d FROM valuation_snapshot "
+                "ORDER BY snapshot_date, account_id"
+            )
+        ]
+
+    def record(self, snapshot_id: int) -> dict[str, Any]:
+        """A stored snapshot, its prices and its flows, as :meth:`record_of` renders one.
+
+        Compared with :meth:`record_of` of a snapshot built afresh, so both are
+        read and written through the same column lists and the same text
+        conversion as :meth:`save_snapshot`, and cannot drift from it.
+        """
+        row = self.con.execute(
+            f"SELECT {', '.join(_SNAPSHOT_FIELDS)} FROM valuation_snapshot "  # noqa: S608 -- columns from _SNAPSHOT_FIELDS
+            "WHERE snapshot_id = ?",
+            (snapshot_id,),
+        ).fetchone()
+        prices = self.con.execute(
+            f"SELECT {', '.join(_PRICE_FIELDS)} FROM valuation_snapshot_price "  # noqa: S608 -- columns from _PRICE_FIELDS
+            "WHERE snapshot_id = ?",
+            (snapshot_id,),
+        ).fetchall()
+        flows = self.con.execute(
+            f"SELECT {', '.join(_FLOW_FIELDS)} FROM snapshot_flow "  # noqa: S608 -- columns from _FLOW_FIELDS
+            "WHERE snapshot_id = ?",
+            (snapshot_id,),
+        ).fetchall()
+        return _record(tuple(row), [tuple(p) for p in prices], [tuple(f) for f in flows])
+
+    @staticmethod
+    def record_of(snapshot: ValuationSnapshot) -> dict[str, Any]:
+        """*snapshot* as :meth:`save_snapshot` would store it, in :meth:`record`'s form."""
+        return _record(
+            _snapshot_values(snapshot),
+            [_price_values(entry) for entry in snapshot.prices],
+            [_flow_values(flow) for flow in snapshot.flows],
+        )
+
+    def recorded_prices(self, snapshot_id: int) -> list[SnapshotPrice]:
+        """The prices a stored snapshot consumed, as it recorded them."""
+        return [
+            SnapshotPrice(
+                instrument_id=int(row["instrument_id"]),
+                price=mappers.to_decimal(row["price"]),
+                quantity=mappers.to_decimal(row["quantity"]),
+                market_value=mappers.to_decimal(row["market_value"]),
+                source=str(row["source"]),
+                as_of=mappers.to_datetime(row["as_of"]),
+                valuation_level=int(row["valuation_level"]),
+                is_estimate=mappers.to_bool(row["is_estimate"]),
+                staleness_days=int(row["staleness_days"]),
+                price_id=None if row["price_id"] is None else int(row["price_id"]),
+            )
+            for row in self.con.execute(
+                "SELECT * FROM valuation_snapshot_price WHERE snapshot_id = ? "
+                "ORDER BY instrument_id",
+                (snapshot_id,),
+            )
+        ]
+
+    def superseded_prices(self) -> list[tuple[int, date, str, str, str]]:
+        """Recorded prices their price row no longer agrees with.
+
+        ``(account_id, snapshot_date, symbol, recorded, current)``, where the
+        last two describe the price, its estimate flag and its hierarchy level
+        -- the three things a snapshot's figures depend on. ``as_of`` is left
+        out on purpose: reloading the same price restamps it, and that changes
+        no figure (PORT-GIPS-A09).
+        """
+        return [
+            (
+                int(row["account_id"]),
+                date.fromisoformat(row["snapshot_date"]),
+                str(row["symbol"]),
+                _price_label(row["kept_price"], row["kept_estimate"], row["kept_level"]),
+                _price_label(row["now_price"], row["now_estimate"], row["now_level"]),
+            )
+            for row in self.con.execute(
+                "SELECT s.account_id, s.snapshot_date, i.symbol, "
+                "k.price AS kept_price, k.is_estimate AS kept_estimate, "
+                "k.valuation_level AS kept_level, p.price AS now_price, "
+                "p.is_estimate AS now_estimate, p.valuation_level AS now_level "
+                "FROM valuation_snapshot_price k "
+                "JOIN valuation_snapshot s USING (snapshot_id) "
+                "JOIN price p ON p.price_id = k.price_id "
+                "JOIN instrument i ON i.instrument_id = k.instrument_id "
+                "WHERE p.price <> k.price OR p.is_estimate <> k.is_estimate "
+                "OR p.valuation_level <> k.valuation_level "
+                "ORDER BY s.snapshot_date, s.account_id, i.symbol"
+            )
+        ]
 
     def snapshot(self, account_id: int, on: date) -> sqlite3.Row | None:
         row = self.con.execute(
@@ -1484,7 +1844,6 @@ class Repositories:
         ),
         "realized_gain": ("account_id, disposition_date, gain", "realized_gain_id"),
         "cash_balance": ("account_id, currency", ""),
-        "valuation_snapshot": ("account_id, snapshot_date", "snapshot_id"),
     }
 
     #: Foreign keys the digest resolves to a natural key rather than dropping.
@@ -1694,11 +2053,13 @@ class Repositories:
         The order matters only for foreign keys; the list itself is the
         authoritative statement of what "derived" means, and adding derived
         state without adding it here is the bug ADR 0010 exists to prevent.
+
+        Valuation snapshots are not here. They are derived from the ledger
+        *and* the prices they recorded, which a replay of the ledger cannot
+        reproduce; they are kept, removed by the ledger writes that make them
+        stale, and checked by `pt validate` (ADR 0024).
         """
         for table in (
-            "snapshot_flow",
-            "valuation_snapshot_price",
-            "valuation_snapshot",
             "realized_gain",
             "lot_disposition",
             "lot_basis_adjustment",

@@ -72,7 +72,6 @@ class TradeIntent:
     relief_method: ReliefMethod | None = None
     lot_selection: str | None = None
     settlement_date: date | None = None
-    position_id: int | None = None
     note: str | None = None
     external_ref: str | None = None
     #: Where this row came from. `manual` unless an importer says otherwise --
@@ -176,7 +175,6 @@ class TradingService:
             fees=quantize_money(intent.fees),
             commissions=quantize_money(intent.commissions),
             fee_class=intent.fee_class,
-            position_id=intent.position_id,
             lot_selection=intent.lot_selection,
             relief_method=intent.relief_method,
             note=intent.note,

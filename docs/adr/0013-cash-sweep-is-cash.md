@@ -1,6 +1,6 @@
 # ADR 0013 — A cash sweep vehicle is cash, not an instrument
 
-- **Status:** Proposed
+- **Status:** Accepted — implemented as the adapter's declared cash-equivalent set (`source.toml [cash_equivalents]`, as refined by ADR 0018 §4), which extract, reconstruction and `pt reconcile` all treat as cash. Decision 3 is not done: `account.sweep_instrument_id` is still in the schema and the model, and no code reads it
 - **Date:** 2026-09-08
 - **Milestone:** v0.2
 - **Governs:** `PORT-GIPS-A07`; `CLAUDE.md` invariant 4

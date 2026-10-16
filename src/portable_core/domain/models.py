@@ -190,6 +190,10 @@ class Instrument:
     is_active: bool = True
     source: str = "manual"
     provider_ref: str | None = None
+    #: ADR 0028. False for an instrument nothing quotes and nothing ever will
+    #: -- a contingent value right. Valued at zero, at level 5, and the
+    #: snapshot holding it is complete.
+    has_market_price: bool = True
     option: OptionDetail | None = None
     bond: BondDetail | None = None
 
@@ -297,6 +301,12 @@ class Transaction:
     #: state to be reproducible by replaying the ledger.
     basis_source: BasisSource | None = None
     basis_assumption: str | None = None
+    #: ADR 0023. On a `position_regroup` only: the strategy it restates for the
+    #: position it moves a leg into. ``None`` there means "name it from its legs".
+    strategy_type: StrategyType | None = None
+    #: ADR 0027. On a `position_label` only: the label it gives the position
+    #: its ``related_txn_id`` opened. ``None`` there clears the label.
+    label: str | None = None
     created_at: str = ""
 
     def __post_init__(self) -> None:

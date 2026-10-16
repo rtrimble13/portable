@@ -198,6 +198,7 @@ def to_instrument(
         country=row["country"],
         is_active=to_bool(row["is_active"]),
         source=str(row["source"]),
+        has_market_price=to_bool(row["has_market_price"]),
         provider_ref=row["provider_ref"],
         option=option,
         bond=bond,
@@ -254,6 +255,8 @@ def to_transaction(row: sqlite3.Row) -> Transaction:
         original_acquired_date=to_optional_date(row["original_acquired_date"]),
         basis_source=BasisSource(row["basis_source"]) if row["basis_source"] else None,
         basis_assumption=row["basis_assumption"],
+        strategy_type=StrategyType(row["strategy_type"]) if row["strategy_type"] else None,
+        label=row["label"],
         created_at=str(row["created_at"]),
     )
 

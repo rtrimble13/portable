@@ -16,6 +16,20 @@ Two rules specific to this repository:
 
 ### Added
 
+- **An instrument nothing quotes can be marked so** (ADR 0028, answering
+  ADR 0020 R7). `pt instrument market-price SYMBOL --none`, or `pt instrument
+  add --no-market-price`. A holding of one is valued at zero as a level-5
+  valuation, recorded in the snapshot with that provenance, and the snapshot is
+  complete. Before, one such holding -- the CVR -- left every snapshot of its
+  account incomplete, and so blocked returns for the whole account. Refused for
+  an instrument that has ever had a price; a marked instrument takes no price;
+  changing the mark restates stored snapshots only with `--restate`.
+  `docs/gips-standard.md` `PORT-GIPS-A02` records the level-5 treatment.
+- **`pt position label N "text"`**, and `--clear` (ADR 0027). `position.label`
+  existed from the first schema and nothing wrote it. A label is a
+  `position_label` ledger row, so it survives every rebuild, can change over a
+  position's life, and is undone with `pt trade reverse`. `pt position list`
+  shows it.
 - **The mapping grammar the first custodian actually needed, and the
   incremental import.** Measured against the reference custodian's traps
   (`docs/broker-import.md` §12), the two mapping files of ADR 0018 could not
@@ -228,6 +242,23 @@ Two rules specific to this repository:
 
 ### Schema
 
+- **`schema_version` 6 → 7**, migration `0007_no_market_price` (ADR 0028).
+  Additive: `instrument.has_market_price`, default 1, with a `CHECK`. Every
+  existing instrument stays quoted.
+- **`schema_version` 5 → 6**, migration `0006_position_label` (ADR 0027). A
+  rebuild of `"transaction"` (ADR 0019) that admits `txn_type =
+  'position_label'` and adds `label`, with `CHECK`s binding both to that type:
+  a label names a position by the transaction that opened it, and names no
+  instrument, moves no quantity and no cash. All 34 existing columns are copied,
+  by name; tested on a v5 file in which every column carries a value. Not
+  reversible, like every rebuild: restore the backup `pt migrate` takes.
+- **`schema_version` 4 → 5**, migration `0005_position_regroup` (ADR 0023). A
+  rebuild of `"transaction"` (ADR 0019) that admits `txn_type =
+  'position_regroup'` and adds `strategy_type`, with `CHECK`s binding both to
+  that type: a regroup names an instrument, moves no quantity and no cash, and
+  only a regroup carries a strategy. All 33 existing columns are copied, by
+  name; tested on a v4 file with every column set. Not reversible, like every
+  rebuild: restore the backup `pt migrate` takes.
 - **`schema_version` 3 → 4**, migration `0004_capital_gain_distributions`.
   A rebuild of `"transaction"` (ADR 0019) that changes only the `txn_type`
   CHECK, admitting `capital_gain_lt` and `capital_gain_st`. Every row is
@@ -235,6 +266,51 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **`--dry-run` is the real write, rolled back** (ADR 0026, decided by the
+  owner). Most commands returned before writing, so a dry run could not say
+  that a back-dated entry would rebuild derived state or remove valuation
+  snapshots, and it accepted what the real run refuses at write time: a tax
+  rate that restates history, a duplicate `--ref`. Every mutating command now
+  writes through `CommandContext.write()`, which under `--dry-run` is a
+  savepoint in one transaction that is never committed. The result is the
+  real result, marked `"dry_run": true`, with every warning the real run would
+  give; a refusal is raised exactly as the real run raises it. A dry run no
+  longer asks for confirmation. Commands that write files (`init`, `export`,
+  `backup`, `migrate`) keep their own dry run.
+- **`pt ca split`, `spinoff` and `convert` write in one transaction.** Each
+  updated lots, opened positions and appended its ledger row in separate
+  transactions, so a refusal partway through -- a duplicate `--ref` on the
+  ledger row, say -- left the lots changed with no ledger row behind them.
+- **`pt cash-flows` nets a reversed entry and its reversal out**, as snapshots
+  do (ADR 0021, decided by the owner). It listed the ledger as booked: a
+  reversed deposit appeared as +X on its own date and −X on the reversal's,
+  and a reversal dated after `--to` left +X standing alone, while snapshots
+  showed neither. The two series the return engine reads disagreed in timing,
+  which is what a money-weighted return is sensitive to. A test now holds them
+  equal. `pt activity` still lists both rows. `cash_flow.classify_reversal`,
+  used only here, is removed.
+- **Valuation snapshots are a class of their own: kept by `pt rebuild`, removed
+  when a ledger write makes them stale, and checked by `pt validate`**
+  (ADR 0024). They depend on the prices they recorded as well as the ledger, so
+  a replay cannot produce them, and they are no longer part of the replay
+  comparison. `pt validate` re-derives each one from the ledger as of its date,
+  holding its recorded prices fixed. It also checks every recorded price
+  against its price row, which is the `PORT-GIPS-A09` case of a final price
+  replacing an estimate. When valuation problems are all it found, it exits 4
+  with the new code `PT-E-SNAPSHOT-STALE`, and its remedy is `pt value`.
+  `docs/gips-standard.md` `PORT-GIPS-A09` said `pt rebuild` revalued snapshots;
+  it never did, and the text now says what does.
+- **`pt price load` and `pt ca sync` default to what was held, when it was held**
+  (ADR 0020 R2). They defaulted to every *active* instrument over the whole
+  range -- loading what was never owned and leaving out every position since
+  sold. With no symbols they now cover each instrument held in the range over
+  the days it was held, read from the ledger, with a lead-in of the staleness
+  tolerance before each held stretch; every request asks for the ticker the
+  instrument carried on those days.
+- **`ReplayEngine.rebuild()` no longer takes `until`.** It had no caller, and
+  it answered "the ledger as booked through D" — with a reversal dated after D
+  not yet netting its original out — which is not the state as of D
+  (ADR 0021). Ask `ReplayEngine.walk` or `replay.state_on` instead.
 - **A synthesized `external_ref` no longer depends on the row's position in
   the batch.** ADR 0012's ordinal is now counted among identical source rows
   rather than taken from the batch index, so the same custodian row gets the
@@ -246,6 +322,154 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **Commands left the portfolio open.** No command closed the connection it
+  opened. A process exiting closes it, so nothing failed on Python 3.11 or
+  3.12, but Python 3.13 reports it as a `ResourceWarning`, which the suite
+  treats as an error, and on Windows an open handle keeps the file locked.
+  Every command now closes what it opened, whether it succeeded or failed;
+  so do `pt init` and `pt import` on an error, and a file refused as too old.
+  The test helpers that leaked are fixed too, and CI now runs Python 3.13.
+- **A file that is not a database reached the user as an unexpected error.**
+  `open_portfolio` caught only `OperationalError`, and SQLite reports "file is
+  not a database" as its base class. It is now `PT-E-PORTFOLIO-CORRUPT`,
+  exit 3, with the handle closed.
+- **A tax rate dated before a recorded sale did not change the sale's
+  estimated tax** (ADR 0025). The schedule was stored and the estimate was
+  not, so `pt tax` went on reporting tax at the old rate, with no warning,
+  until something else rebuilt. A return policy did the same to the
+  large-flow flags of stored snapshots. Both commands now refuse such a row
+  with `PT-E-RESTATES-HISTORY`, naming the figures and the change.
+  `--restate` records it and restates them in the same transaction: tax by
+  replaying the ledger, snapshots by deriving them again with the prices they
+  recorded. A second row for a date that already has one is refused by name;
+  it was an unexpected `IntegrityError`.
+- **Every valued portfolio failed `pt validate`, and the remedy it named deleted
+  the valuation history** (ADR 0024). Validate compared `valuation_snapshot`
+  with a replay of the ledger, which produces none, and exited 4 with
+  `PT-E-REPLAY-MISMATCH`. `pt rebuild`, and every back-dated append, import or
+  reversal, which rebuild, deleted every snapshot of every account. A valued
+  portfolio now validates, and a rebuild keeps its snapshots.
+- **Valuing the days before a stored snapshot left its beginning value
+  behind.** A snapshot valued alone begins from zero, having no day before.
+  Backfilling the days before it gave it one, and `pt validate` then reported
+  the stale beginning value. `pt value` now derives the stored snapshot on the
+  day after the range again, with the prices it recorded, and says so
+  (ADR 0024).
+- **An entry dated on or before a stored snapshot left that snapshot wrong.** A
+  deposit dated after the ledger's last row but before a valuation date was
+  applied incrementally, and the snapshot kept the cash it had before.
+  `TransactionRepository.append` now removes every snapshot the row changes:
+  the accounts it touches, from its date onward, and for a reversal from the
+  date of the entry it reverses. The command says which snapshots it removed
+  and gives the `pt value` command that restores them. A dry-run
+  `pt import batch`, which rehearses the commit, says what it would remove.
+  Other accounts, and earlier dates, are kept. A position regroup removes
+  nothing.
+- **Valuing a day a second time could file its price set and flows under
+  another snapshot.** `save_snapshot` took the snapshot's id from `lastrowid`
+  after an upsert. On the update path, SQLite leaves that at the previous
+  insert on the connection, usually another snapshot's price or flow row. The
+  snapshot then either overwrote that one's record or failed with a
+  foreign-key error. `pt price set` had the same defect and reported another
+  row's id when it replaced a price. Both now look the id up by the key they
+  upserted on. Run `pt validate` once on a file valued before this change: it
+  names any snapshot affected.
+- **A rebuild undid every position grouping** (ADR 0023). `pt position group`
+  edited derived state directly, so the next rebuild -- any back-dated import,
+  reversal or `--incremental` update -- split a covered call back into a stock
+  and a short call, and `pt validate` failed the moment a grouping was made. A
+  regroup is now a `position_regroup` row in the ledger, replayed like a trade,
+  checked against the state on its own date before it is written, and undone
+  with `pt trade reverse`. `pt position ungroup` is new.
+- **`pt buy --position N` was recorded and ignored**, and wrote a derived
+  position id -- which a rebuild renumbers -- into the ledger. It now records
+  the trade and a regroup row together, naming the position by the transaction
+  that opened it. `--new-position`, also accepted and ignored, is honoured when
+  the trade opens a new position anyway and refused when the account already
+  holds the instrument (one instrument in two positions in one account is not
+  modelled).
+- **An older `.port` file was read as if it were current.** A file at an earlier
+  schema version failed on the first column it lacked, reported as an
+  unexpected error. It is now refused with `PT-E-SCHEMA-TOO-OLD` (exit 3), which
+  was defined and never raised, until `pt migrate` -- which takes a backup --
+  brings it up to date.
+- **Two stocks grouped by hand were labelled `single`.** Strategy inference
+  named any set of legs sharing one role `single`; two or more legs sharing a
+  role are now `custom`.
+- **fafnir priced a range from the security its ticker named on the last day.**
+  `FafnirProvider.eod_prices` and `corporate_actions` resolved the ticker once,
+  as of the range's end, so across a reused ticker every earlier date came back
+  with another issuer's bars (ADR 0020 R5). A range now resolves through
+  `core.symbol_xref` segment by segment, and a day the ticker named nothing is
+  refused by name. The non-point-in-time fallback to `primary_symbol` is gone,
+  `lookup_security` requires its date (it defaulted to `date.today()`), and
+  fafnir's `asset_type = 'other'` is refused rather than called an equity.
+- **`risk_free_rate(on)` labelled the live curve with any date asked**, parsed it
+  through binary floats, and looked tenors up under names the curve does not use
+  (`3M` as `month3m`). It now reads the row observed on that date or refuses,
+  naming the nearest earlier observation, and parses straight to `Decimal`.
+- **Provider commands turned an outage into success.** `pt price load`,
+  `pt ca sync` and `pt instrument sync` caught every exception per symbol and
+  exited 0, so an unreachable warehouse "succeeded" with an empty table. A
+  symbol with no data is still a warning; a provider that cannot be reached is
+  exit 5, and so is a run that loaded nothing at all.
+- **`--offline` was accepted and ignored** (issue #39). The configured provider
+  is no longer built under `--offline`; fetching commands are refused at once
+  with `PT-E-OFFLINE-CACHE-MISS`, and `pt info` reports `offline`.
+- **`pt instrument sync` titled its output "Hydrated from …" and wrote nothing**
+  (invariant 10). It is now a comparison: each instrument ever held, looked up as
+  of the last day it was held under the ticker it carried then, with every field
+  the provider states differently listed. It still writes nothing, and says so.
+- **Migration 0004 could not upgrade a portfolio holding an in-kind
+  transfer** (ADR 0022). Its rebuild of `"transaction"` copied the column list
+  from 0003, which predates 0003's own four columns (`original_basis`,
+  `original_acquired_date`, `basis_source`, `basis_assumption`). So the copy
+  wrote `NULL` into a `transfer_in`'s `basis_source`, the `CHECK` refused it,
+  and the file stayed at v3. That covers every portfolio seeded by
+  `pt import broker` or `pt transfer in`. Nothing was lost anywhere: only a
+  `transfer_in` carries those columns, so no file that did upgrade had a value
+  in them. 0004 is amended in place. The text that first shipped is kept as a
+  test fixture, a test applies both texts and finds the same schema and the
+  same rows, and its checksum is still accepted, so v4 files keep passing
+  `pt validate`.
+- **A rebuild migration could lose an index unnoticed.** The runner compared
+  triggers across a rebuild but not indexes; it now refuses a rebuild that does
+  not restore every explicitly created index (ADR 0019's open item).
+- **`docs/schema.md` described every version of a rebuilt table.** It listed
+  the v1 ledger, two `transaction_new` tables, two `lot` tables, an index 0002
+  dropped, and not the unique index 0002 created, and it rendered wrapped
+  `CHECK`s as `CHECK (`. `make docs` now describes the schema the migrations
+  produce, and a test holds it to a migrated file.
+- **`examples/sample.port` was still at schema 3**; regenerated at 4.
+- **A report for a past date read today's book** (ADR 0021). `pt value`,
+  `pt mark`, and `pt holdings` / `pt pnl` / `pt lot list` under `--as-of` read
+  *current* positions, lots and cash and labelled them with the earlier date.
+  So `pt value --date 2024-06-30` priced positions bought in 2025 at 2024
+  prices, added today's cash balance, and stored the result as a **complete**
+  snapshot: the substrate the return engine reads. It went unnoticed only
+  because old prices were missing, and ADR 0020 sets out to load them. State
+  as of a date is now one forward replay of the ledger in a savepoint that is
+  rolled back (`ReplayEngine.walk`), skipped when nothing is dated after that
+  date. **Snapshots of past dates written before this fix are wrong wherever a
+  later ledger row exists: re-run `pt value` over the range.**
+- **A transfer's receiving account recorded no inflow** (ADR 0007,
+  `PORT-GIPS-B02`). At account level a transfer is two flows, `-amount` for the
+  source and `+amount` for the destination, but `classify` answers only for
+  the row's own account, which is the source, and nothing produced the
+  destination's half. So the receiving account's snapshot showed its cash
+  rising with no external flow, and its account-level return counted the
+  transfer as investment gain: 20,000 into a 50,000 account read as +40% on
+  the day. `pt cash-flows --level account` omitted the same half.
+  `cash_flow.classify_for_account` now answers for either side, and
+  `classify_reversal` takes the side too, so reversing a transfer reverses
+  both halves. Portfolio level is unchanged: still no flow at all.
+- **A reversed entry left a phantom flow in the snapshot.** Snapshot flows
+  counted a reversed deposit on its own date while replay, and so snapshot
+  value, had netted it out. That is a contribution that never reached market
+  value. Flows now come from the same reversal-netted rows as value, defined
+  once in `replay.effective_ledger`. `pt cash-flows` still lists the reversed
+  entry and its reversal on their own dates; ADR 0021 records that as open,
+  to be settled before the money-weighted return consumes either series.
 - **Two in-kind transfers on one date collided.** `record_transfer_in` and
   `record_transfer_out` set `seq = 0` where every other write path assigns it
   from the ledger, so the second transfer on a given day failed

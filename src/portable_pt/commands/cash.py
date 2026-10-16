@@ -12,13 +12,11 @@ from portable_core.decimals import quantize_money
 from portable_core.domain.enums import FeeClass, TransactionType
 from portable_core.errors import ValidationError
 from portable_core.formatters import CommandResult
-from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.services.trading import TradingService
 from portable_pt import state
 from portable_pt.commands._shared import (
     RefOpt,
     dispatch,
-    maybe_dry_run,
     money_arg,
     resolve_date,
 )
@@ -101,10 +99,7 @@ def _record(
             "date": when.isoformat(),
             **({"to_account": counter_account.name} if counter_account else {}),
         }
-        if ctx.dry_run:
-            return maybe_dry_run(CommandResult(command=f"cash {txn_type}", data=payload))
-
-        with db_transaction(repos.con):
+        with ctx.write():
             txn_id = repos.transactions.append(txn)
             from dataclasses import replace
 
@@ -318,10 +313,7 @@ def _income(
             payload["net_cash_effect"] = txn.net_cash_effect
             if txn.withholding_reclaimable is not None:
                 payload["withholding_reclaimable"] = txn.withholding_reclaimable
-        if ctx.dry_run:
-            return maybe_dry_run(CommandResult(command=f"income {txn_type}", data=payload))
-
-        with db_transaction(repos.con):
+        with ctx.write():
             txn_id = repos.transactions.append(txn)
             from dataclasses import replace
 

@@ -141,16 +141,28 @@ tax engine never reads a position; it reads dispositions. That keeps the two
 questions — "how did this trade do?" and "what do I owe on it?" — from
 contaminating each other.
 
+A position can carry a **label** — "core holding", "income sleeve" — set with
+`pt position label`. Like a regroup it is a dated ledger row (`position_label`,
+ADR 0027), so it survives every rebuild, can change over the position's life,
+and is undone with `pt trade reverse`.
+
 A position exposes realized P&L, unrealized P&L, and total return contribution.
 Strategy-level greeks and max-gain/max-loss are backlog; the interface is left
 for them.
 
 **Positions can be regrouped.** When you write a call against stock you already
 own, your intent changes: two positions become one covered call. `pt position
-group` moves the legs. Because lots hang off legs and legs carry the position id,
-regrouping touches one column and not a single basis figure. **A change of intent
-does not change tax history** — which is correct, and is a consequence of the
-structure rather than a rule somebody has to remember.
+group` moves the legs, and `pt position ungroup` moves them back out. Because lots
+hang off legs and legs carry the position id, regrouping touches one column and
+not a single basis figure. **A change of intent does not change tax history** —
+which is correct, and is a consequence of the structure rather than a rule
+somebody has to remember.
+
+A regroup is a dated row in the ledger (`position_regroup`, ADR 0023), so it is
+replayed like a trade: it survives every rebuild, it is undone with
+`pt trade reverse`, and a report for an earlier date shows the positions as they
+were grouped then. `pt buy --position N` records the trade and the regroup
+together.
 
 ---
 
@@ -206,7 +218,10 @@ independent P&L once the option resolves into stock.
 **The ledger. Append-only, immutable, and the only source of truth.** Database
 triggers reject `UPDATE` and `DELETE`. A mistake is corrected with a **reversing
 entry plus a new entry** — never by editing history. That is what makes the tax
-trail defensible, and it is why `--as-of` time travel works on every query.
+trail defensible, and it is why `--as-of` time travel works: a report for a past
+date replays the ledger up to that date, with every reversed entry netted out,
+and reads the state that replay produces (ADR 0021). `pt reconcile` is the one
+report that still refuses a past date.
 
 The ledger covers:
 

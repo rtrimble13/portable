@@ -231,7 +231,7 @@ Three items above are marked as needing attention **before** `pert` starts: exte
 **What GIPS says** — five levels, in order: (a) objective, observable, unadjusted quoted market prices for **identical** investments in **active** markets; (b) observable quoted prices for **similar** investments in active markets; (c) quoted prices for identical or similar investments in **non-active** markets; (d) market-based inputs other than quoted prices that are observable; (e) **subjective, unobservable inputs**, used only when nothing above is available or appropriate.
 
 Note the printed inconsistency: item (a) reads "must be valued" inside a recommendation. That is how CFA Institute prints it. The hierarchy as a whole is `(B)`.
-**What `portable` must do** — Adopt the hierarchy explicitly and record the level used for every price. `portable`'s "fail loudly on ambiguity" invariant means a level-(e) price must be visible, not silent.
+**What `portable` must do** — Adopt the hierarchy explicitly and record the level used for every price. `portable`'s "fail loudly on ambiguity" invariant means a level-(e) price must be visible, not silent. A holding of an instrument marked as having no observable market price is valued at zero at level (e), and recorded in the snapshot's price set with that provenance (ADR 0028).
 **Data model** — `price.valuation_level` ∈ {1,2,3,4,5} mapping to (a)–(e). Default 1 for provider EOD closes; 5 for any manually-set price entered via `pt price set` without a documented basis.
 **Test** — `test_price_records_valuation_level`; and a report-level assertion that the percentage of portfolio market value at level 5 is computed and available (needed by `PORT-GIPS-H05`).
 
@@ -320,9 +320,9 @@ Asset Owners **22.B.9 / 22.B.10 (B)** (added by errata **E2**) carve out the opp
 
 **Source** — Firms **2.A.21 (A)**; Asset Owners **22.A.18 (A)**.
 **What GIPS says** — if the last available historical price or a preliminary/estimated value is used as fair value, it must be considered the best approximation of current fair value, and the firm must assess the difference against the final value and **adjust when the final value is received**.
-**What `portable` must do** — This is the GIPS authority for `portable`'s price-staleness policy. A stale price is permitted only within tolerance and only when flagged; when a better price arrives, affected snapshots must be rebuilt (which `pt rebuild` already does, since snapshots are derived state). Beyond tolerance, exit code 5 as already specified.
+**What `portable` must do** — This is the GIPS authority for `portable`'s price-staleness policy. A stale price is permitted only within tolerance and only when flagged; when a better price arrives, affected snapshots must be valued again. `pt rebuild` does not do this: snapshots depend on prices as well as the ledger and are kept by a rebuild (ADR 0024). `pt validate` names every stored snapshot whose recorded price its price row no longer agrees with, and `pt value` over its date values it again. Beyond tolerance, exit code 5 as already specified.
 **Data model** — `price.is_estimate` boolean; snapshot records the set of prices it consumed.
-**Test** — `test_stale_price_then_correction_rebuilds`: introduce an estimate, compute a return, supply the final price, rebuild, and assert the return changed and the change is reported.
+**Test** — `test_stale_price_then_correction_rebuilds`: introduce an estimate, compute a return, supply the final price, value again, and assert the return changed and the change is reported. Waits on `pert`; the snapshot half is `test_port_gips_a09_a_replaced_price_names_the_snapshots_that_used_it`.
 
 ---
 

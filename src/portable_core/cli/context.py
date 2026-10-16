@@ -8,6 +8,8 @@ context is what carries the first step's output to the rest.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -17,9 +19,14 @@ from portable_core.config import Config, load_config
 from portable_core.errors import PortfolioFileError, UsageError
 from portable_core.errors.kinds import E_PORTFOLIO_NOT_FOUND
 from portable_core.formatters import OutputFormat
-from portable_core.persistence.connection import open_portfolio
+from portable_core.persistence.connection import open_portfolio, transaction
 from portable_core.persistence.repositories import Repositories
-from portable_core.providers import MarketDataProvider, NullProvider, build_provider
+from portable_core.providers import (
+    MarketDataProvider,
+    NullProvider,
+    OfflineProvider,
+    build_provider,
+)
 from portable_core.schema import migrations as M
 
 __all__ = ["CommandContext", "GlobalOptions", "build_context"]
@@ -57,6 +64,9 @@ class CommandContext:
     connection: sqlite3.Connection | None = None
     repos: Repositories | None = None
     _provider: MarketDataProvider | None = field(default=None, repr=False)
+    #: Whether :meth:`write` has been entered. Under ``--dry-run`` it is what
+    #: says the result describes a rehearsal (ADR 0026).
+    wrote: bool = False
 
     @property
     def output_format(self) -> OutputFormat:
@@ -89,7 +99,12 @@ class CommandContext:
         if self._provider is None:
             name = self.options.source or str(self.config.get("source") or "null")
             self._provider = (
-                NullProvider()
+                # Issue #39: --offline is enforced here, once, rather than at
+                # each command that reaches for a provider -- the configured one
+                # is never built, so it cannot be connected to by accident.
+                OfflineProvider(name)
+                if self.options.offline
+                else NullProvider()
                 if name == "null"
                 else build_provider(
                     name,
@@ -118,7 +133,8 @@ class CommandContext:
         """
         import sys
 
-        if self.options.yes:
+        # A dry run keeps nothing (ADR 0026), so there is nothing to confirm.
+        if self.options.yes or self.dry_run:
             return True
         if not sys.stdin.isatty():
             raise UsageError(
@@ -128,8 +144,44 @@ class CommandContext:
         answer = input(f"{prompt} [y/N] ").strip().lower()
         return answer in {"y", "yes"}
 
+    @contextmanager
+    def write(self) -> Iterator[Repositories]:
+        """The transaction a mutating command writes in. ADR 0026.
+
+        Normally one all-or-nothing transaction. Under ``--dry-run`` it is a
+        savepoint inside one outer transaction that is never committed, and
+        :meth:`close` rolls it back. The command runs exactly the code it
+        would run for real -- rebuilds, snapshot removal and refusals raised
+        while writing included -- and later writes in the same command see
+        earlier ones, as they would for real. Nothing is kept.
+        """
+        repos = self.require_portfolio()
+        self.wrote = True
+        con = repos.con
+        if not self.dry_run:
+            with transaction(con):
+                yield repos
+            return
+        if not con.in_transaction:
+            con.execute("BEGIN IMMEDIATE")
+        con.execute("SAVEPOINT dry_run")
+        try:
+            yield repos
+        except BaseException:
+            con.execute("ROLLBACK TO dry_run")
+            con.execute("RELEASE dry_run")
+            raise
+        con.execute("RELEASE dry_run")
+
     def close(self) -> None:
+        """Close the connection, rolling back anything not committed.
+
+        A dry run's writes are never committed (:meth:`write`), so this is
+        where they are discarded. Explicitly, rather than left to the driver.
+        """
         if self.connection is not None:
+            if self.connection.in_transaction:
+                self.connection.execute("ROLLBACK")
             self.connection.close()
             self.connection = None
             self.repos = None
@@ -167,7 +219,11 @@ def build_context(
         path = Path(str(path_text))
         connection = open_portfolio(path)
         if check_schema:
-            M.check_openable(connection, path)
+            try:
+                M.check_openable(connection, path)
+            except BaseException:
+                connection.close()
+                raise
         repos = Repositories(connection)
     elif require_portfolio:
         raise PortfolioFileError(

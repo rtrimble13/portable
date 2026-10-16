@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Annotated
 
 import typer
@@ -14,17 +14,17 @@ from portable_core.domain.enums import (
     TransactionSource,
     TransactionType,
 )
-from portable_core.domain.models import Transaction
+from portable_core.domain.models import Instrument, Transaction
 from portable_core.errors import ValidationError
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
-from portable_core.persistence.connection import transaction as db_transaction
-from portable_core.services.replay import ReplayEngine
+from portable_core.persistence.repositories import Repositories
+from portable_core.services.regrouping import Regroup, record_regroup
+from portable_core.services.replay import ReplayEngine, state_on
 from portable_core.services.trading import TradeIntent, TradePlan, TradingService
 from portable_pt import state
 from portable_pt.commands._shared import (
     RefOpt,
     dispatch,
-    maybe_dry_run,
     money_arg,
     resolve_date,
 )
@@ -86,6 +86,10 @@ def _trade(
                 "--position and --new-position are mutually exclusive",
                 remedy="Name a position, or ask for a new one -- not both.",
             )
+        into = _position_intent(
+            repos, txn_type, found_account.account_id, instrument, trade_date, position,
+            new_position,
+        )  # fmt: skip
 
         service = TradingService(repos)
         plan = service.plan(
@@ -104,18 +108,18 @@ def _trade(
                 settlement_date=resolve_date(settlement, ctx, what="--settlement")
                 if settlement
                 else None,
-                position_id=position,
                 note=note,
                 external_ref=ref,
             )
         )
 
         result = _plan_result(txn_type, symbol, plan, ctx.portfolio_name())
-        if ctx.dry_run:
-            return maybe_dry_run(result)
-
-        with db_transaction(repos.con):
+        with ctx.write():
             committed = service.commit(plan)
+            if into is not None:
+                # ADR 0023: joining a position is a regroup recorded beside the
+                # trade, in the same transaction -- so both land or neither does.
+                _join(repos, committed.transaction, into)
 
         from dataclasses import replace
 
@@ -137,6 +141,70 @@ def _trade(
         return replace(result, data=payload, warnings=warnings)
 
     dispatch(action)
+
+
+def _position_intent(
+    repos: Repositories,
+    txn_type: TransactionType,
+    account_id: int,
+    instrument: Instrument,
+    on: date,
+    position: int | None,
+    new_position: bool,
+) -> int | None:
+    """What --position / --new-position ask for, checked before anything is written.
+
+    Returns the opening transaction of the position to join, or ``None``.
+    Resolved here, before the trade commits: a back-dated trade rebuilds, and
+    a rebuild may renumber the position the user named.
+    """
+    held = state_on(
+        repos, on, lambda: repos.positions.leg_for(account_id, instrument.instrument_id)
+    ).results[0]
+    if new_position and held is not None:
+        raise ValidationError(
+            f"--new-position: the account already holds {instrument.symbol} in position "
+            f"{held.position_id} on {on.isoformat()}",
+            remedy=(
+                "One account's holding of one instrument is one leg in one position "
+                "(ADR 0009); a second position in it is not modelled. Group the holding "
+                "with `pt position group` instead."
+            ),
+        )
+    if position is None:
+        return None
+    if txn_type not in (TransactionType.BUY, TransactionType.SELL_SHORT):
+        raise ValidationError(
+            "--position applies to a trade that opens or adds to a holding",
+            remedy="A closing trade reduces the leg wherever it is grouped.",
+        )
+    target = repos.positions.get(position)
+    if target is None or target.opened_txn_id is None or target.account_id != account_id:
+        raise ValidationError(
+            f"no position {position} in this account",
+            remedy="`pt position list` shows them; a position holds legs in one account.",
+        )
+    if held is not None and held.position_id != position:
+        raise ValidationError(
+            f"{instrument.symbol} is already held in position {held.position_id}, and this "
+            "trade adds to that holding",
+            remedy="Move the holding with `pt position group`, then trade.",
+        )
+    return target.opened_txn_id
+
+
+def _join(repos: Repositories, trade: Transaction, into: int) -> None:
+    """Record that the leg *trade* opened belongs to the position *into* opened."""
+    assert trade.instrument_id is not None
+    record_regroup(
+        repos,
+        Regroup(
+            account_id=trade.account_id,
+            instrument_id=trade.instrument_id,
+            on=trade.trade_date,
+            into_opened_by=into,
+        ),
+    )
 
 
 def _plan_result(
@@ -369,10 +437,7 @@ def reverse(
             "reversal_cash_effect": reversal.net_cash_effect,
             "trade_date": reversal_date.isoformat(),
         }
-        if ctx.dry_run:
-            return maybe_dry_run(CommandResult(command="trade reverse", data=payload))
-
-        with db_transaction(repos.con):
+        with ctx.write():
             new_id = repos.transactions.append(reversal)
             # A reversal changes which lots later trades should have consumed,
             # so derived state is rebuilt rather than patched. The ledger is

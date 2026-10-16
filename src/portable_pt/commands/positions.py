@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Annotated
 
 import typer
@@ -9,10 +10,12 @@ import typer
 from portable_core.domain.enums import StrategyType
 from portable_core.errors import ValidationError
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
-from portable_core.persistence.connection import transaction as db_transaction
-from portable_core.services.positions import PositionEngine
+from portable_core.persistence.repositories import Repositories
+from portable_core.services.labels import Label, record_label
+from portable_core.services.regrouping import Regroup, record_regroup
+from portable_core.services.replay import state_on
 from portable_pt import state
-from portable_pt.commands._shared import dispatch, maybe_dry_run
+from portable_pt.commands._shared import dispatch, resolve_date
 
 position_app = typer.Typer(help="Positions.", no_args_is_help=True)
 lot_app = typer.Typer(help="Tax lots.", no_args_is_help=True)
@@ -38,6 +41,7 @@ def list_positions(
                 rows.append(
                     {
                         "position_id": position.position_id,
+                        "label": position.label,
                         "strategy": str(position.strategy_type),
                         "symbol": instrument.symbol if instrument else None,
                         "role": str(leg.role),
@@ -52,6 +56,7 @@ def list_positions(
             table=Table(
                 columns=(
                     Column("position_id", "Position", ColumnKind.INTEGER),
+                    Column("label", "Label"),
                     Column("strategy", "Strategy"),
                     Column("symbol", "Symbol"),
                     Column("role", "Role"),
@@ -152,44 +157,56 @@ def group(
         str | None,
         typer.Option("--strategy", help="Restate the strategy: covered_call, collar, ..."),
     ] = None,
+    date_text: Annotated[str | None, typer.Option("--date", "-d")] = None,
+    note: Annotated[str | None, typer.Option("--note")] = None,
 ) -> None:
     """Move legs into one position, restating the trader's intent.
 
     This is what happens when a long stock holding becomes a covered call
-    because a call was written against it. Because lots hang off legs and legs
-    carry the position id, regrouping updates one column and touches no lot and
-    no basis figure -- **a change of intent does not change tax history**
-    (ADR 0009).
+    because a call was written against it. Each leg moved is a
+    `position_regroup` row in the ledger, applied by replay like any trade --
+    so the grouping survives every rebuild, and is undone with
+    `pt trade reverse` like any other entry (ADR 0023). No lot and no basis
+    figure moves: **a change of intent does not change tax history** (ADR 0009).
+    Without --strategy, the position is named from its legs.
     """
 
     def action() -> CommandResult:
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
+        on = resolve_date(date_text, ctx)
         target = repos.positions.get(into)
-        if target is None:
+        if target is None or target.opened_txn_id is None:
             raise ValidationError(
                 f"no position {into}", remedy="`pt position list` shows them."
             )
+        chosen = StrategyType(strategy) if strategy else None
+        moves = [
+            _regroup_for(repos, leg_id, on, target.opened_txn_id, chosen, note)
+            for leg_id in legs
+        ]
 
-        payload = {
+        payload: dict[str, object] = {
             "legs": legs,
             "into": into,
-            "strategy": strategy or str(target.strategy_type),
+            "date": on.isoformat(),
+            "strategy": str(chosen) if chosen else None,
         }
-        if ctx.dry_run:
-            return maybe_dry_run(CommandResult(command="position group", data=payload))
+        with ctx.write():
+            recorded = [record_regroup(repos, move) for move in moves]
 
-        with db_transaction(repos.con):
-            for leg_id in legs:
-                repos.positions.move_leg(leg_id, into)
-            if strategy:
-                repos.positions.set_strategy(into, str(StrategyType(strategy)))
-
-        refreshed = repos.positions.get(into)
-        inferred = PositionEngine.infer_strategy(list(refreshed.legs)) if refreshed else None
+        regrouped = repos.positions.opened_by(target.opened_txn_id)
         return CommandResult(
             command="position group",
-            data={**payload, "inferred_strategy": str(inferred) if inferred else None},
+            data={
+                **payload,
+                "txn_ids": [r.transaction.txn_id for r in recorded],
+                # Looked up again: a back-dated regroup rebuilds, and a rebuild
+                # may renumber the position.
+                "position_id": regrouped.position_id if regrouped else None,
+                "strategy": str(regrouped.strategy_type) if regrouped else None,
+                "rebuilt": any(r.rebuilt for r in recorded),
+            },
             warnings=(
                 "No lot and no basis figure was touched. A change of intent does not "
                 "change tax history.",
@@ -198,6 +215,132 @@ def group(
         )
 
     dispatch(action)
+
+
+@position_app.command()
+def ungroup(
+    legs: Annotated[list[int], typer.Argument(help="Leg ids to move out, each on its own.")],
+    date_text: Annotated[str | None, typer.Option("--date", "-d")] = None,
+    note: Annotated[str | None, typer.Option("--note")] = None,
+) -> None:
+    """Move legs out of their position, each into a new position of its own.
+
+    The inverse of `pt position group`, recorded the same way: a
+    `position_regroup` row per leg, replayed like any other (ADR 0023).
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        on = resolve_date(date_text, ctx)
+        moves = []
+        for leg_id in legs:
+            leg = repos.positions.leg(leg_id)
+            if leg is not None and len(repos.positions.legs(leg.position_id)) == 1:
+                raise ValidationError(
+                    f"leg {leg_id} is the only leg of position {leg.position_id}",
+                    remedy="There is nothing to ungroup it from.",
+                )
+            moves.append(_regroup_for(repos, leg_id, on, None, None, note))
+
+        payload: dict[str, object] = {"legs": legs, "date": on.isoformat()}
+        with ctx.write():
+            recorded = [record_regroup(repos, move) for move in moves]
+
+        return CommandResult(
+            command="position ungroup",
+            data={
+                **payload,
+                "txn_ids": [r.transaction.txn_id for r in recorded],
+                "rebuilt": any(r.rebuilt for r in recorded),
+            },
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
+@position_app.command()
+def label(
+    position_id: Annotated[
+        int, typer.Argument(help="Position id, as `pt position list` shows it.")
+    ],
+    text: Annotated[str | None, typer.Argument(help="The label.")] = None,
+    clear: Annotated[bool, typer.Option("--clear", help="Remove the label.")] = False,
+    date_text: Annotated[str | None, typer.Option("--date", "-d")] = None,
+    note: Annotated[str | None, typer.Option("--note")] = None,
+) -> None:
+    """Name a position, or remove its name.
+
+    A label is a `position_label` row in the ledger, replayed like any other, so
+    it survives every rebuild and is undone with `pt trade reverse` (ADR 0027).
+    It names the position and changes nothing else: no leg, no lot, no cash.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        if (text is None) == (not clear):
+            raise ValidationError(
+                "give a label, or --clear, but not both",
+                remedy='`pt position label 12 "Covered call on AAPL"`, or `--clear`.',
+            )
+        on = resolve_date(date_text, ctx)
+        position = repos.positions.get(position_id)
+        if position is None or position.opened_txn_id is None:
+            raise ValidationError(
+                f"no position {position_id}", remedy="`pt position list` shows them."
+            )
+
+        with ctx.write():
+            recorded = record_label(
+                repos, Label(position.opened_txn_id, on, None if clear else text, note)
+            )
+
+        labelled = repos.positions.opened_by(position.opened_txn_id)
+        return CommandResult(
+            command="position label",
+            data={
+                # Looked up again: a back-dated label rebuilds, and a rebuild
+                # may renumber the position.
+                "position_id": labelled.position_id if labelled else None,
+                "label": labelled.label if labelled else None,
+                "date": on.isoformat(),
+                "txn_id": recorded.transaction.txn_id,
+                "rebuilt": recorded.rebuilt,
+            },
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
+def _regroup_for(
+    repos: Repositories,
+    leg_id: int,
+    on: date,
+    into_opened_by: int | None,
+    strategy: StrategyType | None,
+    note: str | None,
+) -> Regroup:
+    """The ledger row that moves *leg_id*: named by account and instrument.
+
+    A leg id, like a position id, is derived and renumbered by a rebuild, so
+    the row records what the leg *is* -- this account's holding of this
+    instrument -- rather than which number it had today.
+    """
+    leg = repos.positions.leg(leg_id)
+    position = repos.positions.get(leg.position_id) if leg is not None else None
+    if leg is None or position is None:
+        raise ValidationError(f"no leg {leg_id}", remedy="`pt position show` lists legs.")
+    return Regroup(
+        account_id=position.account_id,
+        instrument_id=leg.instrument_id,
+        on=on,
+        into_opened_by=into_opened_by,
+        strategy=strategy,
+        note=note,
+    )
 
 
 @lot_app.command(name="list")
@@ -217,36 +360,43 @@ def list_lots(
         repos = ctx.require_portfolio()
         from portable_core.domain.dates import days_between, holding_period
 
-        rows: list[dict[str, object]] = []
-        accounts = [repos.accounts.resolve(account)] if account else repos.accounts.all()
-        for target in accounts:
-            instruments = (
-                [repos.instruments.resolve(symbol, on=ctx.as_of)]
-                if symbol
-                else repos.instruments.all()
-            )
-            for instrument in instruments:
-                for lot in repos.lots.open_lots(
-                    target.account_id, instrument.instrument_id, as_of=ctx.as_of
-                ):
-                    if open_only and not lot.is_open:
-                        continue
-                    period = holding_period(
-                        lot.holding_period_start, ctx.as_of, is_short_sale=lot.is_short
-                    )
-                    rows.append(
-                        {
-                            "lot_id": lot.lot_id,
-                            "account": target.name,
-                            "symbol": instrument.symbol,
-                            "open_date": lot.open_date.isoformat(),
-                            "quantity": lot.remaining_quantity,
-                            "basis": lot.adjusted_cost_basis,
-                            "per_unit": lot.basis_per_unit,
-                            "holding_period": str(period),
-                            "days_held": days_between(lot.holding_period_start, ctx.as_of),
-                        }
-                    )
+        def read() -> list[dict[str, object]]:
+            # Lots as they stood at the end of --as-of: a lot sold since is
+            # listed, and one bought since is not (ADR 0021).
+            rows: list[dict[str, object]] = []
+            accounts = [repos.accounts.resolve(account)] if account else repos.accounts.all()
+            for target in accounts:
+                instruments = (
+                    [repos.instruments.resolve(symbol, on=ctx.as_of)]
+                    if symbol
+                    else repos.instruments.all()
+                )
+                for instrument in instruments:
+                    for lot in repos.lots.open_lots(
+                        target.account_id, instrument.instrument_id, as_of=ctx.as_of
+                    ):
+                        if open_only and not lot.is_open:
+                            continue
+                        period = holding_period(
+                            lot.holding_period_start, ctx.as_of, is_short_sale=lot.is_short
+                        )
+                        rows.append(
+                            {
+                                "lot_id": lot.lot_id,
+                                "account": target.name,
+                                "symbol": instrument.symbol,
+                                "open_date": lot.open_date.isoformat(),
+                                "quantity": lot.remaining_quantity,
+                                "basis": lot.adjusted_cost_basis,
+                                "per_unit": lot.basis_per_unit,
+                                "holding_period": str(period),
+                                "days_held": days_between(lot.holding_period_start, ctx.as_of),
+                            }
+                        )
+            return rows
+
+        as_of_state = state_on(repos, ctx.as_of, read)
+        rows = as_of_state.results[0]
 
         return CommandResult(
             command="lot list",
@@ -271,6 +421,7 @@ def list_lots(
                     "Designate lots on a sale with --lots 'lot_id:qty;lot_id:qty'.",
                 ),
             ),
+            warnings=as_of_state.warnings,
             as_of=ctx.as_of,
             portfolio=ctx.portfolio_name(),
         )

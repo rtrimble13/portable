@@ -1,6 +1,7 @@
 # ADR 0009 — A position spans instruments; lots hang off legs
 
-- **Status:** Accepted
+- **Status:** Accepted — the schema (positions, legs with role and sign, lots on legs) and the per-leg invariant are implemented. Regrouping is a ledger row replay applies (`position_regroup`, [ADR 0023](0023-position-regroup-is-a-ledger-row.md)), written by `pt position group` / `ungroup` and by `--position` on a trade. Not built: position labels, and one instrument held in two positions in one account (`--new-position` refuses that case)
+- **Amended by:** [ADR 0023](0023-position-regroup-is-a-ledger-row.md) — a regroup is replayed from the ledger, and positions are named by their opening transaction
 - **Date:** 2026-08-27
 - **Milestone:** v0.1
 

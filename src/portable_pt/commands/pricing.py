@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated
@@ -14,17 +16,17 @@ from portable_core.domain.enums import ValuationBasis
 from portable_core.domain.models import (
     Account,
     Price,
-    SnapshotPrice,
     ValuationSnapshot,
 )
 from portable_core.errors import DataUnavailableError, ValidationError
+from portable_core.errors.kinds import E_PRICE_MISSING
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
-from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.persistence.repositories import Repositories
 from portable_core.providers import as_eod_provider
-from portable_core.services.valuation import Holding, ValuationEngine
+from portable_core.services import price_history
+from portable_core.services import snapshots as snapshots_service
 from portable_pt import state
-from portable_pt.commands._shared import dispatch, maybe_dry_run, resolve_date
+from portable_pt.commands._shared import dispatch, resolve_date
 
 price_app = typer.Typer(help="Prices: set, load, show.", no_args_is_help=True)
 
@@ -52,8 +54,8 @@ def set_price(
         bool,
         typer.Option(
             "--estimate",
-            help="A preliminary value. Flagged, and triggers a "
-            "rebuild when the final one arrives (PORT-GIPS-A09).",
+            help="A preliminary value. Flagged; when the final one replaces it, "
+            "`pt validate` names the snapshots that used it (PORT-GIPS-A09).",
         ),
     ] = False,
 ) -> None:
@@ -72,6 +74,16 @@ def set_price(
         repos = ctx.require_portfolio()
         on = resolve_date(date_text, ctx)
         instrument = repos.instruments.resolve(symbol, on=on)
+        if not instrument.has_market_price:
+            raise ValidationError(
+                f"{instrument.symbol} is marked as having no market price, and is valued "
+                "at zero (ADR 0028)",
+                remedy=(
+                    f"If something now quotes it, `pt instrument market-price "
+                    f"{instrument.symbol} --quoted` first."
+                ),
+                symbol=instrument.symbol,
+            )
 
         record = Price(
             instrument_id=instrument.instrument_id,
@@ -92,10 +104,7 @@ def set_price(
             "valuation_level": level,
             "is_estimate": estimate,
         }
-        if ctx.dry_run:
-            return maybe_dry_run(CommandResult(command="price set", data=payload))
-
-        with db_transaction(repos.con):
+        with ctx.write():
             price_id = repos.prices.add(record)
 
         return CommandResult(
@@ -109,15 +118,31 @@ def set_price(
 
 @price_app.command()
 def load(
-    symbols: Annotated[list[str] | None, typer.Argument(help="Default: all held.")] = None,
+    symbols: Annotated[
+        list[str] | None,
+        typer.Argument(
+            help=(
+                "Default: every instrument held at some point in the range, over the "
+                "days it was held."
+            )
+        ),
+    ] = None,
     start: Annotated[str | None, typer.Option("--from")] = None,
     end: Annotated[str | None, typer.Option("--to")] = None,
 ) -> None:
     """Load prices from the market data provider into the portfolio's cache.
 
+    With no symbols, each instrument any account held in the range is loaded
+    over the days it was held -- read from the ledger, so a position sold
+    years ago is priced for the years it was owned (ADR 0020 R2). Each held
+    stretch is preceded by a few days, the staleness tolerance, so a stretch
+    that begins on a non-trading day can be valued from the previous close.
+    Each day is asked for under the ticker the instrument carried that day.
+
     Every price is stored with its source, as-of timestamp, valuation level,
     and estimate flag, so a valuation built from it can be traced back to the
-    tick that produced it (PORT-GIPS-J03).
+    tick that produced it (PORT-GIPS-J03). A symbol the provider has no data
+    for is a warning; a provider that cannot be reached is a failure, exit 5.
     """
 
     def action() -> CommandResult:
@@ -128,33 +153,88 @@ def load(
 
         first = resolve_date(start, ctx, what="--from") if start else ctx.as_of
         last = resolve_date(end, ctx, what="--to") if end else ctx.as_of
-        wanted = symbols or [i.symbol for i in repos.instruments.all(active_only=True)]
+        if last < first:
+            raise ValidationError(
+                f"--to {last.isoformat()} precedes --from {first.isoformat()}",
+                remedy="Check the order of the dates.",
+            )
+
+        warnings: list[str] = []
+        if symbols:
+            requests = price_history.requests_for(
+                repos, [repos.instruments.resolve(s, on=last) for s in symbols], first, last
+            )
+        else:
+            requests, replay_warnings = price_history.requests_while_held(
+                repos,
+                first,
+                last,
+                lead_in_days=int(ctx.config.get("staleness_tolerance_days", 5)),
+            )
+            warnings.extend(replay_warnings)
+
+        # ADR 0028: nothing quotes these, so nothing is asked for them.
+        unquoted = sorted({r.symbol for r in requests if not r.instrument.has_market_price})
+        if unquoted:
+            requests = [r for r in requests if r.instrument.has_market_price]
+            warnings.append(
+                f"not loaded, marked as having no market price: {', '.join(unquoted)}"
+            )
 
         loaded: list[dict[str, object]] = []
-        warnings: list[str] = []
-
-        for symbol in wanted:
-            instrument = repos.instruments.resolve(symbol, on=last)
+        missing: list[str] = []
+        lead_ins_missing: list[str] = []
+        for request in requests:
             try:
-                prices = prices_from.eod_prices(symbol, first, last)
-            except Exception as exc:
-                warnings.append(f"{symbol}: {exc}")
+                prices = prices_from.eod_prices(request.symbol, request.start, request.end)
+            except DataUnavailableError as exc:
+                # "No data for this symbol here" is an answer about one symbol
+                # and the run goes on. Anything else -- the provider is down,
+                # or cannot do this -- is an answer about every symbol, and is
+                # raised rather than repeated as a warning per row.
+                if exc.code != E_PRICE_MISSING:
+                    raise
+                span = f"{request.start.isoformat()}..{request.end.isoformat()}"
+                if request.lead_in:
+                    lead_ins_missing.append(f"{request.symbol} {span}")
+                else:
+                    missing.append(f"{request.symbol} {span}: {exc.message}")
                 continue
 
-            if not ctx.dry_run:
-                with db_transaction(repos.con):
-                    for price in prices:
-                        from dataclasses import replace
-
-                        repos.prices.add(replace(price, instrument_id=instrument.instrument_id))
+            with ctx.write():
+                for price in prices:
+                    repos.prices.add(
+                        replace(price, instrument_id=request.instrument.instrument_id)
+                    )
             loaded.append(
                 {
-                    "symbol": symbol,
+                    "symbol": request.symbol,
                     "prices": len(prices),
                     "first": prices[0].price_date.isoformat(),
                     "last": prices[-1].price_date.isoformat(),
                     "source": prices[0].source,
                 }
+            )
+
+        wanted = [r for r in requests if not r.lead_in]
+        if wanted and len(missing) == len(wanted):
+            raise DataUnavailableError(
+                f"{provider.name} had no prices for anything asked: "
+                f"{len(missing)} request(s), none loaded",
+                code=E_PRICE_MISSING,
+                remedy=(
+                    "Check the symbols and the range, or supply the prices with "
+                    "`--source file`."
+                ),
+                provider=provider.name,
+                problems=missing,
+            )
+        warnings.extend(missing)
+        if lead_ins_missing:
+            warnings.append(
+                f"{len(lead_ins_missing)} held stretch(es) had no price in the days "
+                "before they began, so a first day that is not a trading day cannot be "
+                "valued from a previous close: " + "; ".join(lead_ins_missing)
             )
 
         result = CommandResult(
@@ -170,10 +250,16 @@ def load(
                 rows=tuple(loaded),
                 title=f"Loaded from {provider.name}",
             ),
+            data={
+                "from": first.isoformat(),
+                "to": last.isoformat(),
+                "requests": len(wanted),
+                "loaded": sum(1 for r in requests if not r.lead_in) - len(missing),
+            },
             warnings=tuple(warnings),
             portfolio=ctx.portfolio_name(),
         )
-        return maybe_dry_run(result) if ctx.dry_run else result
+        return result
 
     dispatch(action)
 
@@ -233,67 +319,20 @@ def show(
 # ── valuation ────────────────────────────────────────────────────────────────
 
 
-def _holdings_for(repos: Repositories, account_id: int) -> list[Holding]:
-    """Open legs in an account, as holdings to be priced.
-
-    Takes no date on purpose. A leg's quantity is current derived state, so
-    accepting a date here would invite a caller to believe it were honoured.
-    Valuing a past date correctly means rebuilding derived state to that date,
-    not filtering here -- and a signature that implied otherwise would be the
-    more dangerous kind of wrong.
-    """
-    holdings: list[Holding] = []
-    for position in repos.positions.all(account_id=account_id, open_only=True):
-        for leg in position.legs:
-            if leg.quantity == 0:
-                continue
-            instrument = repos.instruments.get(leg.instrument_id)
-            if instrument is None:
-                continue
-            holdings.append(Holding(instrument, leg.quantity))
-    return holdings
-
-
-def _build_snapshot(
-    ctx: CommandContext, repos: Repositories, account: Account, on: date
-) -> ValuationSnapshot:
-    """Price an account's holdings and assemble its snapshot for one date.
-
-    Instruments that cannot be priced are collected rather than raised on, so
-    that one missing price does not hide the rest of the report -- but the
-    snapshot is marked incomplete, and an incomplete snapshot must not be used
-    for a return.
-    """
-    engine = ValuationEngine(
-        staleness_tolerance_days=int(ctx.config.get("staleness_tolerance_days", 5))
-    )
-    priced: list[SnapshotPrice] = []
-    missing: list[str] = []
-
-    for holding in _holdings_for(repos, account.account_id):
-        price = repos.prices.newest_on_or_before(holding.instrument.instrument_id, on)
-        try:
-            priced.append(engine.price_holding(holding, price, on))
-        except DataUnavailableError:
-            missing.append(holding.instrument.symbol)
-
-    cash, margin = repos.valuations.cash(account.account_id, currency=account.currency)
-    transactions = repos.transactions.in_ledger_order(until=on, account_id=account.account_id)
-    previous = repos.valuations.snapshot(account.account_id, on - timedelta(days=1))
-    beginning = (
-        from_text(str(previous["ending_market_value"])) if previous is not None else ZERO
-    )
-
-    return engine.build_snapshot(
-        account,
-        on,
-        priced=priced,
-        cash_balance=cash,
-        margin_loan=margin,
-        beginning_market_value=beginning,
-        transactions=transactions,
-        policy=repos.policies.in_force(on),
-        incomplete_symbols=tuple(missing),
+def _snapshots(
+    ctx: CommandContext,
+    repos: Repositories,
+    accounts: Sequence[Account],
+    first: date,
+    last: date,
+) -> tuple[list[ValuationSnapshot], list[str]]:
+    """Every account's snapshot for every day from *first* to *last* (ADR 0021, 0024)."""
+    return snapshots_service.value_range(
+        repos,
+        accounts,
+        first,
+        last,
+        staleness_tolerance_days=int(ctx.config.get("staleness_tolerance_days", 5)),
     )
 
 
@@ -329,36 +368,39 @@ def value(
             )
 
         accounts = [repos.accounts.resolve(account)] if account else repos.accounts.all()
-        rows: list[dict[str, object]] = []
-        warnings: list[str] = []
+        names = {target.account_id: target.name for target in accounts}
 
-        for target in accounts:
-            on = first
-            while on <= last:
-                snapshot = _build_snapshot(ctx, repos, target, on)
-                if not ctx.dry_run:
-                    with db_transaction(repos.con):
-                        repos.valuations.save_snapshot(snapshot)
-                if not snapshot.is_complete:
-                    warnings.append(
-                        f"{target.name} {on.isoformat()}: incomplete -- some positions "
-                        "could not be priced. This snapshot must not be used for a "
-                        "return."
-                    )
-                rows.append(
-                    {
-                        "account": target.name,
-                        "date": on.isoformat(),
-                        "securities": snapshot.securities_value,
-                        "cash": snapshot.cash_balance,
-                        "accrued": snapshot.accrued_income,
-                        "ending": snapshot.ending_market_value,
-                        "flow_account": snapshot.external_flow_account,
-                        "flow_portfolio": snapshot.external_flow_portfolio,
-                        "complete": snapshot.is_complete,
-                    }
+        # One transaction: the walk rewinds derived state in a savepoint inside
+        # it, and the snapshots it built are written after the savepoint is
+        # rolled back -- so nothing can append to the ledger between valuing a
+        # day and recording the value.
+        with ctx.write():
+            snapshots, warnings = _snapshots(ctx, repos, accounts, first, last)
+            warnings.extend(snapshots_service.store(repos, snapshots))
+
+        rows: list[dict[str, object]] = []
+        for snapshot in snapshots:
+            name = names[snapshot.account_id]
+            on = snapshot.snapshot_date
+            if not snapshot.is_complete:
+                warnings.append(
+                    f"{name} {on.isoformat()}: incomplete -- some positions "
+                    "could not be priced. This snapshot must not be used for a "
+                    "return."
                 )
-                on += timedelta(days=1)
+            rows.append(
+                {
+                    "account": name,
+                    "date": on.isoformat(),
+                    "securities": snapshot.securities_value,
+                    "cash": snapshot.cash_balance,
+                    "accrued": snapshot.accrued_income,
+                    "ending": snapshot.ending_market_value,
+                    "flow_account": snapshot.external_flow_account,
+                    "flow_portfolio": snapshot.external_flow_portfolio,
+                    "complete": snapshot.is_complete,
+                }
+            )
 
         result = CommandResult(
             command="value",
@@ -390,7 +432,7 @@ def value(
             as_of=ctx.as_of,
             portfolio=ctx.portfolio_name(),
         )
-        return maybe_dry_run(result) if ctx.dry_run else result
+        return result
 
     dispatch(action)
 
@@ -405,15 +447,18 @@ def mark(
         repos = ctx.require_portfolio()
         on = resolve_date(date_text, ctx)
 
+        accounts = repos.accounts.all(include_closed=False)
+        names = {target.account_id: target.name for target in accounts}
+        snapshots, warnings = _snapshots(ctx, repos, accounts, on, on)
+
         rows: list[dict[str, object]] = []
         with money_context():
             total = ZERO
-            for target in repos.accounts.all(include_closed=False):
-                snapshot = _build_snapshot(ctx, repos, target, on)
+            for snapshot in snapshots:
                 total += snapshot.ending_market_value
                 rows.append(
                     {
-                        "account": target.name,
+                        "account": names[snapshot.account_id],
                         "ending": snapshot.ending_market_value,
                         "cash": snapshot.cash_balance,
                         "complete": snapshot.is_complete,
@@ -433,6 +478,7 @@ def mark(
                 title=f"Marked to market, {on.isoformat()}",
             ),
             data={"total_market_value": quantize_money(total), "as_of": on.isoformat()},
+            warnings=tuple(warnings),
             as_of=on,
             portfolio=ctx.portfolio_name(),
         )

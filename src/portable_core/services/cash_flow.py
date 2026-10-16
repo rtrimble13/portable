@@ -37,7 +37,13 @@ from portable_core.domain.enums import (
 )
 from portable_core.domain.models import Transaction
 
-__all__ = ["FlowResult", "classify", "flow_amount", "is_external"]
+__all__ = [
+    "FlowResult",
+    "classify",
+    "classify_for_account",
+    "flow_amount",
+    "is_external",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +204,11 @@ def classify(
         ):
             return FlowResult(FlowClassification.INTERNAL, zero, txn.trade_date)
 
+        # ── A change of intent (ADR 0023). A leg moves between positions in one
+        # account; nothing is owned that was not before, and no cash moves.
+        case TransactionType.POSITION_REGROUP | TransactionType.POSITION_LABEL:
+            return FlowResult(FlowClassification.INTERNAL, zero, txn.trade_date)
+
         # A stock dividend received from outside -- a distribution in kind --
         # IS an external flow, valued at the time of distribution
         # (PORT-GIPS-C02.c / Firms 2.A.29.c). Where no value was supplied it
@@ -245,25 +256,37 @@ def classify(
     assert_never(kind)
 
 
-def classify_reversal(
-    reversal: Transaction,
-    reversed_txn: Transaction,
+def classify_for_account(
+    txn: Transaction,
+    account_id: int,
     level: FlowLevel,
+    *,
+    in_kind_value: Decimal | None = None,
 ) -> FlowResult:
-    """Classify a reversal by reference to what it reverses, negated.
+    """Classify *txn* from the side of one account it touches.
 
-    Kept separate from :func:`classify` because it needs two transactions and
-    :func:`classify` is deliberately pure over one. A reversal of a deposit
-    really is an outward external flow; treating every reversal as internal
-    would leave a phantom contribution in the record.
+    :func:`classify` answers for the row's own account. A transfer is the one
+    row that touches two (ADR 0007), and at ``ACCOUNT`` level it is two flows:
+    the amount leaving the source and the same amount arriving at the
+    destination. This is the destination's half -- the original amount,
+    negated. At ``PORTFOLIO`` level it is no flow for either side, which
+    negating the source's internal zero already gives.
+
+    Without the destination half, the receiving account's cash rises with no
+    external flow beside it, and its account-level return counts the transfer
+    as investment gain.
+
+    Raises:
+        ValueError: *txn* does not touch *account_id*. A caller asking for an
+            unrelated account's view has selected the wrong rows, and a zero
+            here would hide that.
     """
-    original = classify(reversed_txn, level)
-    return FlowResult(
-        original.classification,
-        -original.amount,
-        reversal.trade_date,
-        is_in_kind=original.is_in_kind,
-    )
+    own = classify(txn, level, in_kind_value=in_kind_value)
+    if txn.account_id == account_id:
+        return own
+    if txn.txn_type is TransactionType.TRANSFER and txn.counter_account_id == account_id:
+        return FlowResult(own.classification, -own.amount, own.flow_date, own.is_in_kind)
+    raise ValueError(f"transaction {txn.txn_id} does not touch account {account_id}")
 
 
 def is_external(txn: Transaction, level: FlowLevel) -> bool:

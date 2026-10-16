@@ -1,6 +1,6 @@
 # ADR 0011 — What the tax engine estimates and what it refuses
 
-- **Status:** Accepted
+- **Status:** Accepted — the boundary is implemented. Not done: `--force-zero-basis`, which `PT-E-LOT-UNMATCHED`'s remedy and `docs/tax-methodology.md` both offer, does not exist; wash-sale detection is still deferred (v0.2, P0)
 - **Date:** 2026-08-27
 - **Milestone:** v0.1
 

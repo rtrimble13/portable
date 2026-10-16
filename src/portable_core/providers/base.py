@@ -116,7 +116,11 @@ class RiskFreeRate:
 
 @runtime_checkable
 class SecurityMasterCapability(Protocol):
-    def lookup_security(self, symbol: str, *, on: date | None = None) -> Instrument: ...
+    """A ticker means different securities at different times, so the date is
+    part of the question and has no default -- defaulting it to today would
+    answer every historical lookup with whoever holds the ticker now."""
+
+    def lookup_security(self, symbol: str, *, on: date) -> Instrument: ...
 
 
 @runtime_checkable
@@ -179,6 +183,15 @@ class MarketDataProvider(ABC):
     def require(self, capability: Capability) -> None:
         """Refuse politely, naming what would work instead."""
         require_capability(self, capability)
+
+    def unavailable(self, capability: Capability) -> DataUnavailableError | None:  # noqa: ARG002 -- an override's parameter
+        """This provider's own reason it cannot supply *capability*, if it has one.
+
+        ``None`` lets :func:`require_capability` give the general answer. A
+        provider that declines for a reason of its own -- the session is
+        offline -- says so here, so the refusal names the real cause.
+        """
+        return None
 
     def describe(self) -> dict[str, object]:
         """For `pt info` and `pt introspect`."""
@@ -261,6 +274,9 @@ def require_capability(provider: MarketDataProvider, capability: Capability) -> 
     """
     if provider.has(capability):
         return
+    own = provider.unavailable(capability)
+    if own is not None:
+        raise own
     if not provider.capabilities:
         # A provider that can do nothing at all is almost always an
         # unconfigured one, and "cannot supply eod_prices" is a worse first

@@ -39,7 +39,8 @@ table ([ADR 0010](adr/0010-derived-state-and-replay.md)).
 | **Ledger** | `transaction` | Append-only, enforced by trigger | Never touched |
 | **Reference** | `instrument*`, `price`, `corporate_action` | Immutable once written | Never touched |
 | **Config** | `account`, `tax_rate_schedule`, `benchmark*`, `return_policy`, `portfolio_event`, `meta`, `settings`, `report_issue` | Effective-dated, immutable once effective | Never touched |
-| **Derived** | `position`, `position_leg`, `lot`, `lot_basis_adjustment`, `lot_disposition`, `realized_gain`, `cash_balance`, `valuation_snapshot*`, `snapshot_flow` | Materialized for speed | **Dropped and rebuilt** |
+| **Derived** | `position`, `position_leg`, `lot`, `lot_basis_adjustment`, `lot_disposition`, `realized_gain`, `cash_balance` | Materialized for speed | **Dropped and rebuilt** |
+| **Valued** | `valuation_snapshot*`, `snapshot_flow` | Derived from the ledger and the prices each recorded | **Kept**; removed by a ledger write that makes them stale, checked by `pt validate` (ADR 0024) |
 
 If a table is not in the derived row, `pt rebuild` must not write to it. If you
 add derived state, you add it to the replay path **and** to the replay test in
@@ -131,9 +132,26 @@ and recorded in `schema_migration` with a **checksum**.
 - **Never renumbered, never edited once applied.** The checksum makes that
   enforceable rather than merely asked for: `pt validate` reports a migration
   whose file no longer matches what was applied, because the DDL on disk no
-  longer describes the database in front of you.
-- **Idempotent** — every statement uses `IF NOT EXISTS`, so a half-applied
-  migration can be re-run.
+  longer describes the database in front of you. The one exception is
+  [ADR 0022](adr/0022-amending-a-shipped-migration.md): a shipped migration
+  may be amended only when the amended text leaves every file the original
+  could migrate with the same schema and the same rows. A test applies both
+  texts to prove it, and the original's checksum stays accepted
+  (`SUPERSEDED_CHECKSUMS`). 0004 is the one amended so far.
+- **All or nothing.** Each migration runs in one transaction and is recorded
+  in the same one, so a failure leaves the file exactly as it was. Additive
+  statements also use `IF NOT EXISTS`.
+- **A table SQLite cannot alter is rebuilt**
+  ([ADR 0019](adr/0019-migrations-that-rebuild-a-table.md)): a `CHECK` or a
+  `NOT NULL` column is changed by building `x_new`, copying every row, and
+  renaming it over `x`. A migration declares this with `-- portable:rebuild`
+  in its header. The runner turns foreign keys off around it, checks every
+  reference once before commit, and refuses a rebuild that did not restore
+  every trigger and every index. 0003, 0004 and 0005 rebuild `"transaction"`;
+  0003 also rebuilds `lot`.
+- **An older file is refused until it is migrated** (`PT-E-SCHEMA-TOO-OLD`,
+  exit 3). Read unmigrated, it lacks columns this build reads. `pt migrate` is
+  the one command that opens it.
 - **Preconditions are checked first.** A migration is pure SQL and cannot
   branch, so a constraint added over existing data either applies or fails with
   whatever SQLite says — and `_apply`'s remedy, restore the backup, would

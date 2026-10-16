@@ -9,12 +9,13 @@ import typer
 from portable_core.decimals import from_text
 from portable_core.domain.enums import DayCount, ExerciseStyle, InstrumentType, OptionRight
 from portable_core.domain.models import BondDetail, Instrument, OptionDetail
-from portable_core.errors import ValidationError
+from portable_core.errors import DataUnavailableError, ValidationError
+from portable_core.errors.kinds import E_PRICE_MISSING
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
-from portable_core.persistence.connection import transaction as db_transaction
 from portable_core.providers import as_security_master
+from portable_core.services import price_history, restatement
 from portable_pt import state
-from portable_pt.commands._shared import dispatch, maybe_dry_run, resolve_date
+from portable_pt.commands._shared import dispatch, resolve_date
 
 app = typer.Typer(help="Instruments: the local security master.", no_args_is_help=True)
 
@@ -60,6 +61,14 @@ def add(
         str, typer.Option("--day-count", help="30/360 | ACT/ACT | ACT/365 | ACT/360")
     ] = "ACT/ACT",
     face: Annotated[str, typer.Option("--face")] = "1000",
+    no_market_price: Annotated[
+        bool,
+        typer.Option(
+            "--no-market-price",
+            help="Nothing quotes it, ever -- a contingent value right. Valued at zero, "
+            "at level 5 (ADR 0028).",
+        ),
+    ] = False,
 ) -> None:
     """Define an instrument by hand."""
 
@@ -121,6 +130,7 @@ def add(
             isin=isin,
             sector=sector,
             asset_class=asset_class,
+            has_market_price=not no_market_price,
             option=option,
             bond=bond,
         )
@@ -130,11 +140,9 @@ def add(
             "instrument_type": str(kind),
             "name": name,
             "contract_size": instrument.contract_size,
+            "has_market_price": instrument.has_market_price,
         }
-        if ctx.dry_run:
-            return maybe_dry_run(CommandResult(command="instrument add", data=payload))
-
-        with db_transaction(repos.con):
+        with ctx.write():
             instrument_id = repos.instruments.add(instrument)
 
         return CommandResult(
@@ -212,6 +220,7 @@ def show(symbol: Annotated[str, typer.Argument()]) -> None:
             "asset_class": instrument.asset_class,
             "contract_size": instrument.contract_size,
             "source": instrument.source,
+            "has_market_price": instrument.has_market_price,
         }
         if instrument.option is not None:
             option = instrument.option
@@ -243,13 +252,79 @@ def show(symbol: Annotated[str, typer.Argument()]) -> None:
     dispatch(action)
 
 
+@app.command(name="market-price")
+def market_price(
+    symbol: Annotated[str, typer.Argument()],
+    none: Annotated[
+        bool, typer.Option("--none", help="Nothing quotes it, and nothing ever will.")
+    ] = False,
+    quoted: Annotated[bool, typer.Option("--quoted", help="Undo --none.")] = False,
+    restate: Annotated[
+        bool,
+        typer.Option("--restate", help="Restate the stored snapshots that hold it."),
+    ] = False,
+) -> None:
+    """Mark an instrument as having no observable market price, or undo it.
+
+    ADR 0028. A holding nothing quotes -- a contingent value right -- is valued
+    at zero as a level-5 (subjective, unobservable) valuation, recorded in the
+    snapshot with that provenance, and the snapshot holding it is complete.
+    Without this, one such holding left every snapshot of its account
+    incomplete, and an incomplete snapshot is never used for a return.
+
+    Refused for an instrument that has ever had a price: the mark applies to
+    every date. A stored snapshot it changes is refused with
+    PT-E-RESTATES-HISTORY unless --restate (ADR 0025).
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        if none == quoted:
+            raise ValidationError(
+                "say --none or --quoted",
+                remedy="`pt instrument market-price 003CVR016 --none` marks one.",
+            )
+        instrument = repos.instruments.resolve(symbol, on=ctx.as_of)
+
+        with ctx.write():
+            recorded = restatement.record_market_price(
+                repos, instrument, has_market_price=quoted, restate=restate
+            )
+
+        return CommandResult(
+            command="instrument market-price",
+            data={
+                "symbol": instrument.symbol,
+                "has_market_price": quoted,
+                "restated": bool(recorded.restated),
+            },
+            warnings=recorded.restated,
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
 @app.command()
 def sync(
     symbols: Annotated[
-        list[str] | None, typer.Argument(help="Symbols. Default: all held.")
+        list[str] | None,
+        typer.Argument(help="Symbols. Default: every instrument the portfolio has held."),
     ] = None,
 ) -> None:
-    """Hydrate or refresh instruments from the market data provider."""
+    """Compare the local security master with the provider's. Writes nothing.
+
+    Each instrument is looked up as of the last day it was held -- or as of
+    --as-of, when it is still held or named here -- under the ticker it
+    carried that day. Looked up as of today, a ticker sold years ago can name
+    another issuer entirely, or nothing; that is the check ADR 0020 needs
+    before a history is priced (R4, R5).
+
+    Nothing is written: the security master is reference data that later
+    reports rest on, and a refresh that rewrote it as a side effect would change
+    what those reports mean. The differences are listed for a person to act on.
+    """
 
     def action() -> CommandResult:
         ctx = state.with_portfolio()
@@ -257,56 +332,81 @@ def sync(
         provider = ctx.provider()
         master = as_security_master(provider)
 
-        wanted = symbols or [i.symbol for i in repos.instruments.all()]
-        updated: list[dict[str, object]] = []
         warnings: list[str] = []
+        if symbols:
+            named = [repos.instruments.resolve(s, on=ctx.as_of) for s in symbols]
+            on_date = price_history.Span(ctx.as_of, ctx.as_of)
+            targets = [
+                (
+                    instrument,
+                    price_history.ticker_spans(repos, instrument, on_date)[0][0],
+                    ctx.as_of,
+                )
+                for instrument in named
+            ]
+        else:
+            targets, replay_warnings = price_history.lookups_when_last_held(
+                repos, through=ctx.as_of
+            )
+            warnings.extend(replay_warnings)
 
-        for symbol in wanted:
+        rows: list[dict[str, object]] = []
+        unresolved: list[str] = []
+        for instrument, ticker, on in targets:
             try:
-                fetched = master.lookup_security(symbol, on=ctx.as_of)
-            except Exception as exc:
-                warnings.append(f"{symbol}: {exc}")
+                fetched = master.lookup_security(ticker, on=on)
+            except DataUnavailableError as exc:
+                if exc.code != E_PRICE_MISSING:
+                    raise
+                unresolved.append(f"{ticker} on {on.isoformat()}: {exc.message}")
                 continue
-            updated.append(
+            rows.append(
                 {
-                    "symbol": fetched.symbol,
-                    "name": fetched.name,
-                    "exchange": fetched.exchange,
+                    "symbol": instrument.symbol,
+                    "looked_up": f"{ticker} on {on.isoformat()}",
+                    "provider_type": str(fetched.instrument_type),
+                    "provider_active": fetched.is_active,
+                    "differences": "; ".join(price_history.differences(instrument, fetched))
+                    or None,
                     "provider_ref": fetched.provider_ref,
                 }
             )
 
-        if ctx.dry_run:
-            return maybe_dry_run(
-                CommandResult(
-                    command="instrument sync",
-                    table=Table(
-                        columns=(
-                            Column("symbol", "Symbol"),
-                            Column("name", "Name"),
-                            Column("exchange", "Exchange"),
-                            Column("provider_ref", "Provider Ref"),
-                        ),
-                        rows=tuple(updated),
-                        title="Would hydrate",
-                    ),
-                    warnings=tuple(warnings),
-                )
+        if targets and len(unresolved) == len(targets):
+            raise DataUnavailableError(
+                f"{provider.name} could not place any instrument asked about",
+                code=E_PRICE_MISSING,
+                remedy="Check the symbols, and that the provider covers them.",
+                provider=provider.name,
+                problems=unresolved,
             )
+        warnings.extend(unresolved)
 
         return CommandResult(
             command="instrument sync",
             table=Table(
                 columns=(
                     Column("symbol", "Symbol"),
-                    Column("name", "Name"),
-                    Column("exchange", "Exchange"),
+                    Column("looked_up", "Looked Up"),
+                    Column("provider_type", "Type There"),
+                    Column("provider_active", "Active There", ColumnKind.BOOL),
+                    Column("differences", "Differences (here -> there)"),
                     Column("provider_ref", "Provider Ref"),
                 ),
-                rows=tuple(updated),
-                title=f"Hydrated from {provider.name}",
+                rows=tuple(rows),
+                title=f"Compared with {provider.name}",
+                footnotes=(
+                    "Nothing was written. A difference is for a person to resolve: "
+                    "the provider is not assumed to be right.",
+                ),
             ),
+            data={
+                "compared": len(rows),
+                "with_differences": sum(1 for r in rows if r["differences"]),
+                "unresolved": len(unresolved),
+            },
             warnings=tuple(warnings),
+            as_of=ctx.as_of,
             portfolio=ctx.portfolio_name(),
         )
 

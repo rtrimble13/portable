@@ -45,10 +45,13 @@ believe one is wrong, say so and propose an ADR — do not quietly work around i
    entry — never by editing history. This is what makes the tax trail defensible.
 
 3. **All non-ledger state is derived and rebuildable.** Positions, lots, cash balances,
-   realized gains, and valuation snapshots are materialized for speed but must be exactly
-   reproducible by replaying the ledger. `pt rebuild` does this, and a test asserts that
-   replay reproduces materialized state for every fixture. If you add derived state, you
-   add it to the replay path and to that test in the same commit.
+   and realized gains are materialized for speed but must be exactly reproducible by
+   replaying the ledger. `pt rebuild` does this, and a test asserts that replay reproduces
+   materialized state for every fixture. If you add derived state, you add it to the
+   replay path and to that test in the same commit. Valuation snapshots also depend on the
+   prices they recorded, which replay does not read: they are reproducible holding those
+   prices fixed, kept by `pt rebuild`, removed by any ledger write that makes them stale,
+   and checked by `pt validate` (ADR 0024).
 
 4. **Cash is conserved.** For every transaction, cash effects across accounts plus the
    change in cost basis plus fees must balance. This is a property-based test. If your
@@ -372,6 +375,15 @@ test that fails without your change.
   | 0017 | Cutover reconstruction by roll-back, and where each basis came from |
   | 0018 | The minimum broker dataset, and capability-gated import |
   | 0019 | A migration may rebuild a table, and what that costs |
+  | 0020 | Historical price import: requirements and open questions (proposed) |
+  | 0021 | Derived state as of a past date: the corrected ledger, replayed and rolled back |
+  | 0022 | Amending a shipped migration — only when both texts leave the same file |
+  | 0023 | A change of grouping is a ledger row, naming positions by their opening transaction |
+  | 0024 | Valuation snapshots are valued state: kept by rebuild, removed when stale, checked by validate |
+  | 0025 | A config row dated into history is refused, or restated on request |
+  | 0026 | A dry run is the real write, rolled back |
+  | 0027 | A position label is a ledger row |
+  | 0028 | An instrument with no market price is valued at zero, at level 5 |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

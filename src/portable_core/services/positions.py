@@ -231,10 +231,16 @@ class PositionEngine:
         mislabelled strategy would misdescribe the position in every report
         that groups by it.
         """
-        roles = {leg.role for leg in legs if leg.status is PositionStatus.OPEN}
+        open_legs = [leg for leg in legs if leg.status is PositionStatus.OPEN]
+        roles = {leg.role for leg in open_legs}
 
-        if len(roles) <= 1:
+        # One leg is a single position. Two legs sharing a role -- two stocks
+        # grouped by hand -- are not, and naming them `single` would describe
+        # the position wrongly in every report that groups by strategy.
+        if len(open_legs) <= 1:
             return StrategyType.SINGLE
+        if len(roles) == 1:
+            return StrategyType.CUSTOM
         if roles == {LegRole.LONG_STOCK, LegRole.SHORT_CALL}:
             return StrategyType.COVERED_CALL
         if roles == {LegRole.LONG_STOCK, LegRole.SHORT_CALL, LegRole.LONG_PUT}:
