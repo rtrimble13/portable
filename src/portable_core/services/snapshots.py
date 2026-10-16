@@ -17,6 +17,7 @@ what it checks.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
@@ -35,7 +36,15 @@ from portable_core.persistence.repositories import RemovedSnapshots, Repositorie
 from portable_core.services.replay import effective_ledger, over_dates
 from portable_core.services.valuation import Holding, ValuationEngine
 
-__all__ = ["PriceLookup", "build", "removal_notices", "value_range", "verify"]
+__all__ = [
+    "PriceLookup",
+    "build",
+    "rederived_differently",
+    "removal_notices",
+    "store",
+    "value_range",
+    "verify",
+]
 
 ZERO = Decimal("0.00")
 
@@ -171,30 +180,123 @@ def verify(repos: Repositories) -> list[str]:
         for account_id, on, symbol, recorded, current in repos.valuations.superseded_prices()
     ]
 
+    for item in _rederive(repos):
+        again = repos.valuations.record_of(item.again)
+        differing = [field for field in item.kept if item.kept[field] != again[field]]
+        if differing:
+            problems.append(
+                f"{names.get(item.account_id)} {item.on.isoformat()}: re-derived from the "
+                f"ledger with the prices it recorded, its {', '.join(differing)} "
+                f"{'differs' if len(differing) == 1 else 'differ'} from what is stored "
+                f"-- {_REVALUE.format(on=item.on.isoformat())}"
+            )
+    return problems
+
+
+def store(repos: Repositories, built: Sequence[ValuationSnapshot]) -> list[str]:
+    """Save what :func:`value_range` built, and re-chain the stored day after it.
+
+    A snapshot's beginning value is the ending value of the stored day before
+    it. Valuing a range can supply that day for a snapshot already stored on
+    the day after the range -- valued alone earlier, when it had no day before
+    and began from zero. That snapshot is derived again with the prices it
+    recorded and saved, so its beginning value follows the new chain; nothing
+    else in it can change, because nothing else read the day before (ADR 0024).
+
+    Returns one sentence per snapshot re-chained, for the command to report.
+    """
+    for snapshot in built:
+        repos.valuations.save_snapshot(snapshot)
+    after: set[tuple[int, date]] = set()
+    for snapshot in built:
+        after.add((snapshot.account_id, snapshot.snapshot_date + timedelta(days=1)))
+    after -= {(snapshot.account_id, snapshot.snapshot_date) for snapshot in built}
+    if not after:
+        return []
+
+    names = {account.account_id: account.name for account in repos.accounts.all()}
+    notices: list[str] = []
+    for again in _differently(repos, lambda account_id, on: (account_id, on) in after):
+        repos.valuations.save_snapshot(again)
+        notices.append(
+            f"updated the stored {names.get(again.account_id)} snapshot of "
+            f"{again.snapshot_date.isoformat()}: its beginning value follows the day "
+            "valued before it"
+        )
+    return notices
+
+
+def rederived_differently(
+    repos: Repositories, since: date, until: date | None = None
+) -> list[ValuationSnapshot]:
+    """Stored snapshots dated from *since* up to *until* that re-derive differently.
+
+    Each comes back as re-derived: the ledger as it now stands, the prices it
+    recorded, and the policy now in force on its date. Saving them restates
+    them without discarding a single recorded price (ADR 0025), which is what
+    a change of return policy needs -- it moves flags, not values.
+    """
+    return _differently(
+        repos, lambda _account_id, on: since <= on and (until is None or on < until)
+    )
+
+
+def _differently(
+    repos: Repositories, wanted: Callable[[int, date], bool]
+) -> list[ValuationSnapshot]:
+    return [
+        item.again
+        for item in _rederive(repos, wanted)
+        if repos.valuations.record_of(item.again) != item.kept
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class _Rederived:
+    account_id: int
+    on: date
+    #: The stored snapshot, in :meth:`ValuationRepository.record` form.
+    kept: dict[str, Any]
+    #: The same snapshot, derived again with its recorded prices held fixed.
+    again: ValuationSnapshot
+
+
+def _rederive(
+    repos: Repositories, wanted: Callable[[int, date], bool] | None = None
+) -> list[_Rederived]:
+    """Derive stored snapshots again, holding their recorded prices fixed. ADR 0024.
+
+    Each is derived from the ledger as it stands at the end of its date (the
+    ADR 0021 walk), with exactly the prices it recorded. Its beginning value is
+    the stored ending value of the day before when there is one, and what it
+    recorded when there is not. *wanted* picks by account and date; every
+    stored snapshot still supplies the ending values the chosen ones begin from.
+    """
     stored = repos.valuations.stored_snapshots()
-    if not stored:
-        return problems
+    chosen = [entry for entry in stored if wanted is None or wanted(entry[1], entry[2])]
+    if not chosen:
+        return []
 
     # Read before the walk: inside it, derived state is rewound, and these
-    # are what is being checked, not inputs to the check.
+    # are what is being derived again, not inputs to the derivation.
     kept = {snapshot_id: repos.valuations.record(snapshot_id) for snapshot_id, _, _ in stored}
     recorded = {
         snapshot_id: repos.valuations.recorded_prices(snapshot_id)
-        for snapshot_id, _, _ in stored
+        for snapshot_id, _, _ in chosen
     }
     ending = {
         (account_id, on): kept[snapshot_id]["ending_market_value"]
         for snapshot_id, account_id, on in stored
     }
     by_date: dict[date, list[tuple[int, int]]] = {}
-    for snapshot_id, account_id, on in stored:
+    for snapshot_id, account_id, on in chosen:
         by_date.setdefault(on, []).append((snapshot_id, account_id))
     days = sorted(by_date)
     accounts = {account.account_id: account for account in repos.accounts.all()}
     rows_on = _rows_on(repos, set(days))
 
-    def visit(on: date) -> list[tuple[int, dict[str, Any]]]:
-        rebuilt: list[tuple[int, dict[str, Any]]] = []
+    def visit(on: date) -> list[_Rederived]:
+        again: list[_Rederived] = []
         for snapshot_id, account_id in by_date[on]:
             beginning = ending.get(
                 (account_id, on - timedelta(days=1)),
@@ -209,23 +311,10 @@ def verify(repos: Repositories) -> list[str]:
                 price_for=_recorded(recorded[snapshot_id]),
                 staleness_tolerance_days=_ANY_STALENESS,
             )
-            rebuilt.append((account_id, repos.valuations.record_of(snapshot)))
-        return rebuilt
+            again.append(_Rederived(account_id, on, kept[snapshot_id], snapshot))
+        return again
 
-    walked = over_dates(repos, days, visit)
-    for on, results in zip(days, walked.results, strict=True):
-        for (snapshot_id, _), (account_id, again) in zip(by_date[on], results, strict=True):
-            differing = [
-                field for field in kept[snapshot_id] if kept[snapshot_id][field] != again[field]
-            ]
-            if differing:
-                problems.append(
-                    f"{names.get(account_id)} {on.isoformat()}: re-derived from the ledger "
-                    f"with the prices it recorded, its {', '.join(differing)} "
-                    f"{'differs' if len(differing) == 1 else 'differ'} from what is stored "
-                    f"-- {_REVALUE.format(on=on.isoformat())}"
-                )
-    return problems
+    return [item for day in over_dates(repos, days, visit).results for item in day]
 
 
 def removal_notices(removed: Iterable[RemovedSnapshots], *, dry_run: bool) -> list[str]:

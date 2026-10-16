@@ -366,8 +366,7 @@ def value(
             # between valuing a day and recording the value.
             with db_transaction(repos.con):
                 snapshots, warnings = _snapshots(ctx, repos, accounts, first, last)
-                for snapshot in snapshots:
-                    repos.valuations.save_snapshot(snapshot)
+                warnings.extend(snapshots_service.store(repos, snapshots))
 
         rows: list[dict[str, object]] = []
         for snapshot in snapshots:

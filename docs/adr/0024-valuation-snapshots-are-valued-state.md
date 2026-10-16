@@ -129,11 +129,18 @@ they just upserted on.
   within a few examples.
 - **`PORT-GIPS-A09`, the snapshot half:** a final price replacing the one a
   snapshot used is now detected and named, and `pt value` over that date
-  adjusts the snapshot. Valuing a single day re-chains the next day's
-  beginning value, so validate then names that next day, and valuing a range
-  that covers both clears it. The return half of
+  adjusts the snapshot. The return half of
   `test_stale_price_then_correction_rebuilds` (the return changed, and the
   change is reported) waits on `pert`.
+- **Storing a range re-chains the stored day after it.** A snapshot begins
+  from the stored ending value of the day before, so valuing days that
+  precede a stored snapshot (backfilling history after valuing a later date,
+  or valuing one day again) changes that snapshot's beginning value. `pt value`
+  derives it again with the prices it recorded, saves it, and says so. Only
+  the day immediately after the range can change: a snapshot's ending value
+  does not depend on its beginning value, so the chain stops there. The
+  randomised test found this; before the fix, ordinary backfilling left
+  `pt validate` failing.
 - **A return policy dated before a stored snapshot is now caught for
   snapshots.** ADR 0010 says such a row is refused, and nothing refuses it.
   `pt validate` now names every snapshot whose large-flow flags the row

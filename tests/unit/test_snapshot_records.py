@@ -31,8 +31,7 @@ def _value(repos: Repositories, accounts: list[Account], first: date, last: date
         repos, accounts, first, last, staleness_tolerance_days=5
     )
     assert warnings == []
-    for snapshot in built:
-        repos.valuations.save_snapshot(snapshot)
+    snapshots.store(repos, built)
 
 
 def _funded(repos: Repositories, taxable: Account, ira: Account, aapl: Instrument) -> None:
@@ -171,3 +170,34 @@ def test_a_rehearsal_says_what_it_would_remove() -> None:
     )
 
     assert notice.startswith("would remove 1 valuation snapshot of B (2024-01-04)")
+
+
+def test_valuing_the_days_before_a_stored_snapshot_rechains_it(
+    repos: Repositories, taxable_account: Account, ira_account: Account, aapl: Instrument
+) -> None:
+    """Backfilling is ordinary use: value today, then the history before it.
+
+    The later snapshot began from zero, having no day before; once that day is
+    valued its beginning value is that day's ending value, and `pt validate`
+    reported the difference.
+    """
+    _funded(repos, taxable_account, ira_account, aapl)
+    later = date(2024, 1, 5)
+    repos.prices.add(_price(aapl, "102.00", on=later))
+    accounts = [taxable_account, ira_account]
+    _value(repos, accounts, later, later)
+
+    built, _ = snapshots.value_range(
+        repos, accounts, ON, date(2024, 1, 4), staleness_tolerance_days=5
+    )
+    notices = snapshots.store(repos, built)
+
+    assert notices == [
+        "updated the stored Brokerage snapshot of 2024-01-05: its beginning value follows "
+        "the day valued before it",
+        "updated the stored IRA snapshot of 2024-01-05: its beginning value follows the "
+        "day valued before it",
+    ]
+    stored = repos.valuations.snapshot(taxable_account.account_id, later)
+    assert stored is not None and stored["beginning_market_value"] == "1002.00"
+    assert snapshots.verify(repos) == []

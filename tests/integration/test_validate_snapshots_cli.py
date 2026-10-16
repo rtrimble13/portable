@@ -133,16 +133,13 @@ def test_port_gips_a09_a_replaced_price_names_the_snapshots_that_used_it(
     assert "B 2024-01-04: recorded AAPL at 102.00 at level 1" in problems[0]
     assert "now says 102.50 at level 1" in problems[0]
 
-    # Valuing that day alone leaves the next day's beginning value behind ...
-    run_pt("--port", valued, "value", "--date", "2024-01-04")
-    problems = run_pt("--port", valued, "validate", expect=4).json()["error"]["context"][
-        "problems"
-    ]
-    assert len(problems) == 1 and "B 2024-01-05" in problems[0], problems
-    assert "beginning_market_value" in problems[0]
-
-    # ... and valuing the range brings the chain back into line.
-    run_pt("--port", valued, "value", "--from", "2024-01-04", "--to", "2024-01-05")
+    # Valuing that day again restates it, and carries its new ending value into
+    # the beginning value of the day after, which keeps the prices it recorded.
+    valued_again = run_pt("--port", valued, "value", "--date", "2024-01-04").json()
+    assert (
+        "updated the stored B snapshot of 2024-01-05: its beginning value follows the day "
+        "valued before it"
+    ) in valued_again["warnings"]
     run_pt("--port", valued, "validate")
 
 

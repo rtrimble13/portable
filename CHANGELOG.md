@@ -281,6 +281,12 @@ Two rules specific to this repository:
   `PT-E-REPLAY-MISMATCH`. `pt rebuild`, and every back-dated append, import or
   reversal, which rebuild, deleted every snapshot of every account. A valued
   portfolio now validates, and a rebuild keeps its snapshots.
+- **Valuing the days before a stored snapshot left its beginning value
+  behind.** A snapshot valued alone begins from zero, having no day before.
+  Backfilling the days before it gave it one, and `pt validate` then reported
+  the stale beginning value. `pt value` now derives the stored snapshot on the
+  day after the range again, with the prices it recorded, and says so
+  (ADR 0024).
 - **An entry dated on or before a stored snapshot left that snapshot wrong.** A
   deposit dated after the ledger's last row but before a valuation date was
   applied incrementally, and the snapshot kept the cash it had before.

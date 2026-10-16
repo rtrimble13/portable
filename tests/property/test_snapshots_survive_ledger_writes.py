@@ -23,7 +23,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from portable_core.domain.enums import AccountType, InstrumentType, TransactionType
@@ -158,6 +158,9 @@ def _reversed(repos: Repositories) -> set[int]:
 
 @settings(max_examples=40, deadline=None)
 @given(plan=steps)
+# Found by this test: a later day valued alone began from zero, and valuing the
+# days before it left that beginning value behind.
+@example(plan=[("deposit", 0, 0, 1), ("value", 19, 0, 0), ("value", 14, 4, 0)])
 def test_every_stored_snapshot_still_holds_after_every_write(plan: list[Step]) -> None:
     with _portfolio() as (repos, accounts, instrument_id):
         entries: list[int] = []
@@ -168,8 +171,7 @@ def test_every_stored_snapshot_still_holds_after_every_write(plan: list[Step]) -
                     repos, accounts, first, first + timedelta(days=step[2]),
                     staleness_tolerance_days=5,
                 )  # fmt: skip
-                for snapshot in built:
-                    repos.valuations.save_snapshot(snapshot)
+                snapshots.store(repos, built)
             else:
                 _write(repos, accounts, instrument_id, step, entries)
 
