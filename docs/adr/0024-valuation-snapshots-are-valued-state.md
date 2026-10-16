@@ -142,10 +142,10 @@ they just upserted on.
   randomised test found this; before the fix, ordinary backfilling left
   `pt validate` failing.
 - **A return policy dated before a stored snapshot is now caught for
-  snapshots.** ADR 0010 says such a row is refused, and nothing refuses it.
-  `pt validate` now names every snapshot whose large-flow flags the row
-  restates. Rows dated before lots and gains, and tax-rate rows, are still
-  unchecked.
+  snapshots.** `pt validate` names every snapshot whose large-flow flags the
+  row restates. ADR 0025 then made the write itself refuse such a row, or
+  restate the snapshots with `--restate`, and did the same for tax-rate
+  rows.
 - **Most dry runs do not report the snapshots they would remove.** Under
   `--dry-run`, most writers return before appending, so the removal never
   runs. The back-dated rebuild notice has the same gap. `pt import batch` is

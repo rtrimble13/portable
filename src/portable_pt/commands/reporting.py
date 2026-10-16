@@ -22,7 +22,7 @@ from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.importers import TabularAdapter
 from portable_core.importers.source import REALIZED
 from portable_core.persistence.connection import transaction as db_transaction
-from portable_core.services import cash_flow
+from portable_core.services import cash_flow, restatement
 from portable_core.services.reconciliation import (
     ExternalHolding,
     RealizedTieLine,
@@ -1138,6 +1138,13 @@ def set_policy(
     ] = None,
     materiality_bps: Annotated[str | None, typer.Option("--materiality-bps")] = None,
     note: Annotated[str | None, typer.Option("--note")] = None,
+    restate: Annotated[
+        bool,
+        typer.Option(
+            "--restate",
+            help="Record a policy that changes stored snapshots, and restate them.",
+        ),
+    ] = False,
 ) -> None:
     """Set the effective-dated return policy.
 
@@ -1146,7 +1153,10 @@ def set_policy(
     `pert` refuses to compute returns rather than defaulting to zero, because
     a defaulted threshold produces a plausible number that is wrong.
 
-    Effective-dated, like tax rates, so a policy change never restates history.
+    Effective-dated, like tax rates, so a policy change never restates history
+    by accident: one that changes a stored snapshot is refused with
+    PT-E-RESTATES-HISTORY, and `--restate` records it and restates them,
+    keeping the prices they recorded (ADR 0025).
     """
 
     def action() -> CommandResult:
@@ -1188,11 +1198,12 @@ def set_policy(
             return maybe_dry_run(CommandResult(command="policy set", data=payload))
 
         with db_transaction(repos.con):
-            policy_id = repos.policies.add(policy)
+            recorded = restatement.record_policy(repos, policy, restate=restate)
 
         return CommandResult(
             command="policy set",
-            data={**payload, "policy_id": policy_id},
+            data={**payload, "policy_id": recorded.row_id, "restated": bool(recorded.restated)},
+            warnings=recorded.restated,
             portfolio=ctx.portfolio_name(),
         )
 

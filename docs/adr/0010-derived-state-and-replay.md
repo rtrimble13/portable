@@ -1,13 +1,15 @@
 # ADR 0010 — Derived state, the replay contract, and what `pt rebuild` guarantees
 
-- **Status:** Accepted — the partition, the replay order and the three replay properties are implemented and property-tested. Valuation snapshots were in the derived class and nothing rebuilt them; they are now a valued class of their own (ADR 0024). Not true as written: no code refuses a policy or tax-rate row dated before existing derived state (`pt validate` names the snapshots a back-dated policy restates, ADR 0024)
+- **Status:** Accepted — the partition, the replay order and the three replay properties are implemented and property-tested. Valuation snapshots were in the derived class and nothing rebuilt them; they are now a valued class of their own (ADR 0024). A policy or tax-rate row dated before existing derived state is refused unless `--restate` restates it in the same transaction (ADR 0025)
 - **Date:** 2026-08-27
 - **Milestone:** v0.1
 - **Governs:** `CLAUDE.md` invariants 2, 3, 6; `PORT-GIPS-J03`, `PORT-GIPS-J06`
 - **Amended by:** [ADR 0016](0016-out-of-order-appends-and-validation.md) — the contract
   here is unchanged; 0016 adds the operational obligations that make the code uphold it.
   [ADR 0024](0024-valuation-snapshots-are-valued-state.md) — snapshots move to a valued
-  class: kept by rebuild, removed by the writes that make them stale, checked by validate
+  class: kept by rebuild, removed by the writes that make them stale, checked by validate.
+  [ADR 0025](0025-config-rows-dated-into-history.md) — a config row dated into history is
+  refused, or restated with `--restate`; validate does not refuse anything
 
 ## Context
 
@@ -75,9 +77,9 @@ Properties 1–3 are hypothesis tests over generated transaction sequences.
 - **Policy rows.** `return_policy` and `tax_rate_schedule` are effective-dated
   and immutable once effective, precisely so that a policy change cannot
   retroactively restate history. Adding a row effective from a future date
-  changes no past derived value; `pt validate` refuses a row whose
-  `effective_from` precedes the latest already-derived state and tells the user
-  to rebuild explicitly.
+  changes no past derived value. A row that would change a recorded figure is
+  refused when it is written, and `--restate` records it and restates the
+  figures in the same transaction (ADR 0025).
 
 ### Corrections
 

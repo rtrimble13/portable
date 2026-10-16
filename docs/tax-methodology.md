@@ -181,6 +181,12 @@ date, and the components are stored separately so the effective rate is
 explainable arithmetic rather than a number to take on trust. Effective-dating
 is what stops a rate change next year from restating what last year's sale cost.
 
+A schedule dated on or before a sale already recorded would change that sale's
+estimate, so `pt account tax-rates set` refuses it with `PT-E-RESTATES-HISTORY`,
+naming the gains and the estimate before and after. When the schedule corrects
+the rate that was really in force, `--restate` records it and restates the
+estimates in the same transaction (ADR 0025).
+
 ### What the estimate does not model
 
 - bracket progressivity

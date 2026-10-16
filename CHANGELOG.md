@@ -275,6 +275,16 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **A tax rate dated before a recorded sale did not change the sale's
+  estimated tax** (ADR 0025). The schedule was stored and the estimate was
+  not, so `pt tax` went on reporting tax at the old rate, with no warning,
+  until something else rebuilt. A return policy did the same to the
+  large-flow flags of stored snapshots. Both commands now refuse such a row
+  with `PT-E-RESTATES-HISTORY`, naming the figures and the change.
+  `--restate` records it and restates them in the same transaction: tax by
+  replaying the ledger, snapshots by deriving them again with the prices they
+  recorded. A second row for a date that already has one is refused by name;
+  it was an unexpected `IntegrityError`.
 - **Every valued portfolio failed `pt validate`, and the remedy it named deleted
   the valuation history** (ADR 0024). Validate compared `valuation_snapshot`
   with a replay of the ledger, which produces none, and exited 4 with
