@@ -141,6 +141,11 @@ tax engine never reads a position; it reads dispositions. That keeps the two
 questions — "how did this trade do?" and "what do I owe on it?" — from
 contaminating each other.
 
+A position can carry a **label** — "core holding", "income sleeve" — set with
+`pt position label`. Like a regroup it is a dated ledger row (`position_label`,
+ADR 0027), so it survives every rebuild, can change over the position's life,
+and is undone with `pt trade reverse`.
+
 A position exposes realized P&L, unrealized P&L, and total return contribution.
 Strategy-level greeks and max-gain/max-loss are backlog; the interface is left
 for them.

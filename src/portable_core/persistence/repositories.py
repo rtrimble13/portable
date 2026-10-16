@@ -652,6 +652,11 @@ class PriceRepository(_Repository):
 # ── the ledger ───────────────────────────────────────────────────────────────
 
 
+#: Ledger rows that change what a position is called or how it is grouped, and
+#: nothing a snapshot records -- no quantity, no cash (ADR 0023, ADR 0027).
+_NAMES_ONLY = frozenset({TransactionType.POSITION_REGROUP, TransactionType.POSITION_LABEL})
+
+
 @dataclass(frozen=True, slots=True)
 class RemovedSnapshots:
     """Valuation snapshots one ledger write made stale, and removed (ADR 0024)."""
@@ -792,9 +797,9 @@ class TransactionRepository(_Repository):
             "position_id, counter_account_id, related_txn_id, reverses_txn_id, "
             "lot_selection, relief_method, ex_date, pay_date, is_qualified, note, "
             "external_ref, source, original_basis, original_acquired_date, "
-            "basis_source, basis_assumption, strategy_type, created_at) VALUES "
+            "basis_source, basis_assumption, strategy_type, label, created_at) VALUES "
             "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 txn.account_id,
                 txn.trade_date.isoformat(),
@@ -832,6 +837,7 @@ class TransactionRepository(_Repository):
                 str(txn.basis_source) if txn.basis_source else None,
                 txn.basis_assumption,
                 str(txn.strategy_type) if txn.strategy_type else None,
+                txn.label,
                 txn.created_at or _now(),
             ),
         )
@@ -849,16 +855,16 @@ class TransactionRepository(_Repository):
 
         Here rather than in a service because this is the one write every
         ledger writer goes through, which is what makes it impossible to skip.
-        A regroup is exempt, and so is its reversal: it moves a leg between
-        positions, changes no quantity and no cash (ADR 0023), and a snapshot
-        records neither positions nor legs.
+        A regroup or a label is exempt, and so is its reversal: it changes no
+        quantity and no cash (ADR 0023, ADR 0027), and a snapshot records
+        neither positions nor their names.
         """
         affected = [txn]
         if txn.txn_type is TransactionType.REVERSAL and txn.reverses_txn_id is not None:
             original = self.get(txn.reverses_txn_id)
             if original is not None:
                 affected.append(original)
-        if any(row.txn_type is TransactionType.POSITION_REGROUP for row in affected):
+        if any(row.txn_type in _NAMES_ONLY for row in affected):
             return
 
         since = min(row.trade_date for row in affected)
@@ -1059,6 +1065,16 @@ class PositionRepository(_Repository):
         self.con.execute(
             "UPDATE position SET status = 'closed', closed_date = ? WHERE position_id = ?",
             (on.isoformat(), position_id),
+        )
+
+    def set_label(self, position_id: int, label: str | None) -> None:
+        """Name a position, or clear its name. Replay's, for ``position_label``.
+
+        Derived state like the rest of the row: a label set anywhere but in
+        replay is gone after the next rebuild (ADR 0027).
+        """
+        self.con.execute(
+            "UPDATE position SET label = ? WHERE position_id = ?", (label, position_id)
         )
 
     def set_strategy(self, position_id: int, strategy_type: str) -> None:

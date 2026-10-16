@@ -255,6 +255,7 @@ def to_transaction(row: sqlite3.Row) -> Transaction:
         basis_source=BasisSource(row["basis_source"]) if row["basis_source"] else None,
         basis_assumption=row["basis_assumption"],
         strategy_type=StrategyType(row["strategy_type"]) if row["strategy_type"] else None,
+        label=row["label"],
         created_at=str(row["created_at"]),
     )
 

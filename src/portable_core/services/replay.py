@@ -377,6 +377,12 @@ class ReplayEngine:
                     txn.counter_account_id, counter.currency, -txn.net_cash_effect, cash
                 )
 
+        # ADR 0027. A name for a position: no instrument, no quantity, no cash,
+        # so it is dispatched before the pure-cash return below.
+        if txn.txn_type is TransactionType.POSITION_LABEL:
+            self._label(txn)
+            return
+
         if txn.instrument_id is None:
             return  # a pure cash event: nothing to position
 
@@ -556,6 +562,24 @@ class ReplayEngine:
         )
         counters["lots"] += 1
         self._refresh_leg(leg_id, txn.trade_date)
+
+    def _label(self, txn: Transaction) -> None:
+        """Name the position *txn*'s ``related_txn_id`` opened. ADR 0027.
+
+        Raises:
+            ValidationError: no such position yet. Refused at entry
+                (``services.labels``), so replay meets this only in a ledger
+                written some other way.
+        """
+        assert txn.related_txn_id is not None  # a schema CHECK binds it
+        position = self.repos.positions.opened_by(txn.related_txn_id)
+        if position is None:
+            raise ValidationError(
+                f"no position was opened by transaction {txn.related_txn_id} by "
+                f"{txn.trade_date.isoformat()}, so there is nothing to label",
+                remedy="A label names a position that exists on its date.",
+            )
+        self.repos.positions.set_label(position.position_id, txn.label)
 
     def _regroup(self, txn: Transaction, counters: dict[str, int]) -> None:
         """Move this account's leg in an instrument into another position.

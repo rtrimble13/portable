@@ -191,6 +191,8 @@ class TransactionType(enum.StrEnum):
     # trader intent, replayed (ADR 0023): moves a leg between positions, and
     # moves no quantity and no cash
     POSITION_REGROUP = "position_regroup"
+    # names a position (ADR 0027): moves nothing at all
+    POSITION_LABEL = "position_label"
     # options lifecycle
     OPTION_EXERCISE = "option_exercise"
     OPTION_ASSIGNMENT = "option_assignment"

@@ -72,11 +72,12 @@ it, a ledger row naming a derived key names nothing stable.
   property test enters purchases, groupings and ungroupings through the live
   path and requires a rebuild to reproduce the stored state exactly.
 - Migration 0005 rebuilds `"transaction"` (ADR 0019) and copies all 33
-  columns, named one by one. It is tested on a v4 file in which every column,
-  in-kind provenance included, carries a value.
-- Not addressed: position labels (ADR 0010 says they are ledger-carried and
-  nothing writes one), and holding one instrument in two positions in one
-  account.
+  columns, named one by one. It is tested on a v4 file carrying in-kind
+  provenance. This said every column carried a value; twelve did not, which
+  the stricter test written for migration 0006 found (ADR 0027).
+- Not addressed: holding one instrument in two positions in one account.
+  Position labels, also open here, became ledger rows the same way
+  (ADR 0027).
 
 ## Alternatives considered
 

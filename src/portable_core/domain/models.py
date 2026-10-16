@@ -300,6 +300,9 @@ class Transaction:
     #: ADR 0023. On a `position_regroup` only: the strategy it restates for the
     #: position it moves a leg into. ``None`` there means "name it from its legs".
     strategy_type: StrategyType | None = None
+    #: ADR 0027. On a `position_label` only: the label it gives the position
+    #: its ``related_txn_id`` opened. ``None`` there clears the label.
+    label: str | None = None
     created_at: str = ""
 
     def __post_init__(self) -> None:

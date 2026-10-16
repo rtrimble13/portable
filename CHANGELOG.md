@@ -16,6 +16,11 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`pt position label N "text"`**, and `--clear` (ADR 0027). `position.label`
+  existed from the first schema and nothing wrote it. A label is a
+  `position_label` ledger row, so it survives every rebuild, can change over a
+  position's life, and is undone with `pt trade reverse`. `pt position list`
+  shows it.
 - **The mapping grammar the first custodian actually needed, and the
   incremental import.** Measured against the reference custodian's traps
   (`docs/broker-import.md` §12), the two mapping files of ADR 0018 could not
@@ -228,6 +233,13 @@ Two rules specific to this repository:
 
 ### Schema
 
+- **`schema_version` 5 → 6**, migration `0006_position_label` (ADR 0027). A
+  rebuild of `"transaction"` (ADR 0019) that admits `txn_type =
+  'position_label'` and adds `label`, with `CHECK`s binding both to that type:
+  a label names a position by the transaction that opened it, and names no
+  instrument, moves no quantity and no cash. All 34 existing columns are copied,
+  by name; tested on a v5 file in which every column carries a value. Not
+  reversible, like every rebuild: restore the backup `pt migrate` takes.
 - **`schema_version` 4 → 5**, migration `0005_position_regroup` (ADR 0023). A
   rebuild of `"transaction"` (ADR 0019) that admits `txn_type =
   'position_regroup'` and adds `strategy_type`, with `CHECK`s binding both to

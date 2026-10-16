@@ -95,9 +95,9 @@ transactions to reports.
   suspected derived-state bug. After a bug fix, rebuild recovers correct state
   from a ledger that was never wrong.
 - Derived tables carry no user-authored data. Anything a human types goes in the
-  ledger or in config, or it is lost on the next rebuild. `pt position --label`
-  therefore writes to `position` — so **`label` and `note` are ledger-carried**,
-  set by the transaction that opened the position, and re-derived on replay.
+  ledger or in config, or it is lost on the next rebuild. So **a position's
+  `label` is a ledger row** (`position_label`, ADR 0027) and its `note` comes
+  from the transaction that opened it; both are re-derived on replay.
 - Materialized derived state can be dropped entirely to shrink a `.port` file;
   `pt rebuild` restores it. Valued state is restored by `pt value` (ADR 0024).
 

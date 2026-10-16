@@ -499,7 +499,11 @@ def _fifth() -> M.Migration:
 
 
 def test_migration_0005_keeps_every_column_of_every_row(tmp_path: Path) -> None:
-    """The lesson of 0004, applied: copy all 33 columns, and test with all of them set."""
+    """The lesson of 0004, applied: copy all 33 columns, named one by one.
+
+    Twelve of them are empty in this fixture; the 0006 test below is the one
+    that requires every column to carry a value.
+    """
     con = _at(tmp_path / "p.port", 4)
     _seed(con)
     _seed_transfers(con, transfer_in=True)
@@ -550,6 +554,100 @@ def test_migration_0005_admits_a_regroup_and_binds_it(tmp_path: Path) -> None:
             'INSERT INTO "transaction" (account_id, trade_date, seq, txn_type, '
             "net_cash_effect, strategy_type, created_at) "
             "VALUES (1, '2024-03-02', 1, 'deposit', '1.00', 'custom', 'x')"
+        )
+    con.close()
+
+
+def _sixth() -> M.Migration:
+    return next(m for m in M.available_migrations() if m.version == 6)
+
+
+def test_migration_0006_keeps_every_column_of_every_row(tmp_path: Path) -> None:
+    """All 34 columns, tested with every one of them carrying a value somewhere."""
+    con = _at(tmp_path / "p.port", 5)
+    _seed(con)
+    _seed_transfers(con, transfer_in=True)
+    con.execute(
+        'INSERT INTO "transaction" (account_id, trade_date, seq, txn_type, instrument_id, '
+        "net_cash_effect, strategy_type, created_at) "
+        "VALUES (1, '2024-03-01', 9, 'position_regroup', 1, '0.00', 'covered_call', 'x')"
+    )
+    # The columns the shared seed leaves empty, each carried by a row of a type
+    # that may hold it.
+    con.execute(
+        "INSERT INTO account (name, account_type, opened_date, currency, created_at, "
+        "updated_at) VALUES ('S','taxable','2024-01-01','USD','x','x')"
+    )
+    con.execute(
+        'INSERT INTO "transaction" (account_id, trade_date, settlement_date, seq, txn_type, '
+        "net_cash_effect, counter_account_id, fees, fee_class, note, created_at) "
+        "VALUES (1, '2024-03-02', '2024-03-04', 1, 'transfer', '-10.00', 2, '1.00', "
+        "'other_admin', 'to S', 'x')"
+    )
+    con.execute(
+        'INSERT INTO "transaction" (account_id, trade_date, seq, txn_type, instrument_id, '
+        "net_cash_effect, taxes_withheld, withholding_reclaimable, ex_date, pay_date, "
+        "is_qualified, created_at) VALUES (1, '2024-03-03', 1, 'dividend', 1, '8.50', "
+        "'1.50', '1.50', '2024-03-01', '2024-03-03', 1, 'x')"
+    )
+    con.execute(
+        'INSERT INTO "transaction" (account_id, trade_date, seq, txn_type, instrument_id, '
+        "quantity, price, net_cash_effect, position_id, related_txn_id, lot_selection, "
+        "relief_method, created_at) VALUES (1, '2024-03-04', 1, 'sell', 1, '2', '110.00', "
+        "'220.00', 7, 2, '1:2', 'spec', 'x')"
+    )
+    columns = [r[1] for r in con.execute('PRAGMA table_info("transaction")')]
+    listed = ", ".join(columns)
+    for column in columns:
+        assert con.execute(
+            f'SELECT COUNT(*) FROM "transaction" WHERE "{column}" IS NOT NULL'
+        ).fetchone()[0], f"no row carries {column}, so the copy of it is untested"
+    before = [
+        tuple(r) for r in con.execute(f'SELECT {listed} FROM "transaction" ORDER BY txn_id')
+    ]
+    con.commit()
+
+    M._apply(con, _sixth())
+
+    assert M.schema_version(con) == 6
+    after = [
+        tuple(r) for r in con.execute(f'SELECT {listed} FROM "transaction" ORDER BY txn_id')
+    ]
+    assert after == before
+    assert (
+        con.execute('SELECT COUNT(*) FROM "transaction" WHERE label IS NOT NULL').fetchone()[0]
+        == 0
+    )
+
+
+def test_migration_0006_admits_a_label_and_binds_it(tmp_path: Path) -> None:
+    """A label names a position and moves nothing; only a label row carries one."""
+    con = _at(tmp_path / "p.port", 6)
+    _seed(con)
+    opened = con.execute('SELECT MIN(txn_id) FROM "transaction"').fetchone()[0]
+    label = (
+        'INSERT INTO "transaction" (account_id, trade_date, seq, txn_type, instrument_id, '
+        "quantity, net_cash_effect, related_txn_id, label, created_at) "
+        "VALUES (1, '2024-03-01', ?, 'position_label', ?, ?, ?, ?, ?, 'x')"
+    )
+    con.execute(label, (1, None, None, "0.00", opened, "Core holding"))
+    con.execute(label, (2, None, None, "0.00", opened, None))  # clears it
+    for seq, (instrument, quantity, cash, related) in enumerate(
+        (
+            (1, None, "0.00", opened),  # names an instrument
+            (None, "10", "0.00", opened),  # moves a quantity
+            (None, None, "-5.00", opened),  # moves cash
+            (None, None, "0.00", None),  # names no position
+        ),
+        start=3,
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(label, (seq, instrument, quantity, cash, related, "x"))
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+        con.execute(
+            'INSERT INTO "transaction" (account_id, trade_date, seq, txn_type, '
+            "net_cash_effect, label, created_at) "
+            "VALUES (1, '2024-03-02', 1, 'deposit', '1.00', 'oops', 'x')"
         )
     con.close()
 

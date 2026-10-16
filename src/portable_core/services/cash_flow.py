@@ -206,7 +206,7 @@ def classify(
 
         # ── A change of intent (ADR 0023). A leg moves between positions in one
         # account; nothing is owned that was not before, and no cash moves.
-        case TransactionType.POSITION_REGROUP:
+        case TransactionType.POSITION_REGROUP | TransactionType.POSITION_LABEL:
             return FlowResult(FlowClassification.INTERNAL, zero, txn.trade_date)
 
         # A stock dividend received from outside -- a distribution in kind --

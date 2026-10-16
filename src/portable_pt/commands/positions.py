@@ -11,6 +11,7 @@ from portable_core.domain.enums import StrategyType
 from portable_core.errors import ValidationError
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.persistence.repositories import Repositories
+from portable_core.services.labels import Label, record_label
 from portable_core.services.regrouping import Regroup, record_regroup
 from portable_core.services.replay import state_on
 from portable_pt import state
@@ -40,6 +41,7 @@ def list_positions(
                 rows.append(
                     {
                         "position_id": position.position_id,
+                        "label": position.label,
                         "strategy": str(position.strategy_type),
                         "symbol": instrument.symbol if instrument else None,
                         "role": str(leg.role),
@@ -54,6 +56,7 @@ def list_positions(
             table=Table(
                 columns=(
                     Column("position_id", "Position", ColumnKind.INTEGER),
+                    Column("label", "Label"),
                     Column("strategy", "Strategy"),
                     Column("symbol", "Symbol"),
                     Column("role", "Role"),
@@ -250,6 +253,61 @@ def ungroup(
                 **payload,
                 "txn_ids": [r.transaction.txn_id for r in recorded],
                 "rebuilt": any(r.rebuilt for r in recorded),
+            },
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
+@position_app.command()
+def label(
+    position_id: Annotated[
+        int, typer.Argument(help="Position id, as `pt position list` shows it.")
+    ],
+    text: Annotated[str | None, typer.Argument(help="The label.")] = None,
+    clear: Annotated[bool, typer.Option("--clear", help="Remove the label.")] = False,
+    date_text: Annotated[str | None, typer.Option("--date", "-d")] = None,
+    note: Annotated[str | None, typer.Option("--note")] = None,
+) -> None:
+    """Name a position, or remove its name.
+
+    A label is a `position_label` row in the ledger, replayed like any other, so
+    it survives every rebuild and is undone with `pt trade reverse` (ADR 0027).
+    It names the position and changes nothing else: no leg, no lot, no cash.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        if (text is None) == (not clear):
+            raise ValidationError(
+                "give a label, or --clear, but not both",
+                remedy='`pt position label 12 "Covered call on AAPL"`, or `--clear`.',
+            )
+        on = resolve_date(date_text, ctx)
+        position = repos.positions.get(position_id)
+        if position is None or position.opened_txn_id is None:
+            raise ValidationError(
+                f"no position {position_id}", remedy="`pt position list` shows them."
+            )
+
+        with ctx.write():
+            recorded = record_label(
+                repos, Label(position.opened_txn_id, on, None if clear else text, note)
+            )
+
+        labelled = repos.positions.opened_by(position.opened_txn_id)
+        return CommandResult(
+            command="position label",
+            data={
+                # Looked up again: a back-dated label rebuilds, and a rebuild
+                # may renumber the position.
+                "position_id": labelled.position_id if labelled else None,
+                "label": labelled.label if labelled else None,
+                "date": on.isoformat(),
+                "txn_id": recorded.transaction.txn_id,
+                "rebuilt": recorded.rebuilt,
             },
             portfolio=ctx.portfolio_name(),
         )
