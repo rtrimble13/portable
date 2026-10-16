@@ -384,12 +384,19 @@ def test_schema_reference_describes_the_schema_a_migrated_file_has() -> None:
                 "SELECT name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
             )
         )
-        columns = [r[1] for r in con.execute('PRAGMA table_info("transaction")')]
+        # Every column of every table, in order: a column added by ALTER TABLE
+        # (migration 0007) was missing from the reference until this asked.
+        columns = {
+            table: [r[1] for r in con.execute(f'PRAGMA table_info("{table}")')]
+            for table in tables
+        }
     finally:
         con.close()
 
     assert sorted(re.findall(r"^## `(\w+)`$", rendered, re.MULTILINE)) == tables
     assert sorted(re.findall(r"^- `(\w+)` on \(", rendered, re.MULTILINE)) == indexes
-    ledger = rendered.split("## `transaction`")[1].split("\n## ")[0]
-    assert re.findall(r"^\| `(\w+)` \|", ledger, re.MULTILINE) == columns
+    for table, expected in columns.items():
+        section = rendered.split(f"## `{table}`\n")[1].split("\n## ")[0]
+        documented = re.findall(r"^\| `(\w+)` \|", section, re.MULTILINE)
+        assert documented == expected, table
     assert "- `CHECK (`" not in rendered, "a wrapped constraint is rendered whole"

@@ -652,6 +652,22 @@ def test_migration_0006_admits_a_label_and_binds_it(tmp_path: Path) -> None:
     con.close()
 
 
+def test_migration_0007_leaves_every_existing_instrument_quoted(tmp_path: Path) -> None:
+    """ADR 0028. Additive: a default, so no instrument changes what it is."""
+    con = _at(tmp_path / "p.port", 6)
+    _seed(con)
+
+    M._apply(con, next(m for m in M.available_migrations() if m.version == 7))
+
+    assert M.schema_version(con) == 7
+    assert [
+        tuple(r) for r in con.execute("SELECT symbol, has_market_price FROM instrument")
+    ] == [("AAPL", 1)]
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+        con.execute("UPDATE instrument SET has_market_price = 2")
+    con.close()
+
+
 def test_an_older_file_is_refused_until_it_is_migrated(tmp_path: Path) -> None:
     """PT-E-SCHEMA-TOO-OLD was defined and never raised: a v4 file read by v5
     code failed on its first new column with "No item with that key"."""

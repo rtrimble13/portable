@@ -265,8 +265,12 @@ Done without a warehouse, because each was needed however R1 resolves:
 - Every adapter query now runs under test against fafnir's documented tables,
   and an unreachable warehouse fails `pt price load` instead of warning.
 
+- **R7, decided by the owner (2026-10-16): the flag.** An instrument marked
+  as having no market price is valued at zero, at level 5, and the snapshot
+  holding it is complete ([ADR 0028](0028-instrument-with-no-market-price.md)).
+
 Still open: R1 (is there a warehouse to point at), R3's coverage report and
-R9's calendar, R7 (the CVR), R8 (the benchmark), R10 (the acceptance test).
+R9's calendar, R8 (the benchmark), R10 (the acceptance test).
 
 ## Alternatives considered
 

@@ -74,6 +74,16 @@ def set_price(
         repos = ctx.require_portfolio()
         on = resolve_date(date_text, ctx)
         instrument = repos.instruments.resolve(symbol, on=on)
+        if not instrument.has_market_price:
+            raise ValidationError(
+                f"{instrument.symbol} is marked as having no market price, and is valued "
+                "at zero (ADR 0028)",
+                remedy=(
+                    f"If something now quotes it, `pt instrument market-price "
+                    f"{instrument.symbol} --quoted` first."
+                ),
+                symbol=instrument.symbol,
+            )
 
         record = Price(
             instrument_id=instrument.instrument_id,
@@ -162,6 +172,14 @@ def load(
                 lead_in_days=int(ctx.config.get("staleness_tolerance_days", 5)),
             )
             warnings.extend(replay_warnings)
+
+        # ADR 0028: nothing quotes these, so nothing is asked for them.
+        unquoted = sorted({r.symbol for r in requests if not r.instrument.has_market_price})
+        if unquoted:
+            requests = [r for r in requests if r.instrument.has_market_price]
+            warnings.append(
+                f"not loaded, marked as having no market price: {', '.join(unquoted)}"
+            )
 
         loaded: list[dict[str, object]] = []
         missing: list[str] = []

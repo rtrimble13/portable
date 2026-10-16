@@ -51,6 +51,12 @@ _Named = TypeVar("_Named", tuple[str, str], tuple[str, list[str]])
 _ALTER_RENAME = re.compile(
     r'^\s*ALTER\s+TABLE\s+"?(?P<old>\w+)"?\s+RENAME\s+TO\s+"?(?P<new>\w+)"?', re.IGNORECASE
 )
+#: ``ALTER TABLE t ADD [COLUMN] c <definition>``, the definition possibly
+#: wrapped onto indented lines that follow and end with ``;``.
+_ALTER_ADD = re.compile(
+    r'^\s*ALTER\s+TABLE\s+"?(?P<table>\w+)"?\s+ADD\s+(COLUMN\s+)?(?P<name>\w+)\s+(?P<rest>.*)$',
+    re.IGNORECASE,
+)
 _DROP_INDEX = re.compile(r"^\s*DROP\s+INDEX(\s+IF\s+EXISTS)?\s+(?P<name>\w+)", re.IGNORECASE)
 _COMMENT = re.compile(r"^\s*--\s?(?P<text>.*)$")
 _DECIMAL_MARKER = re.compile(r"--\s*decimal\s*$")
@@ -97,8 +103,17 @@ def parse(sql: str, into: list[Table] | None = None) -> list[Table]:
     pending_table_name: str | None = None
     current: Table | None = None
     open_constraint = False
+    #: A column added by ALTER TABLE whose definition has not ended yet.
+    adding: Column | None = None
 
     for raw in lines:
+        if adding is not None:
+            adding.sql_type = f"{adding.sql_type} {raw.strip()}"
+            if adding.sql_type.rstrip().endswith(";"):
+                adding.sql_type = _clean_type(adding.sql_type.rstrip().rstrip(";"))
+                adding = None
+            continue
+
         if current is None:
             marker = _TABLE_MARKER.match(raw)
             if marker:
@@ -131,6 +146,23 @@ def parse(sql: str, into: list[Table] | None = None) -> list[Table]:
                     tables[tables.index(previous)] = moved
                     _inherit(moved, previous)
                 by_name[moved.name] = moved
+                pending_doc = []
+                continue
+
+            added = _ALTER_ADD.match(raw)
+            if added and added.group("table") in by_name:
+                rest = added.group("rest").rstrip()
+                new_column = Column(
+                    name=added.group("name"),
+                    sql_type=rest,
+                    is_decimal=bool(_DECIMAL_MARKER.search(raw)),
+                    doc=list(pending_doc),
+                )
+                by_name[added.group("table")].columns.append(new_column)
+                if rest.endswith(";"):
+                    new_column.sql_type = _clean_type(rest.rstrip(";"))
+                else:
+                    adding = new_column
                 pending_doc = []
                 continue
 

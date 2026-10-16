@@ -25,7 +25,7 @@ What is deliberate rather than incidental:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 
 from portable_core.decimals import money_context, quantize_money
@@ -63,6 +63,10 @@ class Holding:
     next_coupon_date: date | None = None
 
 
+#: The source a snapshot records for a holding nothing quotes (ADR 0028).
+NO_MARKET_PRICE = "none: no observable market price"
+
+
 class ValuationEngine:
     """Prices holdings and assembles valuation snapshots."""
 
@@ -72,6 +76,30 @@ class ValuationEngine:
         self.staleness_tolerance_days = staleness_tolerance_days
 
     # ── pricing ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def without_market_price(holding: Holding, as_of: date) -> SnapshotPrice:
+        """Value a holding nothing quotes: zero, at level 5. ADR 0028.
+
+        ``PORT-GIPS-A02``: a value from subjective, unobservable inputs is level
+        5, and is counted as such. Zero is the value, not a gap -- the
+        instrument says it has no market price -- so the snapshot holding it
+        is complete. The provenance is recorded like any price's
+        (``PORT-GIPS-J03``), with no price row behind it, and an as-of of the
+        valuation date itself so the record is deterministic.
+        """
+        return SnapshotPrice(
+            instrument_id=holding.instrument.instrument_id,
+            price=ZERO,
+            quantity=holding.quantity,
+            market_value=ZERO,
+            source=NO_MARKET_PRICE,
+            as_of=datetime.combine(as_of, time.min, tzinfo=UTC),
+            valuation_level=5,
+            is_estimate=False,
+            staleness_days=0,
+            price_id=None,
+        )
 
     def price_holding(
         self,

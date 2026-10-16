@@ -286,12 +286,20 @@ class AccountRepository(_Repository):
 
 
 class InstrumentRepository(_Repository):
+    def set_market_price(self, instrument_id: int, has_market_price: bool) -> None:
+        """Say whether anything quotes this instrument (ADR 0028)."""
+        self.con.execute(
+            "UPDATE instrument SET has_market_price = ?, updated_at = ? "
+            "WHERE instrument_id = ?",
+            (int(has_market_price), _now(), instrument_id),
+        )
+
     def add(self, instrument: Instrument) -> int:
         cursor = self.con.execute(
             "INSERT INTO instrument (symbol, instrument_type, name, currency, exchange, "
             "cusip, isin, figi, sector, industry, asset_class, country, is_active, "
-            "source, provider_ref, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "source, provider_ref, has_market_price, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 instrument.symbol,
                 str(instrument.instrument_type),
@@ -308,6 +316,7 @@ class InstrumentRepository(_Repository):
                 int(instrument.is_active),
                 instrument.source,
                 instrument.provider_ref,
+                int(instrument.has_market_price),
                 _now(),
                 _now(),
             ),
@@ -614,6 +623,17 @@ class PriceRepository(_Repository):
             (price.instrument_id, price.price_date.isoformat(), price.source),
         ).fetchone()
         return int(row["price_id"])
+
+    def span(self, instrument_id: int) -> tuple[int, date | None, date | None]:
+        """How many prices an instrument has, and the first and last dates."""
+        row = self.con.execute(
+            "SELECT COUNT(*) AS n, MIN(price_date) AS first, MAX(price_date) AS last "
+            "FROM price WHERE instrument_id = ?",
+            (instrument_id,),
+        ).fetchone()
+        if not row["n"]:
+            return 0, None, None
+        return int(row["n"]), date.fromisoformat(row["first"]), date.fromisoformat(row["last"])
 
     def newest_on_or_before(self, instrument_id: int, on: date) -> Price | None:
         """The most recent price at or before *on*.

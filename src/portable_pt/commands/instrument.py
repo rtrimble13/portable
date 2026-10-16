@@ -13,7 +13,7 @@ from portable_core.errors import DataUnavailableError, ValidationError
 from portable_core.errors.kinds import E_PRICE_MISSING
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.providers import as_security_master
-from portable_core.services import price_history
+from portable_core.services import price_history, restatement
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, resolve_date
 
@@ -61,6 +61,14 @@ def add(
         str, typer.Option("--day-count", help="30/360 | ACT/ACT | ACT/365 | ACT/360")
     ] = "ACT/ACT",
     face: Annotated[str, typer.Option("--face")] = "1000",
+    no_market_price: Annotated[
+        bool,
+        typer.Option(
+            "--no-market-price",
+            help="Nothing quotes it, ever -- a contingent value right. Valued at zero, "
+            "at level 5 (ADR 0028).",
+        ),
+    ] = False,
 ) -> None:
     """Define an instrument by hand."""
 
@@ -122,6 +130,7 @@ def add(
             isin=isin,
             sector=sector,
             asset_class=asset_class,
+            has_market_price=not no_market_price,
             option=option,
             bond=bond,
         )
@@ -131,6 +140,7 @@ def add(
             "instrument_type": str(kind),
             "name": name,
             "contract_size": instrument.contract_size,
+            "has_market_price": instrument.has_market_price,
         }
         with ctx.write():
             instrument_id = repos.instruments.add(instrument)
@@ -210,6 +220,7 @@ def show(symbol: Annotated[str, typer.Argument()]) -> None:
             "asset_class": instrument.asset_class,
             "contract_size": instrument.contract_size,
             "source": instrument.source,
+            "has_market_price": instrument.has_market_price,
         }
         if instrument.option is not None:
             option = instrument.option
@@ -235,6 +246,60 @@ def show(symbol: Annotated[str, typer.Argument()]) -> None:
             command="instrument show",
             data=data,
             as_of=ctx.as_of,
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
+@app.command(name="market-price")
+def market_price(
+    symbol: Annotated[str, typer.Argument()],
+    none: Annotated[
+        bool, typer.Option("--none", help="Nothing quotes it, and nothing ever will.")
+    ] = False,
+    quoted: Annotated[bool, typer.Option("--quoted", help="Undo --none.")] = False,
+    restate: Annotated[
+        bool,
+        typer.Option("--restate", help="Restate the stored snapshots that hold it."),
+    ] = False,
+) -> None:
+    """Mark an instrument as having no observable market price, or undo it.
+
+    ADR 0028. A holding nothing quotes -- a contingent value right -- is valued
+    at zero as a level-5 (subjective, unobservable) valuation, recorded in the
+    snapshot with that provenance, and the snapshot holding it is complete.
+    Without this, one such holding left every snapshot of its account
+    incomplete, and an incomplete snapshot is never used for a return.
+
+    Refused for an instrument that has ever had a price: the mark applies to
+    every date. A stored snapshot it changes is refused with
+    PT-E-RESTATES-HISTORY unless --restate (ADR 0025).
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        if none == quoted:
+            raise ValidationError(
+                "say --none or --quoted",
+                remedy="`pt instrument market-price 003CVR016 --none` marks one.",
+            )
+        instrument = repos.instruments.resolve(symbol, on=ctx.as_of)
+
+        with ctx.write():
+            recorded = restatement.record_market_price(
+                repos, instrument, has_market_price=quoted, restate=restate
+            )
+
+        return CommandResult(
+            command="instrument market-price",
+            data={
+                "symbol": instrument.symbol,
+                "has_market_price": quoted,
+                "restated": bool(recorded.restated),
+            },
+            warnings=recorded.restated,
             portfolio=ctx.portfolio_name(),
         )
 

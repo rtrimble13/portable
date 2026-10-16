@@ -190,6 +190,10 @@ class Instrument:
     is_active: bool = True
     source: str = "manual"
     provider_ref: str | None = None
+    #: ADR 0028. False for an instrument nothing quotes and nothing ever will
+    #: -- a contingent value right. Valued at zero, at level 5, and the
+    #: snapshot holding it is complete.
+    has_market_price: bool = True
     option: OptionDetail | None = None
     bond: BondDetail | None = None
 

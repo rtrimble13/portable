@@ -34,7 +34,7 @@ from portable_core.domain.models import (
 from portable_core.errors import DataUnavailableError
 from portable_core.persistence.repositories import RemovedSnapshots, Repositories
 from portable_core.services.replay import effective_ledger, over_dates
-from portable_core.services.valuation import Holding, ValuationEngine
+from portable_core.services.valuation import NO_MARKET_PRICE, Holding, ValuationEngine
 
 __all__ = [
     "PriceLookup",
@@ -87,6 +87,10 @@ def build(
     priced: list[SnapshotPrice] = []
     missing: list[str] = []
     for holding in _holdings(repos, account.account_id):
+        if not holding.instrument.has_market_price:
+            # ADR 0028: nothing quotes it, so no price is looked for.
+            priced.append(engine.without_market_price(holding, on))
+            continue
         try:
             priced.append(
                 engine.price_holding(
@@ -351,8 +355,15 @@ def removal_notices(removed: Iterable[RemovedSnapshots], *, dry_run: bool) -> li
 
 
 def _recorded(entries: Iterable[SnapshotPrice]) -> PriceLookup:
-    """Offer a snapshot exactly the prices it recorded, and nothing else."""
-    by_instrument = {entry.instrument_id: entry for entry in entries}
+    """Offer a snapshot exactly the prices it recorded, and nothing else.
+
+    A zero recorded for a holding nothing quotes (ADR 0028) is not a price:
+    offered back as one, it would value a holding that has since become
+    quoted at zero and call the snapshot complete.
+    """
+    by_instrument = {
+        entry.instrument_id: entry for entry in entries if entry.source != NO_MARKET_PRICE
+    }
 
     def lookup(instrument_id: int, on: date) -> Price | None:
         entry = by_instrument.get(instrument_id)

@@ -196,6 +196,16 @@ hierarchy, and recording it as an observable exchange close would understate the
 portfolio's level-5 percentage (`PORT-GIPS-H05`). Pass `--valuation-level 1` when
 it genuinely is a close you are entering by hand.
 
+### No market price at all
+
+Some holdings will never be quoted: a contingent value right, say.
+`pt instrument market-price SYMBOL --none` (or `pt instrument add
+--no-market-price`) marks one. It is then valued at zero as a level-5
+valuation, recorded in the snapshot with the source `none: no observable market
+price`, and the snapshot is complete. A marked instrument takes no price, and
+`pt price load` does not ask for one. The mark is refused for an instrument that
+has ever had a price, because it applies to every date (ADR 0028).
+
 ### Staleness
 
 A price older than the tolerance (default 5 days) is **refused**, exit code 5,

@@ -198,6 +198,7 @@ def to_instrument(
         country=row["country"],
         is_active=to_bool(row["is_active"]),
         source=str(row["source"]),
+        has_market_price=to_bool(row["has_market_price"]),
         provider_ref=row["provider_ref"],
         option=option,
         bond=bond,

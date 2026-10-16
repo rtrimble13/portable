@@ -30,14 +30,19 @@ from datetime import date
 from decimal import Decimal
 
 from portable_core.decimals import money_context, to_text
-from portable_core.domain.models import RealizedGain, ReturnPolicy, TaxRateSchedule
+from portable_core.domain.models import (
+    Instrument,
+    RealizedGain,
+    ReturnPolicy,
+    TaxRateSchedule,
+)
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import E_RESTATES_HISTORY
 from portable_core.persistence.repositories import Repositories
 from portable_core.services import snapshots
 from portable_core.services.replay import ReplayEngine
 
-__all__ = ["Recorded", "record_policy", "record_rate_schedule"]
+__all__ = ["Recorded", "record_market_price", "record_policy", "record_rate_schedule"]
 
 ZERO = Decimal("0.00")
 
@@ -184,6 +189,80 @@ def record_policy(repos: Repositories, policy: ReturnPolicy, *, restate: bool) -
     for snapshot in changed:
         repos.valuations.save_snapshot(snapshot)
     return Recorded(policy_id, (f"restated {change}, keeping the prices they recorded",))
+
+
+def record_market_price(
+    repos: Repositories, instrument: Instrument, *, has_market_price: bool, restate: bool
+) -> Recorded:
+    """Say whether anything quotes *instrument*, restating snapshots when told to.
+
+    ADR 0028. Marking an instrument as having no market price values it at
+    zero, at level 5, on every date, so it is refused for one that has ever
+    had a price: those dates would be revalued at zero too. A stored snapshot
+    holding it changes either way -- it was incomplete and becomes complete,
+    or the reverse -- so, as for a policy, the change is refused unless
+    *restate*, and with it each such snapshot is derived again with the
+    prices it recorded. Snapshots already stale for another reason are left
+    for `pt validate` to name, not restated here.
+
+    Raises:
+        ValidationError: the instrument has prices, or (``PT-E-RESTATES-HISTORY``)
+            the change restates a stored snapshot and *restate* is False.
+    """
+    if instrument.has_market_price == has_market_price:
+        return Recorded(instrument.instrument_id)
+    if not has_market_price:
+        count, first, last = repos.prices.span(instrument.instrument_id)
+        if count:
+            assert first is not None and last is not None
+            raise ValidationError(
+                f"{instrument.symbol} has {count} price(s), {_span(first, last)}; marked "
+                "as having no market price it would be valued at zero on those dates too",
+                remedy=(
+                    "The mark is for an instrument nothing has ever quoted. One that "
+                    "stopped trading is priced until it stops, and its disposal is "
+                    "recorded when it happens."
+                ),
+                symbol=instrument.symbol,
+                prices=count,
+            )
+
+    already = {
+        (s.account_id, s.snapshot_date)
+        for s in snapshots.rederived_differently(repos, date.min)
+    }
+    repos.instruments.set_market_price(instrument.instrument_id, has_market_price)
+    changed = [
+        s
+        for s in snapshots.rederived_differently(repos, date.min)
+        if (s.account_id, s.snapshot_date) not in already
+    ]
+    if not changed:
+        return Recorded(instrument.instrument_id)
+
+    names = {account.account_id: account.name for account in repos.accounts.all()}
+    accounts = sorted({str(names.get(s.account_id)) for s in changed})
+    span = _span(min(s.snapshot_date for s in changed), max(s.snapshot_date for s in changed))
+    noun = "valuation snapshot" if len(changed) == 1 else "valuation snapshots"
+    change = f"{len(changed)} {noun} of {', '.join(accounts)} dated {span}"
+    if not restate:
+        raise ValidationError(
+            f"marking {instrument.symbol} as "
+            f"{'quoted' if has_market_price else 'having no market price'} changes {change}",
+            code=E_RESTATES_HISTORY,
+            remedy=(
+                "Pass --restate to record it and restate them; they keep the prices "
+                "they recorded for everything else."
+            ),
+            symbol=instrument.symbol,
+            snapshots=len(changed),
+        )
+    for snapshot in changed:
+        repos.valuations.save_snapshot(snapshot)
+    return Recorded(
+        instrument.instrument_id,
+        (f"restated {change}, keeping the prices they recorded",),
+    )
 
 
 def _gains(repos: Repositories, account_id: int) -> list[_GainFigures]:

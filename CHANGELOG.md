@@ -16,6 +16,15 @@ Two rules specific to this repository:
 
 ### Added
 
+- **An instrument nothing quotes can be marked so** (ADR 0028, answering
+  ADR 0020 R7). `pt instrument market-price SYMBOL --none`, or `pt instrument
+  add --no-market-price`. A holding of one is valued at zero as a level-5
+  valuation, recorded in the snapshot with that provenance, and the snapshot is
+  complete. Before, one such holding -- the CVR -- left every snapshot of its
+  account incomplete, and so blocked returns for the whole account. Refused for
+  an instrument that has ever had a price; a marked instrument takes no price;
+  changing the mark restates stored snapshots only with `--restate`.
+  `docs/gips-standard.md` `PORT-GIPS-A02` records the level-5 treatment.
 - **`pt position label N "text"`**, and `--clear` (ADR 0027). `position.label`
   existed from the first schema and nothing wrote it. A label is a
   `position_label` ledger row, so it survives every rebuild, can change over a
@@ -233,6 +242,9 @@ Two rules specific to this repository:
 
 ### Schema
 
+- **`schema_version` 6 → 7**, migration `0007_no_market_price` (ADR 0028).
+  Additive: `instrument.has_market_price`, default 1, with a `CHECK`. Every
+  existing instrument stays quoted.
 - **`schema_version` 5 → 6**, migration `0006_position_label` (ADR 0027). A
   rebuild of `"transaction"` (ADR 0019) that admits `txn_type =
   'position_label'` and adds `label`, with `CHECK`s binding both to that type:
