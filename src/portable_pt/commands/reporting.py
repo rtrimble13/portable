@@ -30,7 +30,7 @@ from portable_core.services.reconciliation import (
 from portable_core.services.replay import effective_ledger, state_on
 from portable_core.services.tax import TaxEngine, TaxSummary
 from portable_pt import state
-from portable_pt.commands._shared import dispatch, money_arg, resolve_date
+from portable_pt.commands._shared import dispatch, money_arg, price_line_row, resolve_date
 
 policy_app = typer.Typer(help="Return policy thresholds.", no_args_is_help=True)
 benchmark_app = typer.Typer(help="The benchmark returns are set beside.", no_args_is_help=True)
@@ -829,14 +829,33 @@ def reconcile(
     tolerance: Annotated[
         str, typer.Option("--tolerance", help="Absolute, per line, for quantities and money.")
     ] = "0.01",
+    record: Annotated[
+        bool,
+        typer.Option(
+            "--record",
+            help=(
+                "Store the statement's priced lines as anchors for `pt price check` "
+                "(ADR 0031). Needs an explicit --as-of: the statement's date."
+            ),
+        ),
+    ] = False,
 ) -> None:
-    """Compare holdings and cash against a custodian's statement, per account.
+    """Compare holdings, cash and prices against a custodian's statement, per account.
 
     **The file:** one row per line of the statement. `quantity` plus one of
     `symbol`, `cusip` or `isin`. Optionally `account` -- required once more than
     one account is being reconciled -- and `cash`, marking a row as the cash
     line or a sweep vehicle, whose amount is taken from `market_value` when
     present.
+
+    **The date** is `--as-of`: holdings and cash are compared as they stood at
+    the end of it (ADR 0021), so a year-end statement reconciles against that
+    year-end.
+
+    **Prices:** a position line with a `market_value` is also checked against
+    the price valuation would use on that date, to the cent a unit (ADR 0031).
+    `--record` stores those lines, so that `pt price check` can re-check them
+    whenever prices change and an unresolved one blocks returns from its date.
 
     Cash is compared, not only quantities. It is the only check that catches a
     sign error, a dropped row, or a double-counted transfer: the failures that
@@ -872,16 +891,14 @@ def reconcile(
                 ),
             )
 
-        if state.current_options().as_of is not None:
-            # Reconciliation compares what the portfolio holds *now* against the
-            # statement. Positions as of a past date exist (ADR 0021), but the
-            # reconciliation service has not been built on them, and silently
-            # ignoring the flag would answer a question nobody asked.
+        if record and (against is None or state.current_options().as_of is None):
             raise ValidationError(
-                "`pt reconcile` compares current holdings, so --as-of does not apply",
+                "--record stores a statement's lines under its date, so it needs "
+                "--against and an explicit --as-of",
                 remedy=(
-                    "Drop --as-of and reconcile against a current statement. Reconciling "
-                    "to a past statement is not built yet (ADR 0021, Consequences)."
+                    "Give the statement and its date: `pt reconcile --against "
+                    "STATEMENT.csv --as-of YYYY-MM-DD --record`. A defaulted date would "
+                    "file a year-end statement under today."
                 ),
             )
 
@@ -913,6 +930,7 @@ def reconcile(
 
         service = ReconciliationService(repos)
         breaks: list[str] = []
+        warnings_out: list[str] = []
         data: dict[str, object] = {
             "tolerance": limit,
             "accounts": [target.name for target in targets],
@@ -921,9 +939,24 @@ def reconcile(
 
         if against is not None:
             external = _read_statement(against)
-            outcome = service.reconcile(
-                external, targets, tolerance=limit, cash_override=overrides
+            on = ctx.as_of
+            staleness = int(ctx.config.get("staleness_tolerance_days", 5))
+            if record:
+                with ctx.write():
+                    recorded, changed = service.record(
+                        external, targets, on, source=against.name
+                    )
+                data["recorded"] = recorded
+                data["recorded_changed"] = changed
+            as_of_state = state_on(
+                repos,
+                on,
+                lambda: service.reconcile(
+                    external, targets, tolerance=limit, cash_override=overrides, on=on
+                ),
             )
+            outcome = as_of_state.results[0]
+            priced = service.prices(external, targets, on, staleness_days=staleness)
             table = Table(
                 columns=(
                     Column("account", "Account"),
@@ -934,27 +967,54 @@ def reconcile(
                     Column("difference", "Difference", ColumnKind.QUANTITY),
                     Column("break", "Break", ColumnKind.BOOL),
                 ),
-                rows=tuple(
-                    {
-                        "account": line.account,
-                        "kind": line.kind,
-                        "identifier": line.identifier,
-                        "portable": line.ours,
-                        "custodian": line.theirs,
-                        "difference": line.difference,
-                        "break": line.is_break,
-                    }
-                    for line in outcome.lines
+                rows=(
+                    *(
+                        {
+                            "account": line.account,
+                            "kind": line.kind,
+                            "identifier": line.identifier,
+                            "portable": line.ours,
+                            "custodian": line.theirs,
+                            "difference": line.difference,
+                            "break": line.is_break,
+                        }
+                        for line in outcome.lines
+                    ),
+                    *(
+                        {
+                            "account": line.account,
+                            "kind": f"price ({line.status})",
+                            "identifier": line.symbol,
+                            "portable": line.price,
+                            "custodian": line.stated_price,
+                            "difference": (
+                                line.price - line.stated_price
+                                if line.price is not None and line.stated_price is not None
+                                else None
+                            ),
+                            "break": line.is_unresolved,
+                        }
+                        for line in priced
+                    ),
                 ),
-                title=f"Reconciliation against {against.name}",
+                title=f"Reconciliation against {against.name} as of {on.isoformat()}",
+                footnotes=tuple(
+                    f"{line.account} {line.symbol}: {line.status} -- {line.note}"
+                    for line in priced
+                    if line.note
+                ),
             )
-            data["breaks"] = len(outcome.breaks)
+            data["as_of"] = on.isoformat()
+            data["breaks"] = len(outcome.breaks) + sum(1 for x in priced if x.is_unresolved)
             data["lines"] = len(outcome.lines)
+            data["prices"] = [price_line_row(line) for line in priced]
+            warnings_out.extend(as_of_state.warnings)
             breaks.extend(
                 f"{line.account} {line.kind} {line.identifier}: "
                 f"portable {line.ours} vs custodian {line.theirs}"
                 for line in outcome.breaks
             )
+            breaks.extend(line.describe() for line in priced if line.is_unresolved)
 
         if realized is not None:
             tie = service.tie_realized(_read_closed_lots(realized), targets, tolerance=limit)
@@ -1005,7 +1065,11 @@ def reconcile(
             table = table or tie_table
 
         result = CommandResult(
-            command="reconcile", table=table, data=data, portfolio=ctx.portfolio_name()
+            command="reconcile",
+            table=table,
+            data=data,
+            warnings=tuple(warnings_out),
+            portfolio=ctx.portfolio_name(),
         )
 
         if breaks:
@@ -1019,7 +1083,10 @@ def reconcile(
                     "quantities usually means a sign convention or a transfer counted "
                     "twice. A realized break with the lots agreeing is a basis the "
                     "custodian adjusted without a row -- a distribution reclassified as "
-                    "return of capital is the usual one -- and is yours to record."
+                    "return of capital is the usual one -- and is yours to record. A "
+                    "price break is a price from the wrong day or instrument: load the "
+                    "right one, or, where the custodian's figure is the exception, "
+                    "accept the difference with `pt price accept` and a reason."
                 ),
                 breaks=breaks,
             )
@@ -1096,6 +1163,7 @@ def _read_statement(path: Path) -> list[ExternalHolding]:
 
         # A statement's cash row carries a value and no share count.
         raw = (cleaned.get("market_value") if is_cash else "") or cleaned.get("quantity", "")
+        stated_value = None if is_cash else (cleaned.get("market_value") or None)
         if not raw:
             raise ValidationError(
                 f"{path}:{line_number}: no quantity" + (" or market_value" if is_cash else ""),
@@ -1113,12 +1181,25 @@ def _read_statement(path: Path) -> list[ExternalHolding]:
                 line=line_number,
             ) from exc
 
+        market_value = None
+        if stated_value is not None:
+            try:
+                market_value = from_text(stated_value.replace(",", "").replace("$", ""))
+            except ValueError as exc:
+                raise ValidationError(
+                    f"{path}:{line_number}: market_value {stated_value!r} is not a decimal",
+                    remedy="Amounts are plain decimals; strip any currency formatting.",
+                    path=str(path),
+                    line=line_number,
+                ) from exc
+
         rows.append(
             ExternalHolding(
                 account=cleaned.get("account") or None,
                 identifier=identifier.upper() or "CASH",
                 amount=amount,
                 is_cash_equivalent=is_cash,
+                market_value=market_value,
             )
         )
     return rows

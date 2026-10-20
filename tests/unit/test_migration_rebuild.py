@@ -668,6 +668,40 @@ def test_migration_0007_leaves_every_existing_instrument_quoted(tmp_path: Path) 
     con.close()
 
 
+def test_migration_0008_adds_statement_anchors_and_changes_nothing_else(
+    tmp_path: Path,
+) -> None:
+    """ADR 0031. Additive: two new tables, every existing row untouched."""
+    con = _at(tmp_path / "p.port", 7)
+    _seed(con)
+    before = [tuple(r) for r in con.execute('SELECT * FROM "transaction" ORDER BY txn_id')]
+
+    M._apply(con, next(m for m in M.available_migrations() if m.version == 8))
+
+    assert M.schema_version(con) == 8
+    assert [tuple(r) for r in con.execute('SELECT * FROM "transaction" ORDER BY txn_id')] == (
+        before
+    )
+    con.execute(
+        "INSERT INTO statement_position (account_id, statement_date, instrument_id, "
+        "quantity, market_value, source, created_at) "
+        "VALUES (1, '2024-12-31', 1, '10', '1000.00', 's.csv', 'x')"
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+        con.execute(
+            "INSERT INTO statement_position (account_id, statement_date, instrument_id, "
+            "quantity, market_value, source, created_at) "
+            "VALUES (1, '2024-12-31', 1, '11', '1100.00', 's.csv', 'x')"
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+        con.execute(
+            "INSERT INTO price_acceptance (statement_position_id, quantity, market_value, "
+            "price, price_date, reason, created_at) "
+            "VALUES (1, '10', '1000.00', '99.00', '2024-12-31', '  ', 'x')"
+        )
+    con.close()
+
+
 def test_an_older_file_is_refused_until_it_is_migrated(tmp_path: Path) -> None:
     """PT-E-SCHEMA-TOO-OLD was defined and never raised: a v4 file read by v5
     code failed on its first new column with "No item with that key"."""

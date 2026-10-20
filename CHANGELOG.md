@@ -16,6 +16,16 @@ Two rules specific to this repository:
 
 ### Added
 
+- **Price history is accepted against the custodian's statements** (ADR 0031,
+  answering ADR 0020 R10). `pt reconcile --against STATEMENT --as-of DATE`
+  now reconciles a past statement against the book as it stood that day, and
+  checks each position's price against the statement's market value, to the
+  cent a unit. `--record` keeps the statement's lines; `pt price check`
+  re-checks them whenever prices change and exits 6 on a break or an unpriced
+  line; `pt price accept` records the owner's reason for one disagreement,
+  which holds only while its figures are unchanged. An unresolved line blocks
+  the account's returns from its date, and `pt value` says so.
+
 - **The default benchmark is `Cash (0%)`** (ADR 0030, answering ADR 0020 R8;
   `PORT-GIPS-G02`, `G04`). A date with no benchmark assigned is set beside a
   return of zero, labelled as exactly that: not a Treasury-bill series, and a
@@ -260,6 +270,11 @@ Two rules specific to this repository:
 
 ### Schema
 
+- **`schema_version` 7 → 8**, migration `0008_price_acceptance` (ADR 0031).
+  Additive: `statement_position`, the custodian's stated quantity and market
+  value per account, date and instrument; and `price_acceptance`, a reason for
+  one disagreement with the figures it accepted. Neither is derived; `pt
+  rebuild` leaves both alone and `pt export` carries both.
 - **`schema_version` 6 → 7**, migration `0007_no_market_price` (ADR 0028).
   Additive: `instrument.has_market_price`, default 1, with a `CHECK`. Every
   existing instrument stays quoted.

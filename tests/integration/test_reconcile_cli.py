@@ -172,25 +172,25 @@ def test_cash_without_an_account_is_refused(
     )
 
 
-def test_as_of_is_refused_rather_than_ignored(
+def test_as_of_reconciles_the_book_as_it_stood_on_the_statements_date(
     run_pt: CliRunner, two_accounts: Path, tmp_path: Path
 ) -> None:
-    """Reconcile compares current holdings; accepting --as-of would answer
-    a question nobody asked, against positions as they stand today."""
-    statement = _write(tmp_path / "s.csv", "symbol,quantity\nAAPL,100\n")
-    result = run_pt(
-        "--port",
-        str(two_accounts),
-        "--as-of",
-        "2024-06-01",
-        "reconcile",
-        "--against",
-        str(statement),
-        "--account",
-        "B",
-        expect=4,
+    """ADR 0031. It was refused, because it would have compared today's book.
+
+    Now holdings and cash are read as they stood at the end of the date (ADR
+    0021): before the 2024-01-03 purchase, B held cash and no AAPL.
+    """
+    statement = _write(
+        tmp_path / "s.csv", "symbol,quantity,cash,market_value\nSWEEP,,true,500000.00\n"
     )
-    assert "--as-of does not apply" in result.json()["error"]["message"]
+
+    then = run_pt("--port", str(two_accounts), "--as-of", "2024-01-02", "reconcile",
+                  "--against", str(statement), "--account", "B")  # fmt: skip
+    assert then.data["breaks"] == 0
+
+    now = run_pt("--port", str(two_accounts), "reconcile", "--against", str(statement),
+                 "--account", "B", expect=6)  # fmt: skip
+    assert len(now.json()["error"]["context"]["breaks"]) == 2, "AAPL, and the cash it cost"
 
 
 def test_a_line_with_no_identifier_is_refused(

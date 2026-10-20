@@ -20,17 +20,21 @@ from portable_core.domain.models import (
     Price,
     ValuationSnapshot,
 )
-from portable_core.errors import DataUnavailableError, ValidationError
-from portable_core.errors.kinds import E_PRICE_CONFLICT, E_PRICE_MISSING
+from portable_core.errors import (
+    DataUnavailableError,
+    ReconciliationBreakError,
+    ValidationError,
+)
+from portable_core.errors.kinds import E_PRICE_CONFLICT, E_PRICE_MISSING, E_RECONCILE_BREAK
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.persistence.repositories import Repositories
 from portable_core.providers import FileProvider, as_eod_provider
-from portable_core.services import price_history
+from portable_core.services import price_acceptance, price_history
 from portable_core.services import snapshots as snapshots_service
 from portable_pt import state
-from portable_pt.commands._shared import dispatch, resolve_date
+from portable_pt.commands._shared import dispatch, price_line_row, resolve_date
 
-price_app = typer.Typer(help="Prices: set, load, show.", no_args_is_help=True)
+price_app = typer.Typer(help="Prices: set, load, show, check, accept.", no_args_is_help=True)
 
 ZERO = Decimal("0.00")
 
@@ -456,6 +460,144 @@ def show(
 # ── valuation ────────────────────────────────────────────────────────────────
 
 
+@price_app.command()
+def check(
+    account: Annotated[str | None, typer.Option("--account", "-a")] = None,
+) -> None:
+    """Check every recorded statement line against the prices held now (ADR 0031).
+
+    A line ties when portable's price for the statement's date agrees with
+    the statement's (market value over quantity) to the cent a unit. One
+    that does not, and has no acceptance for these exact figures, is a break;
+    one with no usable price is unpriced. Either blocks the account's returns
+    from that date, and exits 6. Lines are recorded with `pt reconcile
+    --against STATEMENT.csv --as-of DATE --record`.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        target = repos.accounts.resolve(account) if account else None
+        lines = price_acceptance.check_recorded(
+            repos,
+            staleness_days=int(ctx.config.get("staleness_tolerance_days", 5)),
+            account_id=target.account_id if target is not None else None,
+        )
+        if not lines:
+            raise ValidationError(
+                "no statement lines are recorded"
+                + (f" for {target.name}" if target is not None else ""),
+                remedy=(
+                    "Record a statement with `pt reconcile --against STATEMENT.csv "
+                    "--as-of YYYY-MM-DD --record`. An empty check is not a passing one."
+                ),
+            )
+        blocked = price_acceptance.blocked_from(lines)
+        counts = {str(status): 0 for status in price_acceptance.Status}
+        for line in lines:
+            counts[str(line.status)] += 1
+
+        result = CommandResult(
+            command="price check",
+            table=Table(
+                columns=(
+                    Column("account", "Account"),
+                    Column("statement_date", "Statement", ColumnKind.DATE),
+                    Column("symbol", "Symbol"),
+                    Column("quantity", "Quantity", ColumnKind.QUANTITY),
+                    Column("stated_price", "Stated", ColumnKind.PRICE),
+                    Column("price", "portable", ColumnKind.PRICE),
+                    Column("price_date", "Price date", ColumnKind.DATE),
+                    Column("difference", "Difference", ColumnKind.MONEY),
+                    Column("status", "Status"),
+                ),
+                rows=tuple(price_line_row(line) for line in lines),
+                title="Prices against recorded statements",
+                footnotes=(
+                    *(
+                        f"{line.account} {line.symbol} {line.statement_date.isoformat()}: "
+                        f"{line.status} -- {line.note}"
+                        for line in lines
+                        if line.note
+                    ),
+                    "Difference is portable's price times the statement's quantity, less "
+                    "its market value. A line ties within a cent a unit, plus the half "
+                    "cent the statement's rounding accounts for (ADR 0031).",
+                ),
+            ),
+            data={
+                "lines": [price_line_row(line) for line in lines],
+                "counts": counts,
+                "blocked_from": {
+                    name: line.statement_date.isoformat() for name, line in blocked.items()
+                },
+            },
+            portfolio=ctx.portfolio_name(),
+        )
+        if blocked:
+            raise ReconciliationBreakError(
+                f"{counts['break'] + counts['unpriced']} statement line(s) unresolved; "
+                "returns are blocked from "
+                + ", ".join(
+                    f"{name} {line.statement_date.isoformat()}"
+                    for name, line in sorted(blocked.items())
+                ),
+                code=E_RECONCILE_BREAK,
+                remedy=(
+                    "Load or set the right price where portable's is wrong. Where the "
+                    "custodian's figure is the exception -- an evaluated bond price, a "
+                    "different closing print -- accept it with `pt price accept SYMBOL "
+                    "--account A --date D --reason TEXT`."
+                ),
+                breaks=[line.describe() for line in lines if line.is_unresolved],
+            )
+        return result
+
+    dispatch(action)
+
+
+@price_app.command()
+def accept(
+    symbol: Annotated[str, typer.Argument()],
+    account: Annotated[str, typer.Option("--account", "-a")],
+    date_text: Annotated[str, typer.Option("--date", "-d", help="The statement's date.")],
+    reason: Annotated[
+        str, typer.Option("--reason", help="Why the difference is right. Required.")
+    ],
+) -> None:
+    """Accept one statement line's difference from portable's price, with a reason.
+
+    The acceptance holds only while every figure it accepted is unchanged:
+    the statement's quantity and market value, and portable's price and its
+    date. A reloaded price or a re-recorded statement makes the line a break
+    again, to be looked at again (ADR 0031). An unpriced line cannot be
+    accepted: load or set a price first.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        on = resolve_date(date_text, ctx, what="--date")
+        target = repos.accounts.resolve(account)
+        instrument = repos.instruments.resolve(symbol, on=on)
+        with ctx.write():
+            line = price_acceptance.accept(
+                repos,
+                target,
+                instrument,
+                on,
+                reason,
+                staleness_days=int(ctx.config.get("staleness_tolerance_days", 5)),
+            )
+        return CommandResult(
+            command="price accept",
+            data=price_line_row(line),
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
 def _snapshots(
     ctx: CommandContext,
     repos: Repositories,
@@ -514,6 +656,24 @@ def value(
         with ctx.write():
             snapshots, warnings = _snapshots(ctx, repos, accounts, first, last)
             warnings.extend(snapshots_service.store(repos, snapshots))
+
+        # ADR 0031: an unresolved statement line blocks returns from its date.
+        # The snapshots are still valid records of value; returns are what
+        # `pert` refuses, and until it exists this is where it is said.
+        blocked = price_acceptance.blocked_from(
+            price_acceptance.check_recorded(
+                repos, staleness_days=int(ctx.config.get("staleness_tolerance_days", 5))
+            )
+        )
+        for target in accounts:
+            line = blocked.get(target.name)
+            if line is not None and line.statement_date <= last:
+                warnings.append(
+                    f"{target.name}: returns are blocked from "
+                    f"{line.statement_date.isoformat()} -- the statement's {line.symbol} "
+                    f"line is {line.status}. `pt price check` lists it; fix the price or "
+                    "accept the difference with `pt price accept`."
+                )
 
         rows: list[dict[str, object]] = []
         for snapshot in snapshots:

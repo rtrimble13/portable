@@ -50,7 +50,7 @@ REBUILD_MARKER: Final = "-- portable:rebuild"
 #: The schema version this build of `portable` writes and understands. Bumped
 #: by every migration, in the same commit as the migration and its CHANGELOG
 #: entry.
-CURRENT_SCHEMA_VERSION: Final[int] = 7
+CURRENT_SCHEMA_VERSION: Final[int] = 8
 
 #: Checksums of shipped migration texts that were later amended under ADR 0022,
 #: by version, each with the reason. A file that applied one of these is

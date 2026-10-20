@@ -191,6 +191,9 @@ its benchmark by roughly the dividend yield every year, flattering the portfolio
 by 1.5–2% annually, and a defaulted `total_return` is precisely how that happens
 by accident.
 
+The full format, written for the tool that will build the owner's benchmark
+series, is [docs/benchmark-series.md](benchmark-series.md).
+
 ### `NullProvider` — refuses politely
 
 Declares nothing and supplies nothing. Its job is to make a command that needs
@@ -321,6 +324,62 @@ disagreement. Nor is a source correcting its own earlier price, which replaces
 it as a final price replaces a preliminary one (`PORT-GIPS-A09`).
 
 ---
+
+## Accepting price history
+
+[ADR 0031](adr/0031-price-acceptance-against-statements.md). Loading a price
+is one thing; knowing it is the right one is another. The custodian's statement
+says what each position was worth on its date, an anchor independent of every
+provider. A price from the wrong day, the wrong instrument (a reused ticker) or
+the adjusted series disagrees with it.
+
+```bash
+pt --port p.port --as-of 2024-12-31 reconcile --against statement-2024.csv --record
+pt --port p.port price check
+pt --port p.port price accept AAPL -a Brokerage --date 2024-12-31 --reason "…"
+```
+
+**The statement's own date.** `pt reconcile --as-of D` compares holdings and
+cash as they stood at the end of D (ADR 0021), so a year-end statement
+reconciles against that year-end. A position line with a `market_value` also
+checks its price.
+
+**The price, to the cent a unit.** The statement's market value over its
+quantity is the custodian's price. portable's is the one valuation would use on
+that date: the newest on or before it, within the staleness tolerance. They tie
+when
+
+    |portable price × quantity − market value| ≤ $0.01 × quantity + $0.005
+
+which is a cent a unit plus the half cent the statement's rounding of market
+value to the cent accounts for. The statement's quantity is used, so a quantity
+disagreement is not also reported as a price break. The tolerance is fixed:
+`--tolerance` governs quantities and cash, not prices. A percentage of value is
+not used, because on a large position it hides a price from the wrong day.
+
+| Status | Means | Blocks returns |
+|---|---|---|
+| `tied` | agrees to the cent a unit | no |
+| `accepted` | disagrees, and the owner accepted these exact figures with a reason | no |
+| `break` | disagrees | **yes** |
+| `unpriced` | no price on or before the date, or one stale beyond tolerance | **yes** |
+
+**`--record` keeps the lines** (`statement_position`) under the statement's
+date, which must be given explicitly. Whether each one ties is never stored:
+`pt price check` re-decides every recorded line against the prices held now, so
+reloading a price re-checks every anchor it touches. It exits 6 while any line
+is a break or unpriced.
+
+**An acceptance is for one disagreement.** `pt price accept` records the reason
+together with the statement's quantity and market value and portable's price
+and its date. If any of those changes, the line is a break again. An unpriced
+line cannot be accepted: load or set a price first.
+
+**A break blocks returns** for its account from its date until it is fixed or
+accepted. `pert` will refuse returns for any period ending on or after that
+date. Until it exists, `pt value` warns for every account it values from that
+date on. Snapshots are still built and stored: they record what the prices
+were, and the gate decides whether a return may be computed from them.
 
 ## What is not here
 

@@ -285,7 +285,16 @@ Done without a warehouse, because each was needed however R1 resolves:
   building a separate tool to construct benchmark series; bringing its output
   in -- the assignment command and the series import -- waits for it.
 
-Still open: R3's coverage report and R9's calendar, R10 (the acceptance test),
+- **R10, decided by the owner on the recommendations put to them:** anchors
+  are the holdings export and each year-end statement since 2022-05-18; the
+  price is compared to the cent a unit, not by a percentage of value; a break
+  blocks the account's returns from its date until fixed or accepted with a
+  reason; the check lives in `pt reconcile`. Built as
+  [ADR 0031](0031-price-acceptance-against-statements.md). The trade-price
+  check (fills within the day's range; funds at NAV) flags for review and is
+  still to build.
+
+Still open: R3's coverage report and R9's calendar, R10's trade-price check,
 and R8's real benchmark series.
 
 ## Alternatives considered

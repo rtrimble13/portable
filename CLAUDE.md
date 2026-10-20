@@ -386,6 +386,7 @@ test that fails without your change.
   | 0028 | An instrument with no market price is valued at zero, at level 5 |
   | 0029 | Prices through `duk ph`; identity and corporate actions through `mart` |
   | 0030 | The default benchmark is cash at 0%, labelled as such |
+  | 0031 | Price history is accepted against the custodian's stated prices, to the cent |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

@@ -227,10 +227,21 @@ If `duk` is not on `PATH`, set `duk_path` in `~/.portablerc`.
 5. **Value, and check.** Run `pt value --from <cutover> --to <as-of>`. An
    incomplete snapshot names what it could not price: back to step 3. Then
    `pt validate`.
-6. **Acceptance is not defined yet** (ADR 0020 R10 waits on the owner). Until
-   it is, compare `pt holdings --as-of <holdings export date>` market value per
-   position with the custodian's stated values. Report *how many* positions
-   differ, and by which symbols, never the amounts.
+6. **Accept the history against the statements** (ADR 0031). The anchors are
+   the holdings export and each account's year-end statement since 2022; ask
+   the owner for the ones not yet in hand. Convert each to a CSV with
+   `account,symbol,quantity,market_value` (and the `cash` line), kept with the
+   raw exports, then for each:
+   `pt reconcile --against <statement.csv> --as-of <its date> --record`.
+   `pt price check` re-checks every recorded line whenever prices change.
+   - A **price break** is a price from the wrong day or instrument until shown
+     otherwise: look at the price's source and date first, and reload it.
+   - Only the owner accepts a difference, with a reason in their words:
+     `pt price accept SYMBOL -a ACCOUNT --date D --reason "..."`. Propose it
+     with the evidence (an evaluated bond price, a different closing print);
+     never run it for them.
+   - An **unpriced** line needs a price, not an acceptance.
+   Report counts and symbols per status, never the amounts.
 
 ## 8. Report to the owner
 

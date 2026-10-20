@@ -33,10 +33,11 @@ from decimal import Decimal
 
 from portable_core.domain.enums import BasisSource
 from portable_core.domain.import_records import ClosedLotRecord
-from portable_core.domain.models import Account, LotDisposition
+from portable_core.domain.models import Account, Instrument, LotDisposition
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import E_USAGE
 from portable_core.persistence.repositories import Repositories
+from portable_core.services import price_acceptance
 
 __all__ = [
     "ExternalHolding",
@@ -64,6 +65,9 @@ class ExternalHolding:
     #: True for the statement's cash line and for any sweep vehicle it reports
     #: as a position. Both are cash here (ADR 0013).
     is_cash_equivalent: bool = False
+    #: The market value the statement gives a position, when it gives one. The
+    #: price check compares it with portable's price (ADR 0031).
+    market_value: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,8 +155,14 @@ class ReconciliationService:
         *,
         tolerance: Decimal,
         cash_override: Mapping[str, Decimal] | None = None,
+        on: date | None = None,
     ) -> ReconciliationResult:
         """Compare *external* against what *accounts* currently hold.
+
+        Holdings are read from derived state as it stands, so a caller
+        reconciling a past statement runs this inside
+        :func:`~portable_core.services.replay.state_on` for its date, and
+        passes that date as *on* so its tickers resolve as they stood then.
 
         Args:
             external: the statement's lines.
@@ -173,9 +183,93 @@ class ReconciliationService:
         lines: list[ReconciliationLine] = []
         for account in accounts:
             rows = by_account.get(account.name, [])
-            lines.extend(self._positions(account, rows, tolerance))
+            lines.extend(self._positions(account, rows, tolerance, on))
             lines.append(self._cash(account, rows, overrides.get(account.name), tolerance))
         return ReconciliationResult(lines=tuple(lines), tolerance=tolerance)
+
+    # ── prices, against the statement's market values (ADR 0031) ────────────
+
+    def prices(
+        self,
+        external: Sequence[ExternalHolding],
+        accounts: Sequence[Account],
+        on: date,
+        *,
+        staleness_days: int,
+    ) -> list[price_acceptance.PriceLine]:
+        """Each priced statement line against portable's price for *on*.
+
+        Lines for one instrument in one account are summed first, as the
+        quantity comparison sums them. A line portable cannot place is left to
+        the quantity comparison, which already reports it as a break.
+        """
+        lines: list[price_acceptance.PriceLine] = []
+        for account, instrument, quantity, market_value in self._priced(external, accounts, on):
+            lines.append(
+                price_acceptance.check(
+                    self.repos,
+                    account,
+                    instrument,
+                    on,
+                    quantity,
+                    market_value,
+                    staleness_days=staleness_days,
+                    recorded=self.repos.statements.get(
+                        account.account_id, on, instrument.instrument_id
+                    ),
+                )
+            )
+        return lines
+
+    def record(
+        self,
+        external: Sequence[ExternalHolding],
+        accounts: Sequence[Account],
+        on: date,
+        *,
+        source: str,
+    ) -> tuple[int, int]:
+        """Store the statement's priced lines as anchors dated *on*.
+
+        Returns how many lines were recorded and how many of them were new or
+        changed.
+        """
+        recorded = changed = 0
+        for account, instrument, quantity, market_value in self._priced(external, accounts, on):
+            recorded += 1
+            changed += price_acceptance.record(
+                self.repos, account, instrument, on, quantity, market_value, source=source
+            )
+        return recorded, changed
+
+    def _priced(
+        self, external: Sequence[ExternalHolding], accounts: Sequence[Account], on: date
+    ) -> list[tuple[Account, Instrument, Decimal, Decimal]]:
+        by_account = self._attribute(external, accounts)
+        found: list[tuple[Account, Instrument, Decimal, Decimal]] = []
+        for account in accounts:
+            totals: dict[int, tuple[Instrument, Decimal, Decimal]] = {}
+            for row in by_account.get(account.name, []):
+                if row.is_cash_equivalent or row.market_value is None:
+                    continue
+                instrument = self.repos.instruments.find(row.identifier, on=on)
+                if instrument is None:
+                    continue
+                _, quantity, value = totals.get(
+                    instrument.instrument_id, (instrument, ZERO, ZERO)
+                )
+                totals[instrument.instrument_id] = (
+                    instrument,
+                    quantity + row.amount,
+                    value + row.market_value,
+                )
+            found.extend(
+                (account, instrument, quantity, value)
+                for instrument, quantity, value in sorted(
+                    totals.values(), key=lambda t: t[0].symbol
+                )
+            )
+        return found
 
     # ── realized gains, per sale ─────────────────────────────────────────────
 
@@ -350,6 +444,7 @@ class ReconciliationService:
         account: Account,
         rows: Sequence[ExternalHolding],
         tolerance: Decimal,
+        on: date | None = None,
     ) -> list[ReconciliationLine]:
         ours = self._held(account)
         theirs: dict[str, Decimal] = {}
@@ -358,7 +453,7 @@ class ReconciliationService:
                 continue
             # Resolution goes through the same path a trade uses, so a CUSIP or
             # an ISIN on the statement finds the instrument a ticker would.
-            found = self.repos.instruments.find(row.identifier)
+            found = self.repos.instruments.find(row.identifier, on=on)
             key = found.symbol if found is not None else row.identifier.upper()
             theirs[key] = theirs.get(key, ZERO) + row.amount
 

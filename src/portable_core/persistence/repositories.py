@@ -36,9 +36,11 @@ from portable_core.domain.models import (
     Position,
     PositionLeg,
     Price,
+    PriceAcceptance,
     RealizedGain,
     ReturnPolicy,
     SnapshotPrice,
+    StatementPosition,
     TaxRateSchedule,
     Transaction,
     ValuationSnapshot,
@@ -64,6 +66,7 @@ __all__ = [
     "PriceRepository",
     "RemovedSnapshots",
     "Repositories",
+    "StatementRepository",
     "TransactionRepository",
     "ValuationRepository",
 ]
@@ -587,6 +590,89 @@ class CorporateActionRepository(_Repository):
             params.append(instrument_id)
         sql += " ORDER BY ex_date, corporate_action_id"
         return [mappers.to_corporate_action(r) for r in self.con.execute(sql, params)]
+
+
+class StatementRepository(_Repository):
+    """Custodian statement lines, and the acceptances of their disagreements. ADR 0031."""
+
+    def record(self, position: StatementPosition) -> tuple[int, bool]:
+        """Store *position*, replacing the line for its account, date and instrument.
+
+        Returns its id and whether anything changed: a new line, or a stated
+        quantity, market value or source that differs from the one stored.
+        """
+        before = self.get(position.account_id, position.statement_date, position.instrument_id)
+        self.con.execute(
+            "INSERT INTO statement_position (account_id, statement_date, instrument_id, "
+            "quantity, market_value, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(account_id, statement_date, instrument_id) DO UPDATE SET "
+            "quantity = excluded.quantity, market_value = excluded.market_value, "
+            "source = excluded.source",
+            (
+                position.account_id,
+                position.statement_date.isoformat(),
+                position.instrument_id,
+                to_text(position.quantity),
+                to_text(position.market_value),
+                position.source,
+                _now(),
+            ),
+        )
+        after = self.get(position.account_id, position.statement_date, position.instrument_id)
+        assert after is not None
+        changed = before is None or (before.quantity, before.market_value, before.source) != (
+            after.quantity,
+            after.market_value,
+            after.source,
+        )
+        return after.statement_position_id, changed
+
+    def get(
+        self, account_id: int, statement_date: date, instrument_id: int
+    ) -> StatementPosition | None:
+        row = self.con.execute(
+            "SELECT * FROM statement_position WHERE account_id = ? AND statement_date = ? "
+            "AND instrument_id = ?",
+            (account_id, statement_date.isoformat(), instrument_id),
+        ).fetchone()
+        return None if row is None else mappers.to_statement_position(row)
+
+    def all(self, account_id: int | None = None) -> list[StatementPosition]:
+        """Every recorded line, by date, account and instrument."""
+        sql = "SELECT * FROM statement_position"
+        params: list[object] = []
+        if account_id is not None:
+            sql += " WHERE account_id = ?"
+            params.append(account_id)
+        sql += " ORDER BY statement_date, account_id, instrument_id"
+        return [mappers.to_statement_position(r) for r in self.con.execute(sql, params)]
+
+    def accept(self, acceptance: PriceAcceptance) -> int:
+        cursor = self.con.execute(
+            "INSERT INTO price_acceptance (statement_position_id, quantity, market_value, "
+            "price, price_date, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                acceptance.statement_position_id,
+                to_text(acceptance.quantity),
+                to_text(acceptance.market_value),
+                to_text(acceptance.price),
+                acceptance.price_date.isoformat(),
+                acceptance.reason,
+                _now(),
+            ),
+        )
+        return int(cursor.lastrowid or 0)
+
+    def acceptances(self, statement_position_id: int) -> list[PriceAcceptance]:
+        """Every acceptance recorded for one line, oldest first."""
+        return [
+            mappers.to_price_acceptance(r)
+            for r in self.con.execute(
+                "SELECT * FROM price_acceptance WHERE statement_position_id = ? "
+                "ORDER BY price_acceptance_id",
+                (statement_position_id,),
+            )
+        ]
 
 
 class PriceRepository(_Repository):
@@ -1855,6 +1941,7 @@ class Repositories:
         self.valuations = ValuationRepository(con)
         self.policies = PolicyRepository(con)
         self.benchmarks = BenchmarkRepository(con)
+        self.statements = StatementRepository(con)
 
     #: Derived tables, with the column ordering that makes a digest of them
     #: stable, and the surrogate key to exclude from it. Surrogate ids are
@@ -1961,6 +2048,8 @@ class Repositories:
         "instrument_option",
         "instrument_bond",
         "price",
+        "statement_position",
+        "price_acceptance",
         "corporate_action",
         "benchmark",
         "benchmark_component",
