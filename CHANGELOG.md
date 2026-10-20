@@ -16,6 +16,17 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`pt price load --file PATH`** fills what fafnir does not hold from a CSV
+  or JSON price file (ADR 0029, answering ADR 0020 R1). It loads the
+  instruments the file names over the days they were held, the range defaulting
+  to the file's own, and reports file rows it did not load and why.
+- **Two sources disagreeing on a price is refused** (`PT-E-PRICE-CONFLICT`,
+  exit 4). A valuation uses the price written last, so a file price and a
+  warehouse price that differed for one day were settled by the order the
+  commands ran in. `pt price load` now stores nothing for an instrument any of
+  whose prices another source already gives differently, and lists each
+  disagreement; `--on-conflict keep` or `replace` is the person's decision.
+
 - **An instrument nothing quotes can be marked so** (ADR 0028, answering
   ADR 0020 R7). `pt instrument market-price SYMBOL --none`, or `pt instrument
   add --no-market-price`. A holding of one is valued at zero as a level-5
@@ -337,6 +348,13 @@ Two rules specific to this repository:
   built from the example fixture should be re-extracted.
 
 ### Fixed
+
+- **A JSON price, action or benchmark file lost digits past a float's
+  precision.** `FileProvider` parsed JSON numbers as floats and then took
+  their text: `150.12345678901234567` was stored as `150.12345678901235`.
+  Numbers are now read as decimals from their text (`CLAUDE.md` invariant 1).
+- **A price file's `source` column was documented as recorded and was
+  ignored.** It is now the price's `provider_ref`.
 
 - **Commands left the portfolio open.** No command closed the connection it
   opened. A process exiting closes it, so nothing failed on Python 3.11 or

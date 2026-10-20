@@ -153,7 +153,7 @@ the tool fully.
 | `symbol` | ✓ | |
 | `date` | ✓ | `YYYY-MM-DD` |
 | `price` | ✓ | A plain decimal. Never a float literal. |
-| `source` | | Recorded on the price, and ends up in the audit trail |
+| `source` | | Where the figure came from (a statement, a fund's site). Recorded as the price's `provider_ref` (`PORT-GIPS-J03`) |
 | `valuation_level` | | 1–5, the GIPS hierarchy. Default 1. |
 | `valuation_basis` | | `exchange_close` \| `model` \| `estimate` \| `manual` |
 | `is_estimate` | | Preliminary values are flagged (`PORT-GIPS-A09`) |
@@ -165,7 +165,8 @@ AAPL,2025-06-30,205.17,broker-statement,1
 ```
 
 A missing column fails **on the file, naming the line** — not four commands
-later on a valuation.
+later on a valuation. In JSON, a price may be written as a number: it is read
+from its text as a decimal, never through a float.
 
 **Corporate actions** — CSV or JSON, requiring `symbol`, `action_type`,
 `ex_date`; optionally `pay_date`, `record_date`, `split_numerator`,
@@ -285,6 +286,39 @@ What fails, and how: a symbol the provider has no data for is a warning, and the
 run goes on. A provider that cannot be reached -- or that cannot do what was
 asked -- is a failure, exit 5, once, rather than a warning per symbol. A run that
 loaded nothing at all is a failure too.
+
+### Filling what fafnir does not hold
+
+Not every price is in the warehouse: a mutual fund outside its universe, a
+security with no identifier `duk` can be asked by (ADR 0029). Those come from
+a price file in the schema above:
+
+```bash
+pt --port p.port price load --file fund-navs.csv
+```
+
+`--file` loads from that file instead of the configured provider, whatever
+`-S` says. It loads **the instruments the file names, over the days they were
+held**, and the range defaults to the file's first and last dates. An
+instrument the file does not name is not reported missing from it. What the
+file holds and was not loaded is reported: a ticker not held under that name in
+the range (a typo, or the name it had before a rename), and rows dated outside
+the days their instrument was held.
+
+**Two sources disagreeing is refused.** The cache keeps one price per source
+per day, and a valuation uses the one written last. So a file price and a
+warehouse price that differ for the same day would be settled by the order the
+commands ran in. Instead, `pt price load`, from a file or a provider, refuses
+an instrument any of whose prices differs from one another source already gave
+for that day. It stores nothing for that instrument, loads the rest, and exits
+4 with `PT-E-PRICE-CONFLICT`, listing every disagreement. A person decides:
+
+- `--on-conflict keep` leaves the stored prices and loads the rest;
+- `--on-conflict replace` stores the new ones, which valuations then use.
+
+The same number from two sources (`189.12` and `189.120000`) is not a
+disagreement. Nor is a source correcting its own earlier price, which replaces
+it as a final price replaces a preliminary one (`PORT-GIPS-A09`).
 
 ---
 

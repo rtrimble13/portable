@@ -13,7 +13,8 @@ halves of that question come from the portfolio, not from the provider:
   days before it, when that ticker named nothing -- or named someone else.
 
 The provider then resolves each ticker as of each day (ADR 0006); this module
-decides only what to ask.
+decides what to ask, and whether an answer may be stored beside what another
+source already said (:func:`conflicts`).
 """
 
 from __future__ import annotations
@@ -21,15 +22,20 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
+from enum import StrEnum
 
-from portable_core.domain.models import Instrument
+from portable_core.decimals import to_text
+from portable_core.domain.models import Instrument, Price
 from portable_core.errors import ValidationError
 from portable_core.persistence.repositories import Repositories
 from portable_core.services.replay import effective_ledger, over_dates
 
 __all__ = [
+    "Conflict",
+    "OnConflict",
     "PriceRequest",
     "Span",
+    "conflicts",
     "differences",
     "held_spans",
     "lookups_when_last_held",
@@ -61,6 +67,64 @@ class PriceRequest:
     #: is wrong when a lead-in has no prices; the instrument may not have
     #: existed yet.
     lead_in: bool = False
+
+
+class OnConflict(StrEnum):
+    """What to do with a price another source already disagrees with."""
+
+    #: Store nothing of that request, and fail the command (the default).
+    REFUSE = "refuse"
+    #: Keep the stored price; store the rest of the request.
+    KEEP = "keep"
+    #: Store the new price beside the old. It is newer, so valuations use it.
+    REPLACE = "replace"
+
+
+@dataclass(frozen=True, slots=True)
+class Conflict:
+    """Two sources' prices for one instrument on one day, which differ."""
+
+    symbol: str
+    stored: Price
+    offered: Price
+
+    def describe(self) -> str:
+        return (
+            f"{self.symbol} {self.offered.price_date.isoformat()}: {self.stored.source} "
+            f"has {to_text(self.stored.price)}, {self.offered.source} has "
+            f"{to_text(self.offered.price)}"
+        )
+
+
+def conflicts(
+    repos: Repositories, symbol: str, instrument_id: int, offered: Sequence[Price]
+) -> list[Conflict]:
+    """The prices in *offered* that a different source already prices differently.
+
+    The price cache keeps one price per source per day, and a valuation uses
+    the one written last. Without this check, two sources that disagree -- the
+    warehouse and a file filling its gaps -- would be settled by the order the
+    commands happened to run in, with nothing to say a choice was made
+    (`CLAUDE.md` invariant 9). Prices are compared as numbers, so ``189.12``
+    and ``189.120000`` agree. A new price from the *same* source replaces its
+    old one, as a final price replaces a preliminary one (``PORT-GIPS-A09``),
+    and is not a conflict.
+    """
+    if not offered:
+        return []
+    stored: dict[date, list[Price]] = {}
+    for price in repos.prices.series(
+        instrument_id,
+        min(p.price_date for p in offered),
+        max(p.price_date for p in offered),
+    ):
+        stored.setdefault(price.price_date, []).append(price)
+    return [
+        Conflict(symbol, held, price)
+        for price in offered
+        for held in stored.get(price.price_date, ())
+        if held.source != price.source and held.price != price.price
+    ]
 
 
 def held_spans(

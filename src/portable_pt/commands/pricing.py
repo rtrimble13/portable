@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from itertools import groupby
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -19,10 +21,10 @@ from portable_core.domain.models import (
     ValuationSnapshot,
 )
 from portable_core.errors import DataUnavailableError, ValidationError
-from portable_core.errors.kinds import E_PRICE_MISSING
+from portable_core.errors.kinds import E_PRICE_CONFLICT, E_PRICE_MISSING
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.persistence.repositories import Repositories
-from portable_core.providers import as_eod_provider
+from portable_core.providers import FileProvider, as_eod_provider
 from portable_core.services import price_history
 from portable_core.services import snapshots as snapshots_service
 from portable_pt import state
@@ -129,8 +131,30 @@ def load(
     ] = None,
     start: Annotated[str | None, typer.Option("--from")] = None,
     end: Annotated[str | None, typer.Option("--to")] = None,
+    price_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--file",
+            help=(
+                "Load from this CSV or JSON price file instead of the market data "
+                "provider: the instruments it names, over the days they were held. "
+                "--from/--to default to the first and last date in the file."
+            ),
+        ),
+    ] = None,
+    on_conflict: Annotated[
+        price_history.OnConflict,
+        typer.Option(
+            "--on-conflict",
+            help=(
+                "When another source already has a different price for the same day: "
+                "refuse (store nothing for that instrument and fail), keep the stored "
+                "price, or replace it with this one."
+            ),
+        ),
+    ] = price_history.OnConflict.REFUSE,
 ) -> None:
-    """Load prices from the market data provider into the portfolio's cache.
+    """Load prices from the market data provider, or a file, into the portfolio's cache.
 
     With no symbols, each instrument any account held in the range is loaded
     over the days it was held -- read from the ledger, so a position sold
@@ -138,6 +162,12 @@ def load(
     stretch is preceded by a few days, the staleness tolerance, so a stretch
     that begins on a non-trading day can be valued from the previous close.
     Each day is asked for under the ticker the instrument carried that day.
+
+    ``--file`` fills what the provider does not hold, from a price file in the
+    documented schema (docs/market-data.md). A price that disagrees with one
+    another source already gave for the same day is refused unless
+    ``--on-conflict`` says which wins: otherwise the valuation would use
+    whichever command ran last (ADR 0029).
 
     Every price is stored with its source, as-of timestamp, valuation level,
     and estimate flag, so a valuation built from it can be traced back to the
@@ -148,11 +178,29 @@ def load(
     def action() -> CommandResult:
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
-        provider = ctx.provider()
+        from_file = FileProvider(price_file=price_file) if price_file is not None else None
+        provider = from_file if from_file is not None else ctx.provider()
         prices_from = as_eod_provider(provider)
+        in_file = from_file.price_symbols() if from_file is not None else {}
+        if from_file is not None and not in_file:
+            raise ValidationError(
+                f"{price_file} holds no prices",
+                remedy="See docs/market-data.md for the price file schema.",
+                path=str(price_file),
+            )
 
-        first = resolve_date(start, ctx, what="--from") if start else ctx.as_of
-        last = resolve_date(end, ctx, what="--to") if end else ctx.as_of
+        if start:
+            first = resolve_date(start, ctx, what="--from")
+        elif in_file:
+            first = min(f for _, f, _ in in_file.values())
+        else:
+            first = ctx.as_of
+        if end:
+            last = resolve_date(end, ctx, what="--to")
+        elif in_file:
+            last = max(t for _, _, t in in_file.values())
+        else:
+            last = ctx.as_of
         if last < first:
             raise ValidationError(
                 f"--to {last.isoformat()} precedes --from {first.isoformat()}",
@@ -172,6 +220,10 @@ def load(
                 lead_in_days=int(ctx.config.get("staleness_tolerance_days", 5)),
             )
             warnings.extend(replay_warnings)
+            if from_file is not None:
+                # A file fills gaps: an instrument it does not mention is not
+                # missing from it.
+                requests = [r for r in requests if r.symbol.upper() in in_file]
 
         # ADR 0028: nothing quotes these, so nothing is asked for them.
         unquoted = sorted({r.symbol for r in requests if not r.instrument.has_market_price})
@@ -184,36 +236,90 @@ def load(
         loaded: list[dict[str, object]] = []
         missing: list[str] = []
         lead_ins_missing: list[str] = []
-        for request in requests:
-            try:
-                prices = prices_from.eod_prices(request.symbol, request.start, request.end)
-            except DataUnavailableError as exc:
-                # "No data for this symbol here" is an answer about one symbol
-                # and the run goes on. Anything else -- the provider is down,
-                # or cannot do this -- is an answer about every symbol, and is
-                # raised rather than repeated as a warning per row.
-                if exc.code != E_PRICE_MISSING:
-                    raise
-                span = f"{request.start.isoformat()}..{request.end.isoformat()}"
-                if request.lead_in:
-                    lead_ins_missing.append(f"{request.symbol} {span}")
-                else:
-                    missing.append(f"{request.symbol} {span}: {exc.message}")
-                continue
-
-            with ctx.write():
-                for price in prices:
-                    repos.prices.add(
-                        replace(price, instrument_id=request.instrument.instrument_id)
+        refused: list[price_history.Conflict] = []
+        settled: list[price_history.Conflict] = []
+        stored_from_file: dict[str, int] = {}
+        kept_rows = 0
+        # One instrument at a time: its requests are fetched, checked against
+        # what other sources already said, and only then written, so a refusal
+        # leaves nothing of that instrument stored.
+        for _, group in groupby(requests, key=lambda r: r.instrument.instrument_id):
+            answers: list[tuple[price_history.PriceRequest, list[Price]]] = []
+            for request in group:
+                try:
+                    answers.append(
+                        (
+                            request,
+                            prices_from.eod_prices(request.symbol, request.start, request.end),
+                        )
                     )
-            loaded.append(
-                {
-                    "symbol": request.symbol,
-                    "prices": len(prices),
-                    "first": prices[0].price_date.isoformat(),
-                    "last": prices[-1].price_date.isoformat(),
-                    "source": prices[0].source,
-                }
+                except DataUnavailableError as exc:
+                    # "No data for this symbol here" is an answer about one
+                    # symbol and the run goes on. Anything else -- the provider
+                    # is down, or cannot do this -- is an answer about every
+                    # symbol, and is raised rather than repeated per row.
+                    if exc.code != E_PRICE_MISSING:
+                        raise
+                    span = f"{request.start.isoformat()}..{request.end.isoformat()}"
+                    if request.lead_in:
+                        lead_ins_missing.append(f"{request.symbol} {span}")
+                    else:
+                        missing.append(f"{request.symbol} {span}: {exc.message}")
+
+            clashes = [
+                clash
+                for request, prices in answers
+                for clash in price_history.conflicts(
+                    repos, request.symbol, request.instrument.instrument_id, prices
+                )
+            ]
+            if clashes and on_conflict is price_history.OnConflict.REFUSE:
+                refused.extend(clashes)
+                continue
+            settled.extend(clashes)
+            kept = (
+                {c.offered.price_date for c in clashes}
+                if on_conflict is price_history.OnConflict.KEEP
+                else set()
+            )
+            kept_rows += len(kept)
+
+            for request, fetched in answers:
+                prices = [p for p in fetched if p.price_date not in kept]
+                if not prices:
+                    continue
+                with ctx.write():
+                    for price in prices:
+                        repos.prices.add(
+                            replace(price, instrument_id=request.instrument.instrument_id)
+                        )
+                key = request.symbol.upper()
+                stored_from_file[key] = stored_from_file.get(key, 0) + len(prices)
+                loaded.append(
+                    {
+                        "symbol": request.symbol,
+                        "prices": len(prices),
+                        "first": prices[0].price_date.isoformat(),
+                        "last": prices[-1].price_date.isoformat(),
+                        "source": prices[0].source,
+                    }
+                )
+
+        if refused:
+            instruments = sorted({c.symbol for c in refused})
+            raise ValidationError(
+                f"{len(refused)} price(s) for {', '.join(instruments)} differ from the "
+                "price another source already gave for the same day; nothing was stored "
+                f"for {'that instrument' if len(instruments) == 1 else 'those instruments'}"
+                + (f"; {len(loaded)} request(s) for others were loaded" if loaded else ""),
+                code=E_PRICE_CONFLICT,
+                remedy=(
+                    "Decide which is right. Correct the file if it is wrong; otherwise "
+                    "pass --on-conflict keep to leave the stored prices and load the "
+                    "rest, or --on-conflict replace to value from these instead."
+                ),
+                conflicts=[c.describe() for c in refused],
+                loaded=len(loaded),
             )
 
         wanted = [r for r in requests if not r.lead_in]
@@ -224,7 +330,7 @@ def load(
                 code=E_PRICE_MISSING,
                 remedy=(
                     "Check the symbols and the range, or supply the prices with "
-                    "`--source file`."
+                    "`pt price load --file PATH`."
                 ),
                 provider=provider.name,
                 problems=missing,
@@ -236,6 +342,37 @@ def load(
                 "before they began, so a first day that is not a trading day cannot be "
                 "valued from a previous close: " + "; ".join(lead_ins_missing)
             )
+        if settled:
+            verb = "kept" if on_conflict is price_history.OnConflict.KEEP else "replaced"
+            warnings.append(
+                f"{len(settled)} stored price(s) from another source {verb}: "
+                + "; ".join(c.describe() for c in settled)
+            )
+        if from_file is not None:
+            asked = {r.symbol.upper() for r in requests}
+            unasked = sorted(set(in_file) - asked)
+            if unasked:
+                why = (
+                    "not asked for"
+                    if symbols
+                    else f"not held in {first.isoformat()}..{last.isoformat()} under "
+                    "that ticker"
+                )
+                warnings.append(f"in {price_file} but not loaded, {why}: {', '.join(unasked)}")
+            outside = (
+                sum(rows for symbol, (rows, _, _) in in_file.items() if symbol in asked)
+                - sum(stored_from_file.values())
+                - kept_rows
+            )
+            if outside > 0:
+                warnings.append(
+                    f"{outside} row(s) of {price_file} were not loaded: they fall outside "
+                    + (
+                        "the range asked for"
+                        if symbols
+                        else "the days their instrument was held"
+                    )
+                )
 
         result = CommandResult(
             command="price load",
