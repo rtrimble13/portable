@@ -580,7 +580,7 @@ def test_corporate_actions_follow_the_ticker_through_its_history(
 def test_a_warehouse_without_the_corporate_action_view_says_which_migration_adds_it(
     warehouse: _Warehouse, fafnir: FafnirProvider
 ) -> None:
-    """Until the owner applies ADR 0029's draft, fafnir has no such view."""
+    """A warehouse not yet migrated to fafnir 0033 has no such view."""
     warehouse.db.execute("DROP TABLE mart.v_corporate_action")
     warehouse.security(1, "XYZ")
     warehouse.ticker("XYZ", 1)
@@ -588,7 +588,7 @@ def test_a_warehouse_without_the_corporate_action_view_says_which_migration_adds
     with pytest.raises(DataUnavailableError, match=r"mart\.v_corporate_action") as refused:
         fafnir.corporate_actions("XYZ", date(2024, 1, 1), date(2024, 12, 31))
     assert refused.value.code == "PT-E-PROVIDER-UNAVAILABLE"
-    assert "ADR 0029" in (refused.value.remedy or "")
+    assert "fafnir migration 0033" in (refused.value.remedy or "")
     assert warehouse.rollbacks == 1, "psycopg leaves the transaction aborted"
 
 

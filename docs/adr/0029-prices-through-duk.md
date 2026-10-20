@@ -1,6 +1,6 @@
 # ADR 0029 — Prices through `duk ph`; identity and corporate actions through `mart`
 
-- **Status:** Accepted — implemented in `providers/fafnir.py`. The fafnir view it reads for corporate actions is drafted below and is not yet in fafnir: [rtrimble13/fafnir#174](https://github.com/rtrimble13/fafnir/issues/174)
+- **Status:** Accepted — implemented in `providers/fafnir.py`. The fafnir view it reads for corporate actions is fafnir migration 0033 ([rtrimble13/fafnir#175](https://github.com/rtrimble13/fafnir/pull/175)), which a warehouse has once it is migrated
 - **Date:** 2026-10-20
 - **Milestone:** v0.2
 - **Governs:** `CLAUDE.md` invariants 1, 6, 9; `PORT-GIPS-A01`, `PORT-GIPS-J03`
@@ -111,13 +111,13 @@ an `Error:` line (the warehouse or the role).
 |---|---|
 | Symbol history | `mart.v_symbol_lookup` |
 | Security master, identifiers | `mart.v_security_profile` (`primary_symbol` is exposed as `symbol`) |
-| Splits and cash dividends | `mart.v_corporate_action` — **drafted below; not yet in fafnir** |
+| Splits and cash dividends | `mart.v_corporate_action` — fafnir migration 0033 (see the appendix) |
 | Trading calendar | `ref.trading_calendar` |
 
 No query names `core`. A test runs every query against a fake warehouse that
 has no `core` schema. A query that meets `undefined_table` or
 `insufficient_privilege` is refused by name, with a remedy. For the corporate
-action view, the remedy points to this ADR.
+action view, the remedy names the migration that adds it.
 
 ### 5. One warehouse
 
@@ -157,8 +157,9 @@ eod_prices" would send the owner to the warehouse.
   expected.
 - **One `duk` process per segment.** That is about one per instrument: a few
   minutes for this portfolio's ~150 instruments, once.
-- **`pt ca sync -S fafnir` refuses until fafnir has `mart.v_corporate_action`.**
-  The refusal names the view and this ADR. Until then, actions come from
+- **`pt ca sync -S fafnir` refuses on a warehouse without
+  `mart.v_corporate_action`**, i.e. one not yet migrated to fafnir 0033. The
+  refusal names the view and the migration. Until then, actions come from
   `--source file`.
 - **`psycopg` is still required** for the identity reads, and `duk` now is
   too, for prices.
@@ -180,38 +181,19 @@ eod_prices" would send the owner to the warehouse.
 - **`duk -S live` for what the warehouse lacks.** Rejected: a vendor snapshot
   that moves is not reproducible, and the owner named files as the gap-filler.
 
-## Appendix — the fafnir migration this ADR reads
+## Appendix — the fafnir view this ADR reads
 
-Tracked in fafnir as [rtrimble13/fafnir#174](https://github.com/rtrimble13/fafnir/issues/174),
-which carries the draft below and fafnir's own acceptance criteria. It takes
-fafnir's next free migration number at merge time (`NNNN`; 0029–0032 are
-taken as of fafnir v1.8.0). It follows migration 0020's pattern exactly: a
-definer-rights view in `mart`, `SELECT` granted by 0001's default privileges.
-fafnir's privilege test and data dictionary gain the view in the same change.
+Proposed in [rtrimble13/fafnir#174](https://github.com/rtrimble13/fafnir/issues/174)
+and merged as fafnir migration `sql/migrations/0033_corporate_action_mart.up.sql`
+([rtrimble13/fafnir#175](https://github.com/rtrimble13/fafnir/pull/175)). It
+follows fafnir migration 0020's pattern: a definer-rights view in `mart`, with
+`SELECT` granted by fafnir 0001's default privileges. fafnir's tests assert that
+it returns `core.corporate_action`'s rows exactly, with the amounts as
+`NUMERIC(20, 6)`, and that `fafnir_app` reads it but not the table beneath.
 
-`sql/migrations/NNNN_corporate_action_mart.up.sql`:
+The view, which is the contract this adapter's query depends on:
 
 ```sql
--- NNNN_corporate_action_mart.up.sql
--- mart.v_corporate_action -- splits and cash dividends, one row per event.
---
--- portable (rtrimble13/portable, its ADR 0029) syncs corporate actions as a
--- fafnir_app role, which has no USAGE on core (ADR 0008). It read
--- core.corporate_action and failed over the tunnel with `permission denied for
--- schema core`, as duk's resolution did before 0020. This is 0020's answer
--- again: a definer-rights view in mart.
---
--- At event grain, deliberately: mart.v_security_action_summary aggregates and
--- cannot say which dividends went ex between two dates. Lineage
--- (ingestion_run_id, loaded_at) is left out, as in mart.v_daily_price_raw.
--- `source` stays: that an operator wrote a row (0025) is a fact about the data,
--- not about a load.
---
--- Do NOT set security_invoker (ADR 0009). SELECT comes from the default
--- privileges 0001 set on mart.
-
-BEGIN;
-
 CREATE OR REPLACE VIEW mart.v_corporate_action AS
 SELECT
     ca.corporate_action_id,
@@ -227,23 +209,7 @@ SELECT
     ca.currency,
     ca.source
 FROM core.corporate_action ca;
-
-COMMENT ON VIEW mart.v_corporate_action IS
-    'Split and cash-dividend events at (security_id, action_type, ex_date) grain. '
-    'Passthrough of core.corporate_action without load lineage.';
-
-COMMIT;
 ```
 
-`sql/migrations/NNNN_corporate_action_mart.down.sql`:
-
-```sql
--- NNNN_corporate_action_mart.down.sql
--- A view only: no data is lost. portable's `pt ca sync -S fafnir` stops working.
-
-BEGIN;
-
-DROP VIEW IF EXISTS mart.v_corporate_action;
-
-COMMIT;
-```
+A warehouse has it once its operator runs `fafnir db migrate` after deploying a
+fafnir release that carries 0033 (fafnir `doc/releasing.md`).

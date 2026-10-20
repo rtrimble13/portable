@@ -294,8 +294,9 @@ Two rules specific to this repository:
   cannot answer for another issuer, and read back from duk's float output to
   the warehouse's six places exactly -- or refused. Symbol history, the
   security master and corporate actions are read from `mart` views over the
-  same DSN, which duk is given too. Corporate actions need a fafnir view that
-  does not exist yet; ADR 0029 drafts the migration, and until it is applied
+  same DSN, which duk is given too. Corporate actions need
+  `mart.v_corporate_action`, added by fafnir migration 0033
+  (rtrimble13/fafnir#175); on a warehouse not yet migrated to it,
   `pt ca sync -S fafnir` says so. Prices are recorded with source
   `fafnir:duk ph`; `provider_ref` no longer carries the ingestion run, which
   `mart` does not expose.

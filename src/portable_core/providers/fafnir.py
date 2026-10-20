@@ -84,7 +84,7 @@ SCHEMA: Final[dict[str, str]] = {
     "security": "mart.v_security_profile",
     # A passthrough of core.symbol_xref: the ticker history, not a resolver.
     "symbol_xref": "mart.v_symbol_lookup",
-    # Not in fafnir until the owner applies the migration drafted in ADR 0029.
+    # fafnir migration 0033: a warehouse not yet migrated to it refuses by name.
     "corporate_action": "mart.v_corporate_action",
     "trading_calendar": "ref.trading_calendar",
 }
@@ -276,9 +276,10 @@ class FafnirProvider(MarketDataProvider):
                 f"the fafnir warehouse has no {relation} this role can read",
                 code=E_PROVIDER_UNAVAILABLE,
                 remedy=(
-                    "fafnir does not have mart.v_corporate_action yet "
-                    "(rtrimble13/fafnir#174, drafted in portable's ADR 0029). Until it "
-                    "is applied, supply actions with `--source file`."
+                    "mart.v_corporate_action arrives with fafnir migration 0033 "
+                    "(ADR 0029): run `fafnir db migrate` on the warehouse host after "
+                    "deploying a fafnir that carries it. Until then, supply actions "
+                    "with `--source file`."
                     if relation == SCHEMA["corporate_action"]
                     else "portable reads fafnir's mart and ref schemas only. Check the "
                     "warehouse is at fafnir migration 0020 or later and the role is a "
@@ -614,10 +615,10 @@ class FafnirProvider(MarketDataProvider):
     ) -> list[CorporateActionRecord]:
         """Splits and cash dividends -- which is what fafnir carries.
 
-        Read from ``mart.v_corporate_action``, which fafnir does not have until
-        the owner applies the migration drafted in ADR 0029; until then this
-        refuses, naming it. Spinoffs, mergers, symbol changes, and delistings
-        are **not** fafnir corporate actions. `pt ca sync` says so rather than
+        Read from ``mart.v_corporate_action``, fafnir migration 0033; a
+        warehouse not yet migrated to it is refused, naming it (ADR 0029).
+        Spinoffs, mergers, symbol changes, and delistings are **not** fafnir
+        corporate actions. `pt ca sync` says so rather than
         implying the list is complete, because a silent omission here is a
         missing basis adjustment.
         """

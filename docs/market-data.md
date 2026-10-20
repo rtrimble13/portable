@@ -48,7 +48,7 @@ fafnir change is a one-file change here.
 | Security master | `mart.v_security_profile` |
 | Symbol resolution **as of a date** | `mart.v_symbol_lookup` |
 | End-of-day prices | `duk -S db ph <identifier> --close --json --precision 6` — **unadjusted** |
-| Splits and cash dividends | `mart.v_corporate_action` — not yet in fafnir: [rtrimble13/fafnir#174](https://github.com/rtrimble13/fafnir/issues/174) |
+| Splits and cash dividends | `mart.v_corporate_action` — fafnir migration 0033 ([rtrimble13/fafnir#175](https://github.com/rtrimble13/fafnir/pull/175)) |
 | Risk-free rate | `duk -S live yc`, for the date asked |
 
 **`mart` and `ref` only, never `core`.** Over an SSH tunnel the owner connects
