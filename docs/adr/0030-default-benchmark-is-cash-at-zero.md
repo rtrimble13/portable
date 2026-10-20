@@ -57,8 +57,8 @@ assignment (`benchmark`, `portfolio_benchmark`). Nothing wrote or read them.
 - **Assigning a benchmark has no command yet.** The repository can store an
   assignment (`BenchmarkRepository.assign`) and the resolver reads it. The
   command that writes one, and the import of a series's levels, wait for the
-  owner's benchmark tool, so that its output format decides them rather than
-  a guess.
+  owner's benchmark tool. The format that tool should write is
+  [docs/benchmark-series.md](../benchmark-series.md).
 - **Still open from `PORT-GIPS-G04`:** how long each disclosure stays in a
   report: a prospective change for as long as the prior benchmark's returns
   are shown, a retroactive one for at least a year. That depends on the report
