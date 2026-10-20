@@ -221,8 +221,8 @@ If `duk` is not on `PATH`, set `duk_path` in `~/.portablerc`.
      decision, offered, never taken for them.
 4. **Corporate actions.** `pt -S fafnir ca sync --from <cutover>` lists what
    fafnir records against what the ledger does. It needs
-   `mart.v_corporate_action`, which ADR 0029 drafts for fafnir. Until the
-   owner applies it, the refusal names it; say so and move on.
+   `mart.v_corporate_action`, rtrimble13/fafnir#174. Until that is merged and
+   migrated, the refusal names it; say so and move on.
 5. **Value, and check.** Run `pt value --from <cutover> --to <as-of>`. An
    incomplete snapshot names what it could not price: back to step 3. Then
    `pt validate`.

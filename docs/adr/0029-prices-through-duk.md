@@ -1,6 +1,6 @@
 # ADR 0029 — Prices through `duk ph`; identity and corporate actions through `mart`
 
-- **Status:** Accepted — implemented in `providers/fafnir.py`. The fafnir view it reads for corporate actions is drafted below and is not yet in fafnir
+- **Status:** Accepted — implemented in `providers/fafnir.py`. The fafnir view it reads for corporate actions is drafted below and is not yet in fafnir: [rtrimble13/fafnir#174](https://github.com/rtrimble13/fafnir/issues/174)
 - **Date:** 2026-10-20
 - **Milestone:** v0.2
 - **Governs:** `CLAUDE.md` invariants 1, 6, 9; `PORT-GIPS-A01`, `PORT-GIPS-J03`
@@ -182,15 +182,17 @@ eod_prices" would send the owner to the warehouse.
 
 ## Appendix — the fafnir migration this ADR reads
 
-For the owner to apply in fafnir as its next migration. It follows migration
-0020's pattern exactly: a definer-rights view in `mart`, `SELECT` granted by
-0001's default privileges. fafnir's privilege test and data dictionary should
-gain the view in the same change.
+Tracked in fafnir as [rtrimble13/fafnir#174](https://github.com/rtrimble13/fafnir/issues/174),
+which carries the draft below and fafnir's own acceptance criteria. It takes
+fafnir's next free migration number at merge time (`NNNN`; 0029–0032 are
+taken as of fafnir v1.8.0). It follows migration 0020's pattern exactly: a
+definer-rights view in `mart`, `SELECT` granted by 0001's default privileges.
+fafnir's privilege test and data dictionary gain the view in the same change.
 
-`sql/migrations/0029_corporate_action_mart.up.sql`:
+`sql/migrations/NNNN_corporate_action_mart.up.sql`:
 
 ```sql
--- 0029_corporate_action_mart.up.sql
+-- NNNN_corporate_action_mart.up.sql
 -- mart.v_corporate_action -- splits and cash dividends, one row per event.
 --
 -- portable (rtrimble13/portable, its ADR 0029) syncs corporate actions as a
@@ -233,10 +235,10 @@ COMMENT ON VIEW mart.v_corporate_action IS
 COMMIT;
 ```
 
-`sql/migrations/0029_corporate_action_mart.down.sql`:
+`sql/migrations/NNNN_corporate_action_mart.down.sql`:
 
 ```sql
--- 0029_corporate_action_mart.down.sql
+-- NNNN_corporate_action_mart.down.sql
 -- A view only: no data is lost. portable's `pt ca sync -S fafnir` stops working.
 
 BEGIN;

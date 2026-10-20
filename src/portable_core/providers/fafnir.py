@@ -276,9 +276,9 @@ class FafnirProvider(MarketDataProvider):
                 f"the fafnir warehouse has no {relation} this role can read",
                 code=E_PROVIDER_UNAVAILABLE,
                 remedy=(
-                    "fafnir does not have mart.v_corporate_action yet: apply the "
-                    "migration drafted in portable's ADR 0029, or supply actions with "
-                    "`--source file`."
+                    "fafnir does not have mart.v_corporate_action yet "
+                    "(rtrimble13/fafnir#174, drafted in portable's ADR 0029). Until it "
+                    "is applied, supply actions with `--source file`."
                     if relation == SCHEMA["corporate_action"]
                     else "portable reads fafnir's mart and ref schemas only. Check the "
                     "warehouse is at fafnir migration 0020 or later and the role is a "
