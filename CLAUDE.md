@@ -403,7 +403,8 @@ test that fails without your change.
   makes an import acceptable. Custodian-neutral, with one worked example
 - `.claude/skills/broker-import/SKILL.md` — the import runbook for an agent
   working with the owner: mapping files by interview, the segmented first
-  import, the `--incremental` update loop, what each break means. Real exports
+  import, the `--incremental` update loop, what each break means, and pricing
+  the history through `duk` with files for the gaps. Real exports
   are read locally and no amount, position or account number from them goes
   into a file under version control
 - `docs/output-formats.md` — JSON envelope, versioning, agent/MCP integration
