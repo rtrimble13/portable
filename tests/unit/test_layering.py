@@ -201,15 +201,15 @@ def test_sql_appears_only_in_persistence_and_schema() -> None:
 
 
 def test_fafnir_is_confined_to_its_adapter() -> None:
-    """ADR 0006 and CLAUDE.md: `portable` must never couple to fafnir internals.
+    """ADR 0006, 0029 and CLAUDE.md: `portable` must never couple to fafnir internals.
 
-    The adapter is allowed to know that `core.daily_price` exists. Nothing
+    The adapter is allowed to know that `mart.v_symbol_lookup` exists. Nothing
     else is, so that a fafnir migration is a one-file change here.
     """
     import re
 
     fafnir_shaped = re.compile(
-        r"\b(core|mart|ref|ops|landing)\.(security|daily_price|corporate_action|"
+        r"\b(core|mart|ref|ops|landing)\.(v_\w+|security|daily_price|corporate_action|"
         r"symbol_xref|adjustment_factor|v_daily_price_adjusted|security_latest|"
         r"trading_calendar|exchange|ingestion_run)\b"
         r"|\bFAFNIR_DSN\b|\bdukrc\b|\bfafnirrc\b",

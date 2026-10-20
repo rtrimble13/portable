@@ -384,6 +384,7 @@ test that fails without your change.
   | 0026 | A dry run is the real write, rolled back |
   | 0027 | A position label is a ledger row |
   | 0028 | An instrument with no market price is valued at zero, at level 5 |
+  | 0029 | Prices through `duk ph`; identity and corporate actions through `mart` |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

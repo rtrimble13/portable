@@ -269,8 +269,18 @@ Done without a warehouse, because each was needed however R1 resolves:
   as having no market price is valued at zero, at level 5, and the snapshot
   holding it is complete ([ADR 0028](0028-instrument-with-no-market-price.md)).
 
-Still open: R1 (is there a warehouse to point at), R3's coverage report and
-R9's calendar, R8 (the benchmark), R10 (the acceptance test).
+## Progress (2026-10-20)
+
+- **R1, decided by the owner: fafnir through `duk`, files for the rest.**
+  "duk is the primary tool for pt to source prices", run on the owner's
+  machine against the warehouse over an SSH tunnel; prices fafnir does not
+  hold come from CSV or JSON files. The tunnel's `fafnir_app` role cannot read
+  `core`, which every adapter query named, so the route changed with it:
+  [ADR 0029](0029-prices-through-duk.md). Corporate actions need a fafnir
+  `mart` view, drafted there for the owner to apply.
+
+Still open: R3's coverage report and R9's calendar, R8 (the benchmark), R10
+(the acceptance test).
 
 ## Alternatives considered
 

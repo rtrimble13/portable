@@ -68,7 +68,7 @@ enforces the two placement rules that matter most:
   `schema/`.** (ADR 0002) The one exception is `providers/fafnir.py`, which
   queries a *foreign* database and which `CLAUDE.md` assigns that job to
   explicitly; the fafnir-confinement rule below is what keeps that honest.
-- **Nothing fafnir-shaped appears outside `providers/fafnir.py`.** (ADR 0006)
+- **Nothing fafnir-shaped appears outside `providers/fafnir.py`.** (ADR 0006, ADR 0029)
 
 **No CLI imports another CLI.** If `pert` and `po` would need the same code, that
 code belongs in `portable_core`. This is not a style preference: it is what keeps

@@ -1,6 +1,6 @@
 # ADR 0006 — fafnir access path: direct warehouse SQL, `duk` for the yield curve
 
-- **Status:** Accepted — direct SQL for the security master, unadjusted prices and corporate actions, and `duk` for the curve, are implemented; a ticker resolves through `core.symbol_xref` segment by segment across a range, the curve is read for the date asked, and every query runs under test against fafnir's documented schema. Not done: `ref.trading_calendar` is never queried, and there is no `--dsn` flag (the DSN comes from the environment or config)
+- **Status:** Superseded in part by [ADR 0029](0029-prices-through-duk.md) — prices now come through `duk -S db ph`, and every relation is read from fafnir's `mart` and `ref`, never `core`, which the owner's `fafnir_app` role cannot see. The yield curve through `duk`, and the two capabilities fafnir does not have, stand as decided here
 - **Date:** 2026-08-27
 - **Milestone:** v0.1
 

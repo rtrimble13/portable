@@ -35,44 +35,68 @@ pt --port p.port instrument sync -S fafnir     # compare the master; mirrors duk
 
 ### `FafnirProvider` — the primary
 
-Reads the owner's [fafnir](https://github.com/rtrimble13/fafnir) warehouse
-directly over `psycopg`. Every table and column name lives in one `SCHEMA`
-mapping at the top of `providers/fafnir.py`, so a fafnir migration is a one-file
-change here.
+Reads the owner's [fafnir](https://github.com/rtrimble13/fafnir) warehouse two
+ways ([ADR 0029](adr/0029-prices-through-duk.md)): prices through `duk`, the
+owner's tool for sourcing them, and everything else straight from fafnir's
+`mart` views over `psycopg`. Both use the same DSN, so they read the same
+warehouse. Every view name lives in one `SCHEMA` mapping at the top of
+`providers/fafnir.py`, and every `duk` argument list is built there too, so a
+fafnir change is a one-file change here.
 
 | What | From |
 |---|---|
-| Security master | `core.security` |
-| Symbol resolution **as of a date** | `core.symbol_xref` |
-| End-of-day prices | `core.daily_price` — **unadjusted** |
-| Splits and cash dividends | `core.corporate_action` |
+| Security master | `mart.v_security_profile` |
+| Symbol resolution **as of a date** | `mart.v_symbol_lookup` |
+| End-of-day prices | `duk -S db ph <identifier> --close --json --precision 6` — **unadjusted** |
+| Splits and cash dividends | `mart.v_corporate_action` — drafted in ADR 0029, not yet in fafnir |
 | Risk-free rate | `duk -S live yc`, for the date asked |
 
-**Unadjusted prices only.** `mart.v_daily_price_adjusted` is not read by the
-valuation path, and the SQL that would read it is not written. `PORT-GIPS-A01`
-requires fair value on the measurement date, and adjusted prices are not fair
-values on the measurement date — using them alongside explicit corporate-action
-transactions would double-count every split.
+**`mart` and `ref` only, never `core`.** Over an SSH tunnel the owner connects
+as a role in `fafnir_app`, which fafnir's ADR 0008 lets read `mart` and `ref`
+and nothing else. A query that named `core` would fail there with
+`permission denied`.
 
-**Symbols resolve as of a date**, through `core.symbol_xref`, because fafnir's
-own data dictionary says the primary symbol is "**not** an identifier". A ticker
-that has been reassigned resolves to whichever security held it on the trade
-date, which is the only answer that does not silently rewrite history.
+**Unadjusted prices only.** `duk` is never passed `--adj`, and the argument
+list that would do it is not written. `PORT-GIPS-A01` requires fair value on
+the measurement date, and adjusted prices are not fair values on the
+measurement date — using them alongside explicit corporate-action transactions
+would double-count every split.
+
+**Exact, although `duk` prints floats.** `duk` holds prices in a floating-point
+DataFrame and prints two decimal places unless told otherwise. `portable` asks
+for six, the scale fafnir stores raw prices at (`NUMERIC(20, 6)`), parses the
+text as `Decimal`, and rounds it back to six places. That recovers the stored
+value exactly for any price below 10⁹. A value that is not within 10⁻⁷ of a
+six-place number, a price of 10⁹ or more, and any record that is not
+`{date, close}` are refused rather than rounded into shape.
+
+**Symbols resolve as of a date**, through `mart.v_symbol_lookup`, because
+fafnir's own data dictionary says the primary symbol is "**not** an
+identifier". A ticker that has been reassigned resolves to whichever security
+held it on the trade date, which is the only answer that does not silently
+rewrite history.
 
 **A range resolves day by day.** A ticker can name one security for part of a
 range and another for the rest -- a rename, a delisting and a reuse -- so prices
 and corporate actions are fetched segment by segment, each from the security the
 ticker named on those days. A day on which it named nothing is refused by name,
-not skipped, and there is no fallback to `core.security.primary_symbol`: fafnir's
+not skipped, and there is no fallback to the security's primary symbol: fafnir's
 own resolver uses that to say who holds a ticker *now*, which is never the
 question here. fafnir's `asset_type` of `other` is refused too, rather than
 assumed to be an equity.
 
+**`duk` is told which security, by identifier.** Given a ticker, `duk` answers
+for whoever holds it now. So each segment's security is named to `duk` by its
+ISIN, else its CUSIP, else its CIK, which `duk` resolves to that one security
+or refuses. A security with none of the three is refused for those dates, with
+`pt price load --file` as the remedy. So is an identifier `duk` finds on
+several securities.
+
 **Lineage travels with every price.** `price.provider_ref` records
-`security_id`, `trade_date`, `ingestion_run_id`, and `source`, so a valuation
-traces back to the warehouse load that produced it. `PORT-GIPS-J03` requires
-supporting data for every reported figure "including records obtained from third
-parties" — which is why the reference names the row, not just the vendor.
+`security_id`, `trade_date`, and the identifier `duk` was given, so a valuation
+traces back to the warehouse security that produced it (`PORT-GIPS-J03`). The
+ingestion run no longer travels: fafnir keeps load lineage out of `mart`, so a
+`fafnir_app` role cannot see it by any route.
 
 #### Two things fafnir cannot supply
 
@@ -82,13 +106,12 @@ This is the most important part of this page, and it is why ADR 0006 exists.
    not index levels. `PORT-GIPS-G01` prohibits price-only benchmarks and
    requires `portable` to *refuse* rather than warn — so `FafnirProvider`
    declares **no benchmark capability at all**. Synthesising a total return by
-   adding `core.corporate_action` dividends to a price series would be a
+   adding fafnir's dividends to a price series would be a
    defensible-looking wrong number of exactly the kind this repository exists to
    prevent. Benchmarks come from `FileProvider` with an explicit `return_type`.
 2. **No treasury curve.** fafnir's own documentation says `duk yc` is live-only
    "until the economic-series fast-follow adds treasury data to the warehouse",
-   so there is no table to query and `duk` **is** the documented interface. It
-   is the one place `portable` shells out, and it does so for nothing else.
+   so there is no table to query, and the rate comes from `duk -S live yc`.
 
 #### Configuration
 
@@ -101,14 +124,18 @@ DSN resolution, highest first:
 
 ADR 0006 also names a `--dsn` flag; it was never built.
 
-Somebody who already has `duk` working needs no new configuration. The
+Somebody who already has `duk` working needs no new configuration. `duk` is
+run with `FAFNIR_DSN` set to the DSN resolved here, so a `PORTABLE_FAFNIR_DSN`
+reaches it too. If `duk` is not on `PATH`, name it with `duk_path` in
+`~/.portablerc`; without it fafnir supplies no prices and no risk-free rate,
+and says so. The
 environment is checked before any file because a DSN carries a password:
 `portable` never reads a secret from its own config when an environment
 variable is available, never logs one, redacts it in `portable config show`,
 and **never includes it in an error message** — there is a test for that last
 one.
 
-Point it at the least-privilege `fafnir_app` role.
+Point it at a role in `fafnir_app`, fafnir's least-privilege reader.
 
 `psycopg` is an optional dependency (`pip install 'portable[fafnir]'`). Its
 absence is felt only by somebody who asked for fafnir, never at CLI start.
@@ -176,7 +203,7 @@ default when no source is configured.
 
 Every price fetched is stored in the `.port` file with:
 
-- **`source`** — `fafnir:core.daily_price`, `file:prices.csv`, `manual`
+- **`source`** — `fafnir:duk ph`, `file:prices.csv`, `manual`
 - **`as_of`** — when the source asserted it
 - **`valuation_level`** — 1–5, the GIPS fair-value hierarchy (`PORT-GIPS-A02`)
 - **`is_estimate`** — preliminary values are flagged (`PORT-GIPS-A09`)

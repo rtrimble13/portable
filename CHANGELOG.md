@@ -266,6 +266,22 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **fafnir prices come through `duk`, and nothing reads `core`** (ADR 0029,
+  decided by the owner; supersedes ADR 0006's price path). Over the owner's
+  SSH tunnel the role is in `fafnir_app`, which cannot see fafnir's `core`
+  schema, and every query the adapter made named it -- so `pt price load`,
+  `pt instrument sync` and `pt ca sync` against fafnir could not have worked
+  there. Prices are now `duk -S db ph <identifier> --close --json --precision 6`:
+  raw, from the warehouse, named by ISIN, CUSIP or CIK so a reused ticker
+  cannot answer for another issuer, and read back from duk's float output to
+  the warehouse's six places exactly -- or refused. Symbol history, the
+  security master and corporate actions are read from `mart` views over the
+  same DSN, which duk is given too. Corporate actions need a fafnir view that
+  does not exist yet; ADR 0029 drafts the migration, and until it is applied
+  `pt ca sync -S fafnir` says so. Prices are recorded with source
+  `fafnir:duk ph`; `provider_ref` no longer carries the ingestion run, which
+  `mart` does not expose.
+
 - **`--dry-run` is the real write, rolled back** (ADR 0026, decided by the
   owner). Most commands returned before writing, so a dry run could not say
   that a back-dated entry would rebuild derived state or remove valuation
