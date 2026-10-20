@@ -1,4 +1,4 @@
-"""Reporting: holdings, pnl, tax, activity, cash-flows, reconcile, policy."""
+"""Reporting: holdings, pnl, tax, activity, cash-flows, reconcile, policy, benchmark."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from portable_core.errors.kinds import E_GIPS_NO_FLOW_POLICY, E_RECONCILE_BREAK
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.importers import TabularAdapter
 from portable_core.importers.source import REALIZED
-from portable_core.services import cash_flow, restatement
+from portable_core.services import benchmarks, cash_flow, restatement
 from portable_core.services.reconciliation import (
     ExternalHolding,
     RealizedTieLine,
@@ -33,6 +33,7 @@ from portable_pt import state
 from portable_pt.commands._shared import dispatch, money_arg, resolve_date
 
 policy_app = typer.Typer(help="Return policy thresholds.", no_args_is_help=True)
+benchmark_app = typer.Typer(help="The benchmark returns are set beside.", no_args_is_help=True)
 
 ZERO = Decimal("0.00")
 
@@ -1310,3 +1311,55 @@ def _tax_notes(summary: TaxSummary) -> tuple[str, ...]:
             f"a gain. For those years the custodian's 1099-B is the authority."
         )
     return tuple(notes)
+
+
+@benchmark_app.command(name="show")
+def show_benchmark() -> None:
+    """The benchmark in effect, and its history (ADR 0030).
+
+    With none assigned it is Cash (0%), the owner's default: a return of zero
+    in every period, labelled as such. Each change of benchmark carries its
+    date and reason, which PORT-GIPS-G04 requires to be disclosed.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        timeline = benchmarks.history(repos)
+        current = benchmarks.in_effect(repos, ctx.as_of)
+        return CommandResult(
+            command="benchmark show",
+            table=Table(
+                columns=(
+                    Column("effective_from", "Effective From", ColumnKind.DATE),
+                    Column("benchmark", "Benchmark"),
+                    Column("return_type", "Return Type"),
+                    Column("default", "Default", ColumnKind.BOOL),
+                    Column("change_type", "Change"),
+                ),
+                rows=tuple(
+                    {
+                        "effective_from": (
+                            a.effective_from.isoformat() if a.effective_from else None
+                        ),
+                        "benchmark": a.benchmark.name,
+                        "return_type": str(a.benchmark.return_type),
+                        "default": a.is_default,
+                        "change_type": a.change_type,
+                    }
+                    for a in timeline
+                ),
+                title="Benchmark history",
+                footnotes=tuple(a.disclosure for a in timeline),
+            ),
+            data={
+                "as_of": ctx.as_of.isoformat(),
+                "in_effect": current.benchmark.name,
+                "description": current.benchmark.description,
+                "is_default": current.is_default,
+                "disclosures": [a.disclosure for a in timeline],
+            },
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)

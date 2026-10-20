@@ -149,6 +149,7 @@ app.add_typer(pricing.price_app, name="price")
 app.add_typer(positions.position_app, name="position")
 app.add_typer(positions.lot_app, name="lot")
 app.add_typer(reporting.policy_app, name="policy")
+app.add_typer(reporting.benchmark_app, name="benchmark")
 app.add_typer(corporate_actions.app, name="ca")
 app.add_typer(options.app, name="option")
 

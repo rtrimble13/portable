@@ -1804,6 +1804,33 @@ class BenchmarkRepository(_Repository):
             for r in self.con.execute("SELECT * FROM benchmark ORDER BY name")
         ]
 
+    def assign(
+        self, benchmark_id: int, effective_from: date, *, change_type: str, change_reason: str
+    ) -> int:
+        """Make *benchmark_id* the portfolio's benchmark from *effective_from* (G04)."""
+        cursor = self.con.execute(
+            "INSERT INTO portfolio_benchmark (benchmark_id, effective_from, change_type, "
+            "change_reason, created_at) VALUES (?, ?, ?, ?, ?)",
+            (benchmark_id, effective_from.isoformat(), change_type, change_reason, _now()),
+        )
+        return int(cursor.lastrowid or 0)
+
+    def assignments(self) -> list[tuple[date, Benchmark, str, str]]:
+        """Every assignment: its date, the benchmark, the change type and reason, by date."""
+        return [
+            (
+                date.fromisoformat(r["effective_from"]),
+                mappers.to_benchmark(r),
+                str(r["change_type"]),
+                str(r["change_reason"]),
+            )
+            for r in self.con.execute(
+                "SELECT pb.effective_from, pb.change_type, pb.change_reason, b.* "
+                "FROM portfolio_benchmark pb JOIN benchmark b USING (benchmark_id) "
+                "ORDER BY pb.effective_from, pb.id"
+            )
+        ]
+
 
 # ── the bundle ───────────────────────────────────────────────────────────────
 

@@ -664,8 +664,8 @@ For a self-managed portfolio with no external manager, gross-of-fees and net-of-
 
 **Source** — Asset Owners **24.A.1.f (A)**, **24.C.25 (A)**; Firms **4.A.1.e (A)**, **4.C.31 (A)**.
 **What GIPS says** — present the benchmark total return for each annual period and for every other period for which fund returns are presented, **unless the firm determines there is no appropriate benchmark** — in which case it must **disclose why no benchmark is presented**.
-**What `portable` must do** — There is no silent omission. Every return column either has a benchmark column beside it or carries a stated reason for having none.
-**Test** — `test_no_benchmark_requires_reason`.
+**What `portable` must do** — There is no silent omission. Every return column either has a benchmark column beside it or carries a stated reason for having none. With no benchmark assigned, the benchmark is `Cash (0%)`, a return of zero in every period, labelled and disclosed as exactly that ([ADR 0030](adr/0030-default-benchmark-is-cash-at-zero.md)).
+**Test** — `test_no_benchmark_requires_reason` (the return columns: `pert`). The default: `test_port_gips_g02_no_benchmark_assigned_is_cash_at_zero_labelled_as_such`, `test_port_gips_g02_a_new_portfolio_is_benchmarked_against_cash_at_zero`.
 
 ---
 
@@ -683,9 +683,9 @@ For a self-managed portfolio with no external manager, gross-of-fees and net-of-
 
 **Source** — Asset Owners **24.C.26 (A)**; Firms **4.C.32 (A)**.
 **What GIPS says** — disclose the date and description of any benchmark change. A **prospective** change must be disclosed for as long as returns for the prior benchmark remain in the report; a **retroactive** change for a minimum of one year and as long as it is relevant.
-**What `portable` must do** — Benchmark assignment is effective-dated and its history is queryable. A benchmark change generates a disclosure entry with a start date and an expiry rule.
+**What `portable` must do** — Benchmark assignment is effective-dated and its history is queryable. A benchmark change generates a disclosure entry with a start date and an expiry rule. Leaving the default `Cash (0%)` is a change like any other (ADR 0030).
 **Data model** — `portfolio_benchmark(benchmark_id, effective_from, change_reason, change_type ENUM('prospective','retroactive'))`.
-**Test** — `test_benchmark_change_disclosed_for_required_duration`.
+**Test** — `test_benchmark_change_disclosed_for_required_duration` (the expiry rule: `pert`). The disclosure entry: `test_port_gips_g04_leaving_the_default_is_a_change_disclosed_with_date_and_reason`.
 
 ---
 

@@ -279,8 +279,14 @@ Done without a warehouse, because each was needed however R1 resolves:
   [ADR 0029](0029-prices-through-duk.md). Corporate actions need a fafnir
   `mart` view, drafted there for the owner to apply.
 
-Still open: R3's coverage report and R9's calendar, R8 (the benchmark), R10
-(the acceptance test).
+- **R8, decided by the owner: the default benchmark is cash.** At 0%,
+  labelled as exactly that, until a benchmark is assigned
+  ([ADR 0030](0030-default-benchmark-is-cash-at-zero.md)). The owner is
+  building a separate tool to construct benchmark series; bringing its output
+  in -- the assignment command and the series import -- waits for it.
+
+Still open: R3's coverage report and R9's calendar, R10 (the acceptance test),
+and R8's real benchmark series.
 
 ## Alternatives considered
 

@@ -16,6 +16,13 @@ Two rules specific to this repository:
 
 ### Added
 
+- **The default benchmark is `Cash (0%)`** (ADR 0030, answering ADR 0020 R8;
+  `PORT-GIPS-G02`, `G04`). A date with no benchmark assigned is set beside a
+  return of zero, labelled as exactly that: not a Treasury-bill series, and a
+  return above it is the portfolio's own. Leaving it is a disclosed benchmark
+  change. `pt benchmark show` prints the benchmark in effect, its history and
+  each disclosure. Assigning one waits for the owner's benchmark tool.
+
 - **`pt price load --file PATH`** fills what fafnir does not hold from a CSV
   or JSON price file (ADR 0029, answering ADR 0020 R1). It loads the
   instruments the file names over the days they were held, the range defaulting
