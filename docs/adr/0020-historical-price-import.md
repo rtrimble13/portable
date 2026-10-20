@@ -291,8 +291,10 @@ Done without a warehouse, because each was needed however R1 resolves:
   blocks the account's returns from its date until fixed or accepted with a
   reason; the check lives in `pt reconcile`. Built as
   [ADR 0031](0031-price-acceptance-against-statements.md). The trade-price
-  check (fills within the day's range; funds at NAV) flags for review and is
-  still to build.
+  check is `pt trade check`: a stock's fill within the day's raw range, read
+  through `duk --hlc` and never stored; a fund's at the NAV held for the day,
+  to the cent; options and bonds listed, not checked. Flags are for review
+  and it exits 0. `docs/market-data.md` "Fills against the day's range".
 
 - **R3's coverage report and R9's calendar:** `pt price gaps` lists every held
   session with no price from any source, judged by the venue's trading
@@ -302,7 +304,7 @@ Done without a warehouse, because each was needed however R1 resolves:
   gaps".
 
 Still open: R3's conversion step (a vendor export into the price file
-schema), R10's trade-price check, and R8's real benchmark series.
+schema), and R8's real benchmark series.
 
 ## Alternatives considered
 

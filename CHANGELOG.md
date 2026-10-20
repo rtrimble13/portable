@@ -16,6 +16,13 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`pt trade check`: each recorded fill against the day's trading** (ADR
+  0020 R10, the trade-price check). A stock's fill is checked within the
+  day's raw low and high, read through `duk ph --hlc` (a new `daily_range`
+  capability) and never stored. A fund's fill is checked against the NAV
+  held for the day, to the cent. Options and bonds are listed, not checked.
+  Flags are for review, with a note saying by how much; the command exits 0.
+
 - **`pt price gaps`: every held trading day with no price** (ADR 0020 R3,
   R9). Each day an account held an instrument is checked against its venue's
   trading calendar, so a holiday is not a gap and a missing session is. A gap

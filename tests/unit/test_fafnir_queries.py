@@ -180,11 +180,13 @@ class _Warehouse:
             (symbol, security_id, int(primary), valid_from, valid_to),
         )
 
-    def bar(self, security_id: int, on: str, close: str) -> None:
+    def bar(
+        self, security_id: int, on: str, close: str, *, low: str = "", high: str = ""
+    ) -> None:
         self.db.execute(
             "INSERT INTO mart.v_daily_price_raw (security_id, trade_date, open, high, low, "
             "close, volume) VALUES (?, ?, ?, ?, ?, ?, 100)",
-            (security_id, on, close, close, close, close),
+            (security_id, on, close, high or close, low or close, close),
         )
 
     def sessions(self, exchange: str, *days: str, is_open: bool = True) -> None:
@@ -238,8 +240,8 @@ class _Duk:
             )
             return subprocess.CompletedProcess(argv, 1, stdout="", stderr=said)
         bars = self.warehouse.db.execute(
-            "SELECT trade_date, close FROM mart.v_daily_price_raw WHERE security_id = ? "
-            "AND trade_date BETWEEN ? AND ? ORDER BY trade_date",
+            "SELECT trade_date, close, high, low FROM mart.v_daily_price_raw "
+            "WHERE security_id = ? AND trade_date BETWEEN ? AND ? ORDER BY trade_date",
             (
                 found[0][0],
                 argv[argv.index("--start-date") + 1],
@@ -250,9 +252,19 @@ class _Duk:
             return subprocess.CompletedProcess(
                 argv, 0, stdout=f"No data found for {value}\n", stderr=""
             )
+        fields = ("high", "low", "close") if "--hlc" in argv else ("close",)
         printed = ",".join(
-            f'{{"date":"{on}T00:00:00.000","close":{_as_duk_prints(close)}}}'
-            for on, close in bars
+            "{"
+            + ",".join(
+                [f'"date":"{on}T00:00:00.000"']
+                + [
+                    f'"{name}":{_as_duk_prints(value)}'
+                    for name, value in (("high", high), ("low", low), ("close", close))
+                    if name in fields
+                ]
+            )
+            + "}"
+            for on, close, high, low in bars
         )
         return subprocess.CompletedProcess(argv, 0, stdout=f"[{printed}]\n", stderr="")
 
@@ -647,6 +659,51 @@ def test_every_query_reads_mart_or_ref_and_never_core(
         "mart.v_corporate_action",
         "ref.trading_calendar",
     }
+
+
+# ── the day's range, through duk ─────────────────────────────────────────────
+
+
+def test_r10_a_days_range_comes_through_duk_hlc_exactly(
+    warehouse: _Warehouse, fafnir: FafnirProvider, duk: _Duk
+) -> None:
+    warehouse.security(1, "ABC", isin="US0000000001")
+    warehouse.ticker("ABC", 1)
+    warehouse.bar(1, "2025-06-30", "13247980.736555", low="13000000.5", high="13300000.25")
+
+    (day,) = fafnir.daily_ranges("ABC", date(2025, 6, 30), date(2025, 6, 30))
+
+    assert (day.price_date, day.low, day.high, day.close) == (
+        date(2025, 6, 30),
+        D("13000000.500000"),
+        D("13300000.250000"),
+        D("13247980.736555"),
+    )
+    assert day.source == "fafnir:duk ph;security_id=1;via=isin:US0000000001"
+    assert "--hlc" in duk.calls[-1]
+    assert "--adj" not in duk.calls[-1]
+    assert fafnir.has(Capability.DAILY_RANGE)
+
+
+def test_a_bar_whose_low_is_above_its_high_is_refused(
+    warehouse: _Warehouse, fafnir: FafnirProvider, duk: _Duk
+) -> None:
+    warehouse.security(1, "ABC")
+    warehouse.ticker("ABC", 1)
+    duk.answer = (
+        0,
+        '[{"date":"2025-06-30T00:00:00.000","high":1.0,"low":2.0,"close":1.5}]',
+        "",
+    )
+
+    with pytest.raises(DataUnavailableError, match="a low above its high"):
+        fafnir.daily_ranges("ABC", date(2025, 6, 30), date(2025, 6, 30))
+
+
+def test_without_duk_there_is_no_daily_range(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("portable_core.providers.fafnir.shutil.which", lambda _: None)
+
+    assert not FafnirProvider(dsn="host=x").has(Capability.DAILY_RANGE)
 
 
 # ── the trading calendar, from ref ───────────────────────────────────────────

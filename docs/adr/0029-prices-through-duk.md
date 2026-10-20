@@ -48,6 +48,9 @@ duk -S db ph <identifier> --start-date S --end-date E --close --json --precision
 - **`--precision 6`.** `duk` rounds JSON prices to two places by default.
   fafnir stores raw closes as `NUMERIC(20, 6)`, so six places carry every
   stored digit.
+- **`--hlc` for a day's range.** `pt trade check` asks the same way for the
+  high, low and close (2026-10-20), and reads them by the same rules. It
+  checks fills against them and stores none of them.
 
 ### 2. The float is `duk`'s, and it is undone exactly or refused
 

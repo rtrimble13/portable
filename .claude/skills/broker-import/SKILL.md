@@ -248,6 +248,13 @@ If `duk` is not on `PATH`, set `duk_path` in `~/.portablerc`.
      never run it for them.
    - An **unpriced** line needs a price, not an acceptance.
    Report counts and symbols per status, never the amounts.
+7. **Check the fills.** `pt -S fafnir trade check` sets each recorded fill
+   beside the day's range (stocks) or NAV (funds). Flags are for review, not
+   breaks. Take each `outside` or `off_nav` to the owner with its date and
+   note: a wrong price or date is fixed with `pt trade reverse` and a
+   corrected entry; an extended-hours fill stays as it is. `no_data` means a
+   range or NAV is missing, which `pt price gaps` usually shows too. Report
+   counts and symbols, never the prices.
 
 ## 8. Report to the owner
 

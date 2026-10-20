@@ -11,9 +11,9 @@ is handled. The design decision behind the fafnir adapter is
 A provider declares what it can do. Capabilities are **separately declarable
 protocols**, so a partial provider is legal and its gaps are *visible*:
 
-`security_master` · `eod_prices` · `intraday_prices` · `corporate_actions` ·
-`dividends` · `benchmarks` · `risk_free_rate` · `trading_calendar` · `fx`
-(interface only in v0.1)
+`security_master` · `eod_prices` · `daily_range` · `intraday_prices` ·
+`corporate_actions` · `dividends` · `benchmarks` · `risk_free_rate` ·
+`trading_calendar` · `fx` (interface only in v0.1)
 
 That is not architectural neatness. A monolithic interface would have forced
 `FafnirProvider` to implement `benchmark_series` and return *something* — and
@@ -49,6 +49,7 @@ fafnir change is a one-file change here.
 | Security master | `mart.v_security_profile` |
 | Symbol resolution **as of a date** | `mart.v_symbol_lookup` |
 | End-of-day prices | `duk -S db ph <identifier> --close --json --precision 6` — **unadjusted** |
+| A day's range, to check fills | `duk -S db ph <identifier> --hlc --json --precision 6` — unadjusted, read by `pt trade check`, never stored |
 | Splits and cash dividends | `mart.v_corporate_action` — fafnir migration 0033 ([rtrimble13/fafnir#175](https://github.com/rtrimble13/fafnir/pull/175)) |
 | Risk-free rate | `duk -S live yc`, for the date asked |
 | Trading calendar | `ref.trading_calendar`: the instrument's venue, else NASDAQ's, as fafnir's own ingestion falls back |
@@ -414,6 +415,35 @@ accepted. `pert` will refuse returns for any period ending on or after that
 date. Until it exists, `pt value` warns for every account it values from that
 date on. Snapshots are still built and stored: they record what the prices
 were, and the gate decides whether a return may be computed from them.
+
+### Fills against the day's range
+
+The second anchor ADR 0020 R10 names: every recorded trade's price was a real
+traded price on its date. `pt trade check` compares each fill (buys, sells,
+shorts, covers and reinvestments, reversed ones left out) with what the market
+traded that day:
+
+```bash
+pt --port p.port -S fafnir trade check                      # from the ledger's first date
+pt --port p.port -S fafnir trade check --from 2024-01-01 -a Brokerage
+```
+
+| Instrument | Checked against | Verdicts |
+|---|---|---|
+| Stock, ETF, ADR | the day's raw low and high, from the provider (`duk --hlc`), read when checked and never stored | `within`, `outside` |
+| Mutual fund | the NAV portable holds for that day, to the cent (within half a cent) | `at_nav`, `off_nav` |
+| Option, bond, money market; anything marked as having no market price | nothing: listed only | `not_checked` |
+
+A fill with nothing to check against — no range, or no NAV for that day — is
+`no_data`. The range is inclusive at both ends. A fund's check reads the price
+history, so it checks the NAVs too.
+
+**Flags are for review, and the command exits 0.** An `outside` fill is a wrong
+price, a wrong date, a wrong instrument, or a trade outside regular hours, and
+which one is a person's call. Each flag's note says by how much and against
+what. Each ticker is asked for once, from its first fill to its last; when that
+finds nothing, each date is asked alone, so one date the provider cannot answer
+does not hide the rest. A provider that cannot be reached stops the check.
 
 ## What is not here
 

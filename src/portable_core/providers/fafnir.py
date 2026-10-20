@@ -70,6 +70,7 @@ from portable_core.errors.kinds import (
 from portable_core.providers.base import (
     Capability,
     CorporateActionRecord,
+    DailyRange,
     MarketDataProvider,
     RiskFreeRate,
     TradingCalendar,
@@ -93,6 +94,17 @@ SCHEMA: Final[dict[str, str]] = {
 #: The venue whose calendar judges a security whose own venue has none: fafnir's
 #: ``CALENDAR_FALLBACK_EXCHANGE``, so portable finds the gaps fafnir would.
 _CALENDAR_FALLBACK: Final = "NASDAQ"
+
+#: What fafnir supplies through `duk`, and so only when `duk` can be run.
+_THROUGH_DUK: Final = frozenset(
+    {Capability.EOD_PRICES, Capability.DAILY_RANGE, Capability.RISK_FREE_RATE}
+)
+
+#: The `duk ph` flag that prints each set of bar fields.
+_FIELD_FLAGS: Final[dict[tuple[str, ...], str]] = {
+    ("close",): "--close",
+    ("high", "low", "close"): "--hlc",
+}
 
 #: The scale of fafnir's raw prices (``core.daily_price.close NUMERIC(20, 6)``),
 #: and so the precision `duk` is asked to print them at.
@@ -186,8 +198,9 @@ class FafnirProvider(MarketDataProvider):
         Note the two absences, and see the module docstring: **no BENCHMARKS**
         (no total-return index series exists in the warehouse, and
         ``PORT-GIPS-G01`` says refuse rather than approximate) and no FX.
-        ``EOD_PRICES`` and ``RISK_FREE_RATE`` are present only when `duk` is on
-        ``PATH``, because that is where they come from (ADR 0029).
+        ``EOD_PRICES``, ``DAILY_RANGE`` and ``RISK_FREE_RATE`` are present only
+        when `duk` is on ``PATH``, because that is where they come from
+        (ADR 0029).
         """
         found = {
             Capability.SECURITY_MASTER,
@@ -196,12 +209,12 @@ class FafnirProvider(MarketDataProvider):
             Capability.TRADING_CALENDAR,
         }
         if shutil.which(self.duk_path):
-            found.update({Capability.EOD_PRICES, Capability.RISK_FREE_RATE})
+            found.update(_THROUGH_DUK)
         return frozenset(found)
 
     def unavailable(self, capability: Capability) -> DataUnavailableError | None:
         """A `duk` that is not on PATH is the reason, and the general answer hides it."""
-        if capability not in {Capability.EOD_PRICES, Capability.RISK_FREE_RATE}:
+        if capability not in _THROUGH_DUK:
             return None
         return DataUnavailableError(
             f"fafnir supplies {capability} through duk, and `{self.duk_path}` is not on PATH",
@@ -530,7 +543,8 @@ class FafnirProvider(MarketDataProvider):
         prices: list[Price] = []
         for segment in self._segments(symbol, start, end):
             named = self._identifier(segment, symbol)
-            for on, close in self._closes(named, segment):
+            for on, bar in self._bars(named, segment, ("close",)):
+                close = bar["close"]
                 prices.append(
                     Price(
                         instrument_id=0,
@@ -564,8 +578,42 @@ class FafnirProvider(MarketDataProvider):
             )
         return prices
 
-    def _closes(self, named: str, segment: _Segment) -> list[tuple[date, Decimal]]:
-        """The raw closes `duk` reports for *named* over *segment*'s days."""
+    def daily_ranges(self, symbol: str, start: date, end: date) -> list[DailyRange]:
+        """Each day's raw high, low and close, through ``duk -S db ph --hlc``.
+
+        The same route as :meth:`eod_prices`, day by day from the security
+        the ticker named that day, and as exact. Read when asked and never
+        stored: a range is a check on a fill, not a price to value at.
+        """
+        self.require(Capability.DAILY_RANGE)
+        ranges: list[DailyRange] = []
+        for segment in self._segments(symbol, start, end):
+            named = self._identifier(segment, symbol)
+            ranges.extend(
+                DailyRange(
+                    price_date=on,
+                    low=bar["low"],
+                    high=bar["high"],
+                    close=bar["close"],
+                    source=f"{self.name}:duk ph;security_id={segment.security_id};via={named}",
+                )
+                for on, bar in self._bars(named, segment, ("high", "low", "close"))
+            )
+        if not ranges:
+            raise DataUnavailableError(
+                f"no fafnir prices for {symbol} between {start.isoformat()} and "
+                f"{end.isoformat()}",
+                code=E_PRICE_MISSING,
+                remedy="Backfill the range in fafnir.",
+                symbol=symbol,
+                provider=self.name,
+            )
+        return ranges
+
+    def _bars(
+        self, named: str, segment: _Segment, fields: tuple[str, ...]
+    ) -> list[tuple[date, dict[str, Decimal]]]:
+        """The raw bars `duk` reports for *named* over *segment*'s days."""
         argv = [
             self.duk_path,
             "-S",
@@ -576,7 +624,7 @@ class FafnirProvider(MarketDataProvider):
             segment.start.isoformat(),
             "--end-date",
             segment.end.isoformat(),
-            "--close",
+            _FIELD_FLAGS[fields],
             "--json",
             "--precision",
             str(_PRICE_PLACES),
@@ -584,7 +632,7 @@ class FafnirProvider(MarketDataProvider):
         completed = self._run_duk(argv)
         said = " ".join((completed.stderr or completed.stdout or "").split())
         if completed.returncode == 0:
-            return _close_rows(completed.stdout, named, segment, self.name)
+            return _bar_rows(completed.stdout, named, segment, self.name, fields)
         # Exit 2 is a usage error: this duk does not take these arguments, and
         # no security will go better. "Error: ..." is duk failing outright --
         # the warehouse, the role. Anything else is about this security: not
@@ -597,7 +645,8 @@ class FafnirProvider(MarketDataProvider):
                 remedy=(
                     "Run the same command by hand to see why: "
                     f"`{' '.join(argv)}`. portable needs a duk whose `ph` takes "
-                    "--close, --json and --precision, reading as a fafnir_app role."
+                    f"{_FIELD_FLAGS[fields]}, --json and --precision, reading as a "
+                    "fafnir_app role."
                 ),
                 provider=self.name,
                 returncode=completed.returncode,
@@ -889,10 +938,10 @@ def _curve_rows(stdout: str) -> dict[date, dict[str, Decimal]]:
     return rows
 
 
-def _close_rows(
-    stdout: str, named: str, segment: _Segment, provider: str
-) -> list[tuple[date, Decimal]]:
-    """`duk ph --close --json` output as exact six-place closes, or a refusal.
+def _bar_rows(
+    stdout: str, named: str, segment: _Segment, provider: str, fields: tuple[str, ...]
+) -> list[tuple[date, dict[str, Decimal]]]:
+    """`duk ph --json` output as exact six-place bars, or a refusal.
 
     `duk` holds prices as floats and prints ten decimal places of them, so a
     stored ``189.120000`` can print as ``189.1200000003``. Below 10^9 that
@@ -901,22 +950,23 @@ def _close_rows(
     written. A value that is not within 10^-7 of a six-place number did not
     come from ``NUMERIC(20, 6)`` through a float, and is refused rather than
     rounded: so is anything else unexpected, because every price after it
-    would be suspect too.
+    would be suspect too. A bar whose low is above its high is refused too.
     """
     text = stdout.strip()
     if text.startswith("No data found"):
         # duk's sentence for a range that holds no bars: an empty answer, not
         # a malformed one. Any other sentence is refused below as not JSON.
         return []
+    shape = "{" + ", ".join(("date", *fields)) + "}"
 
     def refuse(why: str) -> DataUnavailableError:
         return DataUnavailableError(
             f"duk's prices for {named} ({segment.describe()}) cannot be read exactly: {why}",
             code=E_PROVIDER_UNAVAILABLE,
             remedy=(
-                "portable reads `duk ph --close --json --precision 6` output: a list of "
-                "{date, close} records. Check the duk version, and load these dates "
-                "from a file meanwhile."
+                f"portable reads `duk ph {_FIELD_FLAGS[fields]} --json --precision 6` "
+                f"output: a list of {shape} records. Check the duk version, and load "
+                "these dates from a file meanwhile."
             ),
             provider=provider,
             identifier=named,
@@ -929,28 +979,37 @@ def _close_rows(
     if not isinstance(parsed, list):
         raise refuse("not a list of records")
 
-    rows: list[tuple[date, Decimal]] = []
+    rows: list[tuple[date, dict[str, Decimal]]] = []
     for record in parsed:
-        if not isinstance(record, dict) or set(record) != {"date", "close"}:
+        if not isinstance(record, dict) or set(record) != {"date", *fields}:
             raise refuse(f"unexpected record {record!r}")
         try:
             on = date.fromisoformat(str(record["date"])[:10])
         except ValueError as exc:
             raise refuse(f"unexpected date {record['date']!r}") from exc
-        close = record["close"]
-        if not isinstance(close, Decimal) or not close.is_finite() or close <= 0:
-            raise refuse(f"{on.isoformat()} has close {close!r}")
-        if close >= _FLOAT_EXACT_BELOW:
-            raise refuse(f"{on.isoformat()} closed at {close}, too large to survive a float")
-        try:
-            exact = close.quantize(_PRICE_QUANTUM)
-        except InvalidOperation as exc:
-            raise refuse(f"{on.isoformat()} has close {close}") from exc
-        if abs(close - exact) >= _FLOAT_NOISE:
-            raise refuse(f"{on.isoformat()} closed at {close}, which is not a six-place price")
+        bar: dict[str, Decimal] = {}
+        for field in fields:
+            value = record[field]
+            if not isinstance(value, Decimal) or not value.is_finite() or value <= 0:
+                raise refuse(f"{on.isoformat()} has {field} {value!r}")
+            if value >= _FLOAT_EXACT_BELOW:
+                raise refuse(
+                    f"{on.isoformat()} has {field} {value}, too large to survive a float"
+                )
+            try:
+                exact = value.quantize(_PRICE_QUANTUM)
+            except InvalidOperation as exc:
+                raise refuse(f"{on.isoformat()} has {field} {value}") from exc
+            if abs(value - exact) >= _FLOAT_NOISE:
+                raise refuse(
+                    f"{on.isoformat()} has {field} {value}, which is not a six-place price"
+                )
+            bar[field] = exact
+        if "low" in bar and bar["low"] > bar["high"]:
+            raise refuse(f"{on.isoformat()} has a low above its high")
         if not segment.start <= on <= segment.end:
             raise refuse(f"{on.isoformat()} is outside the dates asked for")
         if rows and on <= rows[-1][0]:
             raise refuse(f"{on.isoformat()} is out of order or repeated")
-        rows.append((on, exact))
+        rows.append((on, bar))
     return rows

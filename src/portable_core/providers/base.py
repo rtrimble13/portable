@@ -29,6 +29,8 @@ __all__ = [
     "Capability",
     "CorporateActionCapability",
     "CorporateActionRecord",
+    "DailyRange",
+    "DailyRangeCapability",
     "EndOfDayPriceCapability",
     "FxCapability",
     "MarketDataProvider",
@@ -39,6 +41,7 @@ __all__ = [
     "TradingCalendarCapability",
     "as_benchmark_provider",
     "as_corporate_action_provider",
+    "as_daily_range_provider",
     "as_eod_provider",
     "as_security_master",
     "as_trading_calendar_provider",
@@ -51,6 +54,7 @@ class Capability(StrEnum):
 
     SECURITY_MASTER = "security_master"
     EOD_PRICES = "eod_prices"
+    DAILY_RANGE = "daily_range"
     INTRADAY_PRICES = "intraday_prices"
     CORPORATE_ACTIONS = "corporate_actions"
     DIVIDENDS = "dividends"
@@ -116,6 +120,22 @@ class RiskFreeRate:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyRange:
+    """One day's traded range for a security: where a fill that day could be.
+
+    A check on a recorded trade, not a price to value at, so nothing stores
+    it. Unadjusted, like every price `portable` values with: a fill is
+    recorded as traded, before any later split.
+    """
+
+    price_date: date
+    low: Decimal
+    high: Decimal
+    close: Decimal
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
 class TradingCalendar:
     """One venue's sessions over a range of dates, and the span its calendar covers.
 
@@ -153,6 +173,11 @@ class SecurityMasterCapability(Protocol):
 @runtime_checkable
 class EndOfDayPriceCapability(Protocol):
     def eod_prices(self, symbol: str, start: date, end: date) -> list[Price]: ...
+
+
+@runtime_checkable
+class DailyRangeCapability(Protocol):
+    def daily_ranges(self, symbol: str, start: date, end: date) -> list[DailyRange]: ...
 
 
 @runtime_checkable
@@ -255,6 +280,14 @@ def as_eod_provider(provider: MarketDataProvider) -> EndOfDayPriceCapability:
     require_capability(provider, Capability.EOD_PRICES)
     if not isinstance(provider, EndOfDayPriceCapability):
         raise _mismatch(provider, Capability.EOD_PRICES)
+    return provider
+
+
+def as_daily_range_provider(provider: MarketDataProvider) -> DailyRangeCapability:
+    """Narrow a provider to its daily-range capability, or refuse."""
+    require_capability(provider, Capability.DAILY_RANGE)
+    if not isinstance(provider, DailyRangeCapability):
+        raise _mismatch(provider, Capability.DAILY_RANGE)
     return provider
 
 
