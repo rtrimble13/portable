@@ -32,7 +32,7 @@ import pytest
 
 from portable_core.domain.enums import InstrumentType
 from portable_core.errors import DataUnavailableError, ValidationError
-from portable_core.providers import as_eod_provider
+from portable_core.providers import Capability, as_eod_provider
 from portable_core.providers.fafnir import FafnirProvider
 
 pytestmark = pytest.mark.unit
@@ -185,6 +185,13 @@ class _Warehouse:
             "INSERT INTO mart.v_daily_price_raw (security_id, trade_date, open, high, low, "
             "close, volume) VALUES (?, ?, ?, ?, ?, ?, 100)",
             (security_id, on, close, close, close, close),
+        )
+
+    def sessions(self, exchange: str, *days: str, is_open: bool = True) -> None:
+        self.db.executemany(
+            "INSERT INTO ref.trading_calendar (exchange_code, trade_date, is_open) "
+            "VALUES (?, ?, ?)",
+            [(exchange, on, int(is_open)) for on in days],
         )
 
     def dividend(self, security_id: int, ex_date: str, amount: str) -> None:
@@ -620,23 +627,69 @@ def test_an_asset_type_portable_has_no_name_for_is_refused(
         fafnir.lookup_security("WEIRD", on=date(2025, 6, 30))
 
 
-def test_every_query_reads_mart_and_never_core(
+def test_every_query_reads_mart_or_ref_and_never_core(
     warehouse: _Warehouse, fafnir: FafnirProvider
 ) -> None:
     """fafnir ADR 0008: a person's role cannot see `core`, so nothing here may name it."""
     warehouse.security(1, "ABC")
     warehouse.ticker("ABC", 1)
     warehouse.bar(1, "2025-06-30", "1.00")
+    warehouse.sessions("NYSE", "2025-06-30")
     fafnir.eod_prices("ABC", date(2025, 6, 30), date(2025, 6, 30))
     fafnir.corporate_actions("ABC", date(2025, 1, 1), date(2025, 6, 30))
     fafnir.lookup_security("ABC", on=date(2025, 6, 30))
+    fafnir.trading_calendar("NYSE", date(2025, 6, 30), date(2025, 6, 30))
 
     named = {word for query in warehouse.queries for word in query.split() if "." in word}
     assert named == {
         "mart.v_security_profile",
         "mart.v_symbol_lookup",
         "mart.v_corporate_action",
+        "ref.trading_calendar",
     }
+
+
+# ── the trading calendar, from ref ───────────────────────────────────────────
+
+
+def test_r9_the_calendar_is_the_venues_sessions_and_its_whole_span(
+    warehouse: _Warehouse, fafnir: FafnirProvider
+) -> None:
+    """fafnir seeds open days only, and marks an unforeseen closure ``is_open``
+    false (its migration 0022): neither is a session, and the span is all the
+    venue's calendar holds, not just the days asked for."""
+    warehouse.sessions("NYSE", "2025-01-02", "2025-01-03", "2025-01-06", "2025-01-08")
+    warehouse.sessions("NYSE", "2025-01-09", is_open=False)  # a national day of mourning
+    warehouse.sessions("NYSE", "2025-12-31")
+    warehouse.sessions("NASDAQ", "2025-01-07")
+
+    calendar = fafnir.trading_calendar("nyse", date(2025, 1, 3), date(2025, 1, 9))
+
+    assert calendar.exchange == "NYSE"
+    assert calendar.open_days == {date(2025, 1, 3), date(2025, 1, 6), date(2025, 1, 8)}
+    assert (calendar.first, calendar.last) == (date(2025, 1, 2), date(2025, 12, 31))
+    assert calendar.source == "fafnir:ref.trading_calendar"
+    assert fafnir.has(Capability.TRADING_CALENDAR)
+
+
+@pytest.mark.parametrize("venue", ["OTC", None])
+def test_r9_a_venue_with_no_calendar_is_judged_by_nasdaqs(
+    warehouse: _Warehouse, fafnir: FafnirProvider, venue: str | None
+) -> None:
+    """As fafnir's own ingestion judges it (CALENDAR_FALLBACK_EXCHANGE)."""
+    warehouse.sessions("NASDAQ", "2025-01-02", "2025-01-03")
+
+    calendar = fafnir.trading_calendar(venue, date(2025, 1, 1), date(2025, 1, 31))
+
+    assert calendar.exchange == "NASDAQ"
+    assert calendar.open_days == {date(2025, 1, 2), date(2025, 1, 3)}
+
+
+def test_no_calendar_at_all_is_refused(fafnir: FafnirProvider) -> None:
+    with pytest.raises(
+        DataUnavailableError, match="no trading calendar for OTC, nor for NASDAQ"
+    ):
+        fafnir.trading_calendar("OTC", date(2025, 1, 1), date(2025, 1, 31))
 
 
 # ── the risk-free rate, through duk ──────────────────────────────────────────

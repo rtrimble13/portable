@@ -35,6 +35,7 @@ __all__ = [
     "OnConflict",
     "PriceRequest",
     "Span",
+    "clip",
     "conflicts",
     "differences",
     "held_spans",
@@ -248,7 +249,7 @@ def requests_while_held(
         instrument = repos.instruments.get(instrument_id)
         if instrument is None:  # pragma: no cover -- a foreign key prevents it
             continue
-        for held in _clip(series, first, last):
+        for held in clip(series, first, last):
             if lead_in_days > 0:
                 lead = Span(
                     held.start - timedelta(days=lead_in_days), held.start - timedelta(days=1)
@@ -265,7 +266,8 @@ def requests_while_held(
     return requests, warnings
 
 
-def _clip(series: Sequence[Span], first: date, last: date) -> list[Span]:
+def clip(series: Sequence[Span], first: date, last: date) -> list[Span]:
+    """The parts of *series* from *first* to *last*."""
     return [
         Span(max(span.start, first), min(span.end, last))
         for span in series

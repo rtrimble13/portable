@@ -12,7 +12,8 @@ A provider declares what it can do. Capabilities are **separately declarable
 protocols**, so a partial provider is legal and its gaps are *visible*:
 
 `security_master` · `eod_prices` · `intraday_prices` · `corporate_actions` ·
-`dividends` · `benchmarks` · `risk_free_rate` · `fx` (interface only in v0.1)
+`dividends` · `benchmarks` · `risk_free_rate` · `trading_calendar` · `fx`
+(interface only in v0.1)
 
 That is not architectural neatness. A monolithic interface would have forced
 `FafnirProvider` to implement `benchmark_series` and return *something* — and
@@ -50,6 +51,7 @@ fafnir change is a one-file change here.
 | End-of-day prices | `duk -S db ph <identifier> --close --json --precision 6` — **unadjusted** |
 | Splits and cash dividends | `mart.v_corporate_action` — fafnir migration 0033 ([rtrimble13/fafnir#175](https://github.com/rtrimble13/fafnir/pull/175)) |
 | Risk-free rate | `duk -S live yc`, for the date asked |
+| Trading calendar | `ref.trading_calendar`: the instrument's venue, else NASDAQ's, as fafnir's own ingestion falls back |
 
 **`mart` and `ref` only, never `core`.** Over an SSH tunnel the owner connects
 as a role in `fafnir_app`, which fafnir's ADR 0008 lets read `mart` and `ref`
@@ -322,6 +324,38 @@ for that day. It stores nothing for that instrument, loads the rest, and exits
 The same number from two sources (`189.12` and `189.120000`) is not a
 disagreement. Nor is a source correcting its own earlier price, which replaces
 it as a final price replaces a preliminary one (`PORT-GIPS-A09`).
+
+### Finding the gaps
+
+[ADR 0020](adr/0020-historical-price-import.md) R3 and R9. A valuation
+tolerates a price a few days old, so a missing day hides behind the one before
+it, and a gap it cannot hide surfaces as one incomplete account-day at a time.
+`pt price gaps` asks the stricter question once, across the history:
+
+```bash
+pt --port p.port -S fafnir price gaps                       # from the ledger's first date
+pt --port p.port -S fafnir price gaps --from 2024-01-01 --to 2024-12-31
+```
+
+- **Every day an account held an instrument** is read from the ledger, as
+  `price load` reads it, and checked against **its venue's trading calendar**.
+  A holiday is not a gap, and a session with no price is. A price from any
+  source counts: the question is whether the day can be valued.
+- **The calendar is fafnir's** (`ref.trading_calendar`). A venue with no
+  calendar of its own is judged by NASDAQ's, as fafnir's ingestion judges it,
+  and the report says which instruments were. fafnir stores open days only, so
+  a day outside a calendar's span is unknown rather than closed: it is listed
+  as unchecked, never counted either way. A provider with no calendar is
+  refused, exit 5, because without one a missing price cannot be told from a
+  holiday.
+- **Each gap is a run** of consecutive unpriced sessions per instrument, with
+  its first and last date. Weekends and holidays neither break a run nor count
+  in it.
+- An instrument marked as having no market price is listed, not checked
+  (ADR 0028).
+- **It is a report**, and exits 0 whatever it finds. `pt price load --from D
+  --to D` fetches a gap the provider holds, and `pt price load --file` fills
+  one it does not.
 
 ---
 

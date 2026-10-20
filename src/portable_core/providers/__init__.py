@@ -12,10 +12,13 @@ from portable_core.providers.base import (
     CorporateActionRecord,
     MarketDataProvider,
     RiskFreeRate,
+    TradingCalendar,
+    TradingCalendarCapability,
     as_benchmark_provider,
     as_corporate_action_provider,
     as_eod_provider,
     as_security_master,
+    as_trading_calendar_provider,
     require_capability,
 )
 from portable_core.providers.file import FileProvider
@@ -30,10 +33,13 @@ __all__ = [
     "NullProvider",
     "OfflineProvider",
     "RiskFreeRate",
+    "TradingCalendar",
+    "TradingCalendarCapability",
     "as_benchmark_provider",
     "as_corporate_action_provider",
     "as_eod_provider",
     "as_security_master",
+    "as_trading_calendar_provider",
     "build_provider",
     "require_capability",
 ]

@@ -35,10 +35,13 @@ __all__ = [
     "RiskFreeRate",
     "RiskFreeRateCapability",
     "SecurityMasterCapability",
+    "TradingCalendar",
+    "TradingCalendarCapability",
     "as_benchmark_provider",
     "as_corporate_action_provider",
     "as_eod_provider",
     "as_security_master",
+    "as_trading_calendar_provider",
     "require_capability",
 ]
 
@@ -54,6 +57,7 @@ class Capability(StrEnum):
     BENCHMARKS = "benchmarks"
     RISK_FREE_RATE = "risk_free_rate"
     FX = "fx"
+    TRADING_CALENDAR = "trading_calendar"
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +115,29 @@ class RiskFreeRate:
     source: str
 
 
+@dataclass(frozen=True, slots=True)
+class TradingCalendar:
+    """One venue's sessions over a range of dates, and the span its calendar covers.
+
+    A calendar knows the days between ``first`` and ``last``. Inside that span
+    a day that is not in ``open_days`` was not a session: a weekend, a holiday,
+    a closure. Outside it, nothing is known, and treating a day there as closed
+    would hide a missing price as surely as treating it as open would invent
+    one (ADR 0020 R9).
+    """
+
+    #: The venue whose calendar this is, which may not be the one asked for.
+    exchange: str
+    #: The sessions in the range asked for.
+    open_days: frozenset[date]
+    first: date
+    last: date
+    source: str
+
+    def covers(self, on: date) -> bool:
+        return self.first <= on <= self.last
+
+
 # ── capability protocols ─────────────────────────────────────────────────────
 
 
@@ -155,6 +182,19 @@ class FxCapability(Protocol):
     """Interface only in v0.1. Multi-currency is a backlog item (P1)."""
 
     def fx_rate(self, base: str, quote: str, on: date) -> Decimal: ...
+
+
+@runtime_checkable
+class TradingCalendarCapability(Protocol):
+    """The sessions of *exchange*, or of the venue the provider judges it by.
+
+    *exchange* may be ``None``, for an instrument with no venue on record; the
+    calendar returned names the venue it is.
+    """
+
+    def trading_calendar(
+        self, exchange: str | None, start: date, end: date
+    ) -> TradingCalendar: ...
 
 
 # ── the base class ───────────────────────────────────────────────────────────
@@ -246,6 +286,14 @@ def as_benchmark_provider(provider: MarketDataProvider) -> BenchmarkCapability:
     require_capability(provider, Capability.BENCHMARKS)
     if not isinstance(provider, BenchmarkCapability):
         raise _mismatch(provider, Capability.BENCHMARKS)
+    return provider
+
+
+def as_trading_calendar_provider(provider: MarketDataProvider) -> TradingCalendarCapability:
+    """Narrow a provider to its trading-calendar capability, or refuse."""
+    require_capability(provider, Capability.TRADING_CALENDAR)
+    if not isinstance(provider, TradingCalendarCapability):
+        raise _mismatch(provider, Capability.TRADING_CALENDAR)
     return provider
 
 

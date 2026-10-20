@@ -72,6 +72,7 @@ from portable_core.providers.base import (
     CorporateActionRecord,
     MarketDataProvider,
     RiskFreeRate,
+    TradingCalendar,
 )
 
 __all__ = ["SCHEMA", "FafnirProvider", "resolve_dsn"]
@@ -88,6 +89,10 @@ SCHEMA: Final[dict[str, str]] = {
     "corporate_action": "mart.v_corporate_action",
     "trading_calendar": "ref.trading_calendar",
 }
+
+#: The venue whose calendar judges a security whose own venue has none: fafnir's
+#: ``CALENDAR_FALLBACK_EXCHANGE``, so portable finds the gaps fafnir would.
+_CALENDAR_FALLBACK: Final = "NASDAQ"
 
 #: The scale of fafnir's raw prices (``core.daily_price.close NUMERIC(20, 6)``),
 #: and so the precision `duk` is asked to print them at.
@@ -188,6 +193,7 @@ class FafnirProvider(MarketDataProvider):
             Capability.SECURITY_MASTER,
             Capability.CORPORATE_ACTIONS,
             Capability.DIVIDENDS,
+            Capability.TRADING_CALENDAR,
         }
         if shutil.which(self.duk_path):
             found.update({Capability.EOD_PRICES, Capability.RISK_FREE_RATE})
@@ -647,6 +653,57 @@ class FafnirProvider(MarketDataProvider):
             )
             for kind, ex_date, record_date, pay_date, num, den, amount, action_id in rows
         ]
+
+    # ── trading calendar ─────────────────────────────────────────────────────
+
+    def trading_calendar(self, exchange: str | None, start: date, end: date) -> TradingCalendar:
+        """*exchange*'s sessions from *start* to *end*, or NASDAQ's when it has none.
+
+        fafnir seeds open days only: a weekend or a recurring holiday has no
+        row, and a closure no rule predicts is a row with ``is_open`` false
+        (fafnir migration 0022). So no row means closed inside the calendar's
+        span and unknown outside it, and the span -- everything the venue's
+        calendar holds, not just the range asked for -- is read as well. A
+        venue with no calendar rows is judged by NASDAQ's, as fafnir's own
+        ingestion judges it.
+
+        Raises:
+            DataUnavailableError: neither the venue nor NASDAQ has a calendar.
+        """
+        table = SCHEMA["trading_calendar"]
+        asked = exchange.strip().upper() if exchange else None
+        for code in dict.fromkeys(c for c in (asked, _CALENDAR_FALLBACK) if c):
+            bounds = self._query(
+                "SELECT min(trade_date) AS first_day, max(trade_date) AS last_day "  # noqa: S608 -- table names come from the SCHEMA constant; all values are bound
+                f"FROM {table} WHERE exchange_code = %s",
+                (code,),
+            )
+            if not bounds or bounds[0][0] is None:
+                continue
+            sessions = self._query(
+                f"SELECT trade_date FROM {table} WHERE exchange_code = %s AND is_open "  # noqa: S608 -- table names come from the SCHEMA constant; all values are bound
+                "AND trade_date BETWEEN %s AND %s ORDER BY trade_date",
+                (code, start.isoformat(), end.isoformat()),
+            )
+            return TradingCalendar(
+                exchange=code,
+                open_days=frozenset(_as_date(row[0]) for row in sessions),
+                first=_as_date(bounds[0][0]),
+                last=_as_date(bounds[0][1]),
+                source=f"{self.name}:{table}",
+            )
+        named = asked or "a security with no venue"
+        also = "" if asked == _CALENDAR_FALLBACK else f", nor for {_CALENDAR_FALLBACK}"
+        raise DataUnavailableError(
+            f"the fafnir warehouse has no trading calendar for {named}{also}",
+            code=E_PROVIDER_UNAVAILABLE,
+            remedy=(
+                f"{table} is filled by `fafnir db seed` on the warehouse host. Without "
+                "a calendar, a missing price cannot be told from a holiday."
+            ),
+            provider=self.name,
+            exchange=asked,
+        )
 
     # ── risk-free rate, via duk ──────────────────────────────────────────────
 

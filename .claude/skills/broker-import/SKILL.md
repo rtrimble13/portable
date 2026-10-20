@@ -202,6 +202,11 @@ If `duk` is not on `PATH`, set `duk_path` in `~/.portablerc`.
      fafnir is the owner's call; otherwise it goes on the file list.
    - `had no price in the days before they began`: informational.
 
+   Then `pt -S fafnir price gaps` lists every held trading day still without a
+   price, as runs per instrument, judged by each venue's calendar. That list
+   is the file list for step 3. Report the symbols and the number of
+   sessions; the dates go to the owner when you ask for the source.
+
    `PT-E-PROVIDER-UNAVAILABLE` stops the run. The cause is the tunnel, the
    role, or duk itself, and the message says which. Fix it and re-run.
 3. **Fill the gaps from files.** The owner supplies the source: custodian
@@ -211,7 +216,8 @@ If `duk` is not on `PATH`, set `duk_path` in `~/.portablerc`.
    with the raw exports, outside the repository. Run `pt price load --file
    gaps.csv --dry-run` and read what it did not load: a ticker not held under
    that name (a typo, or a pre-rename ticker) and rows outside the days held.
-   Then load it.
+   Then load it, and run `pt -S fafnir price gaps` again: what it still
+   lists is either still to source or a day nothing priced.
    - `PT-E-PRICE-CONFLICT`: the file and fafnir, or a hand-set price, disagree
      on a day. Do not pick. Give the owner the list. `--on-conflict keep` or
      `--on-conflict replace` is their decision. A wrong warehouse price is

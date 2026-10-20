@@ -294,8 +294,15 @@ Done without a warehouse, because each was needed however R1 resolves:
   check (fills within the day's range; funds at NAV) flags for review and is
   still to build.
 
-Still open: R3's coverage report and R9's calendar, R10's trade-price check,
-and R8's real benchmark series.
+- **R3's coverage report and R9's calendar:** `pt price gaps` lists every held
+  session with no price from any source, judged by the venue's trading
+  calendar from fafnir's `ref.trading_calendar`, NASDAQ's where the venue has
+  none, as fafnir falls back. A day outside the calendar's span is reported
+  as unchecked, not as a gap or as closed. `docs/market-data.md` "Finding the
+  gaps".
+
+Still open: R3's conversion step (a vendor export into the price file
+schema), R10's trade-price check, and R8's real benchmark series.
 
 ## Alternatives considered
 

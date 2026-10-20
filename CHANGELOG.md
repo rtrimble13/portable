@@ -16,6 +16,15 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`pt price gaps`: every held trading day with no price** (ADR 0020 R3,
+  R9). Each day an account held an instrument is checked against its venue's
+  trading calendar, so a holiday is not a gap and a missing session is. A gap
+  surfaced before only as one incomplete account-day at a time, and the
+  staleness tolerance hid most. Calendars come from fafnir's
+  `ref.trading_calendar` (a new `trading_calendar` capability), with NASDAQ's
+  for a venue that has none. Days outside a calendar's span are listed as
+  unchecked. A report: exit 0.
+
 - **A tax rate schedule or return policy entered wrongly can be corrected on
   its own date** (ADR 0025, decision 5). `pt account tax-rates set
   --corrects` and `pt policy set --corrects` record a row in place of the one

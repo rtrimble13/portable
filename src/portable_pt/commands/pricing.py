@@ -28,8 +28,12 @@ from portable_core.errors import (
 from portable_core.errors.kinds import E_PRICE_CONFLICT, E_PRICE_MISSING, E_RECONCILE_BREAK
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.persistence.repositories import Repositories
-from portable_core.providers import FileProvider, as_eod_provider
-from portable_core.services import price_acceptance, price_history
+from portable_core.providers import (
+    FileProvider,
+    as_eod_provider,
+    as_trading_calendar_provider,
+)
+from portable_core.services import price_acceptance, price_gaps, price_history
 from portable_core.services import snapshots as snapshots_service
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, price_line_row, resolve_date
@@ -455,6 +459,138 @@ def show(
         )
 
     dispatch(action)
+
+
+@price_app.command()
+def gaps(
+    start: Annotated[
+        str | None, typer.Option("--from", help="Default: the ledger's first date.")
+    ] = None,
+    end: Annotated[str | None, typer.Option("--to", help="Default: --as-of.")] = None,
+) -> None:
+    """List the trading days a held instrument has no price for (ADR 0020 R3, R9).
+
+    Every day an account held an instrument, read from the ledger, is checked
+    against its venue's trading calendar: a holiday is not a gap, and a
+    session with no price from any source is. Valuation tolerates a price a
+    few days old; this report does not, so it finds what that tolerance hides,
+    once, across the whole history. An instrument marked as having no market
+    price is listed, not checked (ADR 0028). Days the calendar does not reach
+    are listed as unchecked, never counted either way.
+
+    A report: it exits 0 whatever it finds. Fill a gap with `pt price load
+    --from D --to D`, or from a file with `pt price load --file PATH`.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        calendars = as_trading_calendar_provider(ctx.provider())
+        last = resolve_date(end, ctx, what="--to") if end else ctx.as_of
+        if start:
+            first = resolve_date(start, ctx, what="--from")
+        else:
+            opened = [
+                found
+                for account in repos.accounts.all()
+                if (found := repos.transactions.first_trade_date(account.account_id))
+            ]
+            if not opened:
+                raise ValidationError(
+                    "the ledger is empty, so nothing was held",
+                    remedy="Record or import transactions first.",
+                )
+            first = min(opened)
+        if last < first:
+            raise ValidationError(
+                f"--to {last.isoformat()} precedes --from {first.isoformat()}",
+                remedy="Check the order of the dates.",
+            )
+
+        coverage = price_gaps.report(repos, calendars, first, last)
+        warnings = list(coverage.warnings)
+        if coverage.gaps:
+            warnings.append(
+                f"{coverage.unpriced} of {coverage.sessions} held session(s) have no "
+                f"price, in {len({g.symbol for g in coverage.gaps})} instrument(s). "
+                "`pt price load --from D --to D` fetches them; `pt price load --file "
+                "PATH` fills what the provider does not hold."
+            )
+        warnings.extend(u.describe() for u in coverage.uncovered)
+        warnings.extend(
+            f"judged by {calendar}'s calendar, for want of their own: instruments on "
+            + ", ".join(sorted(venue or "no venue on record" for venue in venues))
+            for calendar, venues in _fallbacks(coverage.calendars).items()
+        )
+        if coverage.unquoted:
+            warnings.append(
+                "not checked, marked as having no market price: " + ", ".join(coverage.unquoted)
+            )
+
+        rows = tuple(
+            {
+                "symbol": gap.symbol,
+                "calendar": gap.calendar,
+                "from": gap.start.isoformat(),
+                "to": gap.end.isoformat(),
+                "sessions": gap.sessions,
+            }
+            for gap in coverage.gaps
+        )
+        return CommandResult(
+            command="price gaps",
+            table=Table(
+                columns=(
+                    Column("symbol", "Symbol"),
+                    Column("calendar", "Calendar"),
+                    Column("from", "From", ColumnKind.DATE),
+                    Column("to", "To", ColumnKind.DATE),
+                    Column("sessions", "Sessions", ColumnKind.INTEGER),
+                ),
+                rows=rows,
+                title=f"Held sessions with no price, {first.isoformat()} to {last.isoformat()}",
+                footnotes=(
+                    f"{coverage.priced} of {coverage.sessions} held sessions are priced, "
+                    f"across {coverage.instruments} instrument(s).",
+                    "Sessions are the venue's trading days. A price from any source counts.",
+                ),
+            ),
+            data={
+                "from": first.isoformat(),
+                "to": last.isoformat(),
+                "instruments": coverage.instruments,
+                "sessions": coverage.sessions,
+                "priced": coverage.priced,
+                "unpriced": coverage.unpriced,
+                "uncovered": [
+                    {
+                        "symbol": u.symbol,
+                        "calendar": u.calendar,
+                        "from": u.start.isoformat(),
+                        "to": u.end.isoformat(),
+                    }
+                    for u in coverage.uncovered
+                ],
+                "unquoted": list(coverage.unquoted),
+                "calendars": [
+                    {"venue": venue, "calendar": calendar}
+                    for venue, calendar in coverage.calendars
+                ],
+            },
+            warnings=tuple(warnings),
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
+def _fallbacks(calendars: Sequence[tuple[str | None, str]]) -> dict[str, list[str | None]]:
+    """The venues judged by another venue's calendar, by the calendar used."""
+    used: dict[str, list[str | None]] = {}
+    for venue, calendar in calendars:
+        if venue is None or venue.strip().upper() != calendar:
+            used.setdefault(calendar, []).append(venue)
+    return used
 
 
 # ── valuation ────────────────────────────────────────────────────────────────

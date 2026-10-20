@@ -112,7 +112,7 @@ an `Error:` line (the warehouse or the role).
 | Symbol history | `mart.v_symbol_lookup` |
 | Security master, identifiers | `mart.v_security_profile` (`primary_symbol` is exposed as `symbol`) |
 | Splits and cash dividends | `mart.v_corporate_action` — fafnir migration 0033 (see the appendix) |
-| Trading calendar | `ref.trading_calendar` |
+| Trading calendar | `ref.trading_calendar`, the venue's, else NASDAQ's (fafnir's `CALENDAR_FALLBACK_EXCHANGE`); read by `pt price gaps` |
 
 No query names `core`. A test runs every query against a fake warehouse that
 has no `core` schema. A query that meets `undefined_table` or
