@@ -187,6 +187,11 @@ naming the gains and the estimate before and after. When the schedule corrects
 the rate that was really in force, `--restate` records it and restates the
 estimates in the same transaction (ADR 0025).
 
+A schedule is never edited. One entered wrongly is replaced on its own date
+with `--corrects` (with `--restate` if it changes a recorded estimate). The
+wrong one is kept, so `pt account show` lists what was entered and what
+replaced it, and no estimate reads it again.
+
 ### What the estimate does not model
 
 - bracket progressivity

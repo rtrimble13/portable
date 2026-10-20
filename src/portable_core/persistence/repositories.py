@@ -260,7 +260,7 @@ class AccountRepository(_Repository):
         cursor = self.con.execute(
             "INSERT INTO tax_rate_schedule (account_id, effective_from, "
             "short_term_federal, long_term_federal, state, niit, qualified_dividend, "
-            "note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "note, created_at, corrects_rate_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 schedule.account_id,
                 schedule.effective_from.isoformat(),
@@ -271,15 +271,31 @@ class AccountRepository(_Repository):
                 _text(schedule.qualified_dividend),
                 schedule.note,
                 _now(),
+                schedule.corrects_rate_id,
             ),
         )
         return int(cursor.lastrowid or 0)
 
-    def rate_schedules(self, account_id: int) -> list[TaxRateSchedule]:
+    def rate_schedules(
+        self, account_id: int, *, include_corrected: bool = False
+    ) -> list[TaxRateSchedule]:
+        """The account's schedules by date: the ones in force, unless told otherwise.
+
+        A schedule another one corrects (ADR 0025) is kept, so the history shows
+        it, and is never read for a rate.
+        """
+        current = (
+            ""
+            if include_corrected
+            else " AND NOT EXISTS (SELECT 1 FROM tax_rate_schedule c "
+            "WHERE c.corrects_rate_id = t.rate_id)"
+        )
         return [
             mappers.to_tax_rate_schedule(r)
             for r in self.con.execute(
-                "SELECT * FROM tax_rate_schedule WHERE account_id = ? ORDER BY effective_from",
+                "SELECT * FROM tax_rate_schedule t WHERE account_id = ?"  # noqa: S608 -- appends a fixed clause only; values are bound
+                + current
+                + " ORDER BY effective_from, rate_id",
                 (account_id,),
             )
         ]
@@ -1819,7 +1835,7 @@ class PolicyRepository(_Repository):
             "INSERT INTO return_policy (effective_from, large_flow_basis, "
             "large_flow_value, significant_flow_basis, significant_flow_value, "
             "materiality_return_bps, materiality_value, risk_measure_basis, note, "
-            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "created_at, corrects_policy_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 policy.effective_from.isoformat(),
                 policy.large_flow_basis,
@@ -1831,9 +1847,15 @@ class PolicyRepository(_Repository):
                 policy.risk_measure_basis,
                 policy.note,
                 _now(),
+                policy.corrects_policy_id,
             ),
         )
         return int(cursor.lastrowid or 0)
+
+    #: A policy another one corrects (ADR 0025) is kept and never read.
+    _CURRENT: ClassVar[str] = (
+        "NOT EXISTS (SELECT 1 FROM return_policy c WHERE c.corrects_policy_id = p.policy_id)"
+    )
 
     def in_force(self, on: date) -> ReturnPolicy | None:
         """The policy effective on *on*, or None.
@@ -1843,16 +1865,20 @@ class PolicyRepository(_Repository):
         ``PORT-GIPS-B03`` makes a missing definition an error and not a zero.
         """
         row = self.con.execute(
-            "SELECT * FROM return_policy WHERE effective_from <= ? "
+            f"SELECT * FROM return_policy p WHERE effective_from <= ? AND {self._CURRENT} "  # noqa: S608 -- a class constant; values are bound
             "ORDER BY effective_from DESC LIMIT 1",
             (on.isoformat(),),
         ).fetchone()
         return None if row is None else mappers.to_return_policy(row)
 
-    def all(self) -> list[ReturnPolicy]:
+    def all(self, *, include_corrected: bool = False) -> list[ReturnPolicy]:
+        """Every policy by date: the ones in force, unless told otherwise."""
+        where = "" if include_corrected else f" WHERE {self._CURRENT}"
         return [
             mappers.to_return_policy(r)
-            for r in self.con.execute("SELECT * FROM return_policy ORDER BY effective_from")
+            for r in self.con.execute(
+                f"SELECT * FROM return_policy p{where} ORDER BY effective_from, policy_id"  # noqa: S608 -- a class constant; values are bound
+            )
         ]
 
 

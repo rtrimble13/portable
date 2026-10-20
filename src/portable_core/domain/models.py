@@ -106,6 +106,8 @@ class TaxRateSchedule:
     niit: Decimal = Decimal("0")
     qualified_dividend: Decimal | None = None
     note: str | None = None
+    #: The schedule of the same account and date this one corrects (ADR 0025).
+    corrects_rate_id: int | None = None
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)
@@ -703,6 +705,8 @@ class ReturnPolicy:
     materiality_value: Decimal | None = None
     risk_measure_basis: str = "gross_of_fees"
     note: str | None = None
+    #: The policy of the same date this one corrects (ADR 0025).
+    corrects_policy_id: int | None = None
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)

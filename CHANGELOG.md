@@ -16,6 +16,16 @@ Two rules specific to this repository:
 
 ### Added
 
+- **A tax rate schedule or return policy entered wrongly can be corrected on
+  its own date** (ADR 0025, decision 5). `pt account tax-rates set
+  --corrects` and `pt policy set --corrects` record a row in place of the one
+  in force on that date. The wrong row is kept as history and never read
+  again. Before, a date took one row, so a rate mistyped for 2024-01-01 could
+  be overridden only from 2024-01-02, and a sale on 2024-01-01 kept the wrong
+  rate. A correction that changes a recorded figure still needs `--restate`.
+  `pt account show` and `pt policy show` list each corrected row with the id
+  of its replacement.
+
 - **Price history is accepted against the custodian's statements** (ADR 0031,
   answering ADR 0020 R10). `pt reconcile --against STATEMENT --as-of DATE`
   now reconciles a past statement against the book as it stood that day, and
@@ -270,6 +280,12 @@ Two rules specific to this repository:
 
 ### Schema
 
+- **`schema_version` 8 → 9**, migration `0009_config_row_corrections`
+  (ADR 0025). A rebuild of `tax_rate_schedule` and `return_policy`
+  (ADR 0019) that adds `corrects_rate_id` and `corrects_policy_id`. Each
+  table's `UNIQUE` date constraint becomes a partial unique index over
+  originals, plus one letting each row be corrected once, and a trigger keeps
+  a correction to its row's account and date. Every row and id is kept.
 - **`schema_version` 7 → 8**, migration `0008_price_acceptance` (ADR 0031).
   Additive: `statement_position`, the custodian's stated quantity and market
   value per account, date and instrument; and `price_acceptance`, a reason for

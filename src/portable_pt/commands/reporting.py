@@ -1227,6 +1227,13 @@ def set_policy(
             help="Record a policy that changes stored snapshots, and restate them.",
         ),
     ] = False,
+    corrects: Annotated[
+        bool,
+        typer.Option(
+            "--corrects",
+            help="Replace the policy entered wrongly on this date; it is kept as history.",
+        ),
+    ] = False,
 ) -> None:
     """Set the effective-dated return policy.
 
@@ -1239,6 +1246,10 @@ def set_policy(
     by accident: one that changes a stored snapshot is refused with
     PT-E-RESTATES-HISTORY, and `--restate` records it and restates them,
     keeping the prices they recorded (ADR 0025).
+
+    A policy is never edited. One entered wrongly is replaced on its own date
+    with `--corrects`; the wrong one is kept, marked as corrected, and no longer
+    read. A correction that changes a stored snapshot still needs `--restate`.
     """
 
     def action() -> CommandResult:
@@ -1277,11 +1288,18 @@ def set_policy(
             "materiality_return_bps": policy.materiality_return_bps,
         }
         with ctx.write():
-            recorded = restatement.record_policy(repos, policy, restate=restate)
+            recorded = restatement.record_policy(
+                repos, policy, restate=restate, corrects=corrects
+            )
 
         return CommandResult(
             command="policy set",
-            data={**payload, "policy_id": recorded.row_id, "restated": bool(recorded.restated)},
+            data={
+                **payload,
+                "policy_id": recorded.row_id,
+                "corrects": corrects,
+                "restated": bool(recorded.restated),
+            },
             warnings=recorded.restated,
             portfolio=ctx.portfolio_name(),
         )
@@ -1300,7 +1318,12 @@ def show_policy() -> None:
     def action() -> CommandResult:
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
-        policies = repos.policies.all()
+        policies = repos.policies.all(include_corrected=True)
+        corrected_by = {
+            p.corrects_policy_id: p.policy_id
+            for p in policies
+            if p.corrects_policy_id is not None
+        }
         in_force = repos.policies.in_force(ctx.as_of)
 
         if in_force is None:
@@ -1315,7 +1338,11 @@ def show_policy() -> None:
                     "will not default it to zero."
                 ),
                 as_of=ctx.as_of.isoformat(),
-                known_policies=[p.effective_from.isoformat() for p in policies],
+                known_policies=[
+                    p.effective_from.isoformat()
+                    for p in policies
+                    if p.policy_id not in corrected_by
+                ],
             )
 
         return CommandResult(
@@ -1328,6 +1355,8 @@ def show_policy() -> None:
                     Column("significant_flow_value", "Significant Flow", ColumnKind.RATE),
                     Column("materiality_return_bps", "Materiality (bps)", ColumnKind.MONEY),
                     Column("risk_measure_basis", "Risk Basis"),
+                    Column("policy_id", "Id", ColumnKind.INTEGER),
+                    Column("corrected_by", "Corrected By", ColumnKind.INTEGER),
                 ),
                 rows=tuple(
                     {
@@ -1337,6 +1366,8 @@ def show_policy() -> None:
                         "significant_flow_value": p.significant_flow_value,
                         "materiality_return_bps": p.materiality_return_bps,
                         "risk_measure_basis": p.risk_measure_basis,
+                        "policy_id": p.policy_id,
+                        "corrected_by": corrected_by.get(p.policy_id),
                     }
                     for p in policies
                 ),
@@ -1348,6 +1379,15 @@ def show_policy() -> None:
                     "(PORT-GIPS-B03, E09).",
                     "Because portable values daily, the large-flow threshold is "
                     "informational: the sub-period requirement is already satisfied.",
+                    *(
+                        (
+                            "A policy with a Corrected By id was entered wrongly and is "
+                            "never read; the policy with that id replaced it on the same "
+                            "date (ADR 0025).",
+                        )
+                        if corrected_by
+                        else ()
+                    ),
                 ),
             ),
             data={

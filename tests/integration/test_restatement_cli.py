@@ -157,3 +157,123 @@ def test_a_policy_after_every_snapshot_needs_no_flag(run_pt: CliRunner, valued: 
 
     assert result["data"]["restated"] is False
     run_pt("--port", valued, "validate")
+
+
+# ── Corrections on the row's own date (ADR 0025) ─────────────────────────────
+#
+# Before: a row is never edited and one date took one row, so a rate mistyped
+# for 2024-01-01 could be overridden only from 2024-01-02, and anything dated
+# 2024-01-01 kept the wrong rate. `--corrects` records a row in its place.
+
+
+def test_a_second_schedule_for_one_date_points_to_corrects(
+    run_pt: CliRunner, sold: str
+) -> None:
+    error = run_pt(*_rates(sold, "0.05", "2024-01-01"), expect=4).json()["error"]
+
+    assert "--corrects" in error["remedy"]
+
+
+def test_a_correction_that_changes_tax_is_refused_without_restate(
+    run_pt: CliRunner, sold: str
+) -> None:
+    error = run_pt(*_rates(sold, "0.0575", "2024-01-01", "--corrects"), expect=4).json()[
+        "error"
+    ]
+
+    assert error["code"] == "PT-E-RESTATES-HISTORY"
+    assert error["message"] == (
+        "correcting the tax rate schedule effective 2024-01-01 changes the estimated tax "
+        "on 1 realized gain in B dated 2024-06-03 (458.00 becomes 465.50)"
+    )
+    assert _tax(run_pt, sold) == "458.00"
+    assert _query(sold, "SELECT COUNT(*) FROM tax_rate_schedule") == [(1,)]
+
+
+def test_a_correction_replaces_the_rate_on_its_own_date_and_keeps_the_wrong_one(
+    run_pt: CliRunner, sold: str
+) -> None:
+    result = run_pt(*_rates(sold, "0.0575", "2024-01-01", "--corrects", "--restate")).json()
+
+    assert result["data"]["corrects"] is True
+    assert result["warnings"] == [
+        "restated the estimated tax on 1 realized gain in B dated 2024-06-03 "
+        "(458.00 becomes 465.50)"
+    ]
+    assert _tax(run_pt, sold) == "465.50"
+    assert _query(
+        sold,
+        "SELECT rate_id, effective_from, state, corrects_rate_id FROM tax_rate_schedule "
+        "ORDER BY rate_id",
+    ) == [(1, "2024-01-01", "0.05", None), (2, "2024-01-01", "0.0575", 1)]
+    assert _query(sold, "SELECT DISTINCT rate_id FROM realized_gain") == [(2,)]
+    run_pt("--port", sold, "validate")
+    run_pt("--port", sold, "rebuild", "--yes")
+    assert _tax(run_pt, sold) == "465.50"
+
+    shown = run_pt("--port", sold, "account", "show", "B").json()
+    assert [(r["rate_id"], r["state"], r["corrected_by"]) for r in shown["data"]["rows"]] == [
+        (1, "0.05", 2),
+        (2, "0.0575", None),
+    ]
+
+
+def test_a_correction_can_itself_be_corrected(run_pt: CliRunner, sold: str) -> None:
+    run_pt(*_rates(sold, "0.0575", "2024-01-01", "--corrects", "--restate"))
+    run_pt(*_rates(sold, "0.06", "2024-01-01", "--corrects", "--restate"))
+
+    assert _query(
+        sold, "SELECT rate_id, corrects_rate_id FROM tax_rate_schedule ORDER BY rate_id"
+    ) == [(1, None), (2, 1), (3, 2)]
+    assert _tax(run_pt, sold) == "468.00"
+    run_pt("--port", sold, "validate")
+
+
+def test_corrects_with_nothing_on_that_date_is_refused(run_pt: CliRunner, sold: str) -> None:
+    error = run_pt(*_rates(sold, "0.0575", "2024-03-01", "--corrects"), expect=4).json()[
+        "error"
+    ]
+
+    assert error["message"] == "B has no tax rate schedule effective 2024-03-01 to correct"
+    assert _query(sold, "SELECT COUNT(*) FROM tax_rate_schedule") == [(1,)]
+
+
+def test_port_gips_b03_a_policy_correction_restates_the_flags_it_changes(
+    run_pt: CliRunner, valued: str
+) -> None:
+    run_pt(*_policy(valued, "2024-01-01", "--restate"))
+    assert _large_flags(valued) == [("2024-01-02", 1)]
+    corrected = (
+        "--port", valued, "policy", "set", "--effective-from", "2024-01-01",
+        "--large-flow-amount", "1000000", "--corrects",
+    )  # fmt: skip
+
+    error = run_pt(*corrected, expect=4).json()["error"]
+    assert error["message"] == (
+        "correcting the return policy effective 2024-01-01 changes the large-flow flags "
+        "of 1 valuation snapshot of B dated 2024-01-02"
+    )
+    assert _large_flags(valued) == [("2024-01-02", 1)]
+
+    result = run_pt(*corrected, "--restate").json()
+    assert result["data"]["corrects"] is True
+    assert _large_flags(valued) == [("2024-01-02", 0)]
+    run_pt("--port", valued, "validate")
+
+    shown = run_pt("--port", valued, "policy", "show", "--as-of", "2024-01-03").json()
+    assert shown["data"]["large_flow_value"] == "1000000"
+    assert [(r["policy_id"], r["corrected_by"]) for r in shown["data"]["rows"]] == [
+        (1, 2),
+        (2, None),
+    ]
+
+
+def test_a_second_policy_for_one_date_is_refused_by_name(
+    run_pt: CliRunner, valued: str
+) -> None:
+    run_pt(*_policy(valued, "2024-02-01"))
+
+    error = run_pt(*_policy(valued, "2024-02-01"), expect=4).json()["error"]
+
+    assert error["message"] == "a return policy is already effective 2024-02-01"
+    assert "--corrects" in error["remedy"]

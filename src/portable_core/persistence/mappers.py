@@ -149,6 +149,7 @@ def to_tax_rate_schedule(row: sqlite3.Row) -> TaxRateSchedule:
         niit=to_decimal(row["niit"]),
         qualified_dividend=to_optional_decimal(row["qualified_dividend"]),
         note=row["note"],
+        corrects_rate_id=row["corrects_rate_id"],
     )
 
 
@@ -434,6 +435,7 @@ def to_return_policy(row: sqlite3.Row) -> ReturnPolicy:
         materiality_value=to_optional_decimal(row["materiality_value"]),
         risk_measure_basis=str(row["risk_measure_basis"]),
         note=row["note"],
+        corrects_policy_id=row["corrects_policy_id"],
     )
 
 
