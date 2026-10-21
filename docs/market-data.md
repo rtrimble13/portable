@@ -48,8 +48,8 @@ fafnir change is a one-file change here.
 |---|---|
 | Security master | `mart.v_security_profile` |
 | Symbol resolution **as of a date** | `mart.v_symbol_lookup` |
-| End-of-day prices | `duk -S db ph <identifier> --close --json --precision 6` — **unadjusted** |
-| A day's range, to check fills | `duk -S db ph <identifier> --hlc --json --precision 6` — unadjusted, read by `pt trade check`, never stored |
+| End-of-day prices | `duk -S db ph <identifier> --close --json --exact` — **unadjusted** |
+| A day's range, to check fills | `duk -S db ph <identifier> --hlc --json --exact` — unadjusted, read by `pt trade check`, never stored |
 | Splits and cash dividends | `mart.v_corporate_action` — fafnir migration 0033 ([rtrimble13/fafnir#175](https://github.com/rtrimble13/fafnir/pull/175)) |
 | Risk-free rate | `duk -S live yc`, for the date asked |
 | Trading calendar | `ref.trading_calendar`: the instrument's venue, else NASDAQ's, as fafnir's own ingestion falls back |
@@ -65,13 +65,16 @@ the measurement date, and adjusted prices are not fair values on the
 measurement date — using them alongside explicit corporate-action transactions
 would double-count every split.
 
-**Exact, although `duk` prints floats.** `duk` holds prices in a floating-point
-DataFrame and prints two decimal places unless told otherwise. `portable` asks
-for six, the scale fafnir stores raw prices at (`NUMERIC(20, 6)`), parses the
-text as `Decimal`, and rounds it back to six places. That recovers the stored
-value exactly for any price below 10⁹. A value that is not within 10⁻⁷ of a
-six-place number, a price of 10⁹ or more, and any record that is not
-`{date, close}` are refused rather than rounded into shape.
+**Exact, end to end.** `duk ph --exact` prints each price as the text of the
+`NUMERIC(20, 6)` fafnir stores (`"189.120000"`), as a JSON string that no
+reader can round, and `portable` reads it straight into a `Decimal`. No price
+passes through a float anywhere on its way into the `.port` file (invariant 1).
+A JSON number, text that is not a plain positive decimal, a record that is not
+`{date, close}` (or `{date, high, low, close}`), and a date out of range or
+order are refused rather than read. `--exact` arrived with
+[rtrimble13/fafnir#177](https://github.com/rtrimble13/fafnir/pull/177): an
+older `duk` rejects the flag, and `portable` stops with that usage error and
+says which `duk` it needs.
 
 **Symbols resolve as of a date**, through `mart.v_symbol_lookup`, because
 fafnir's own data dictionary says the primary symbol is "**not** an

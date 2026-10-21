@@ -181,7 +181,9 @@ what was held, and when, comes from the ledger.
 the warehouse is up, and `duk -S db ph AAPL -n 1` prints a price: that is duk
 reading the warehouse as the owner's role. `pt` needs the same DSN duk uses
 (`FAFNIR_DSN` or `~/.dukrc`) and `psycopg` (`pip install 'portable[fafnir]'`).
-If `duk` is not on `PATH`, set `duk_path` in `~/.portablerc`.
+If `duk` is not on `PATH`, set `duk_path` in `~/.portablerc`. `duk ph --help`
+must list `--exact` (fafnir #177 or later): without it, every price load stops
+with duk's usage error until the owner installs a newer fafnir.
 
 1. **Instruments.** `pt -S fafnir instrument sync` compares every instrument
    ever held with fafnir, as of the last day it was held. Go through each

@@ -9,8 +9,8 @@ built here, so a fafnir change is a one-file change here.
 **Two routes, one warehouse.**
 
 * **Prices come from `duk`**, the owner's tool for sourcing them:
-  ``duk -S db ph <identifier> --close --json --precision 6``. Raw closes, from
-  the warehouse, never the live vendor and never ``--adj``.
+  ``duk -S db ph <identifier> --close --json --exact``. Raw closes, from the
+  warehouse, never the live vendor and never ``--adj``.
 * **Identity and corporate actions are read from `mart` directly**, over the
   same DSN. Which security a ticker named on each day is a question only
   ``mart.v_symbol_lookup`` answers -- `duk` resolves a ticker to whoever holds
@@ -22,12 +22,11 @@ built here, so a fafnir change is a one-file change here.
 `duk` is run with ``FAFNIR_DSN`` set to the DSN this adapter resolved, so the
 two routes cannot read two different warehouses.
 
-**`duk` prints floats.** Its DataFrame is floating point and its JSON rounds
-to two places unless told otherwise. ``--precision 6`` matches the warehouse's
-``NUMERIC(20, 6)``; the text is parsed as ``Decimal`` and rounded back to those
-six places, which recovers the stored value exactly for any price below 10^9.
-Anything that does not look like a six-place price that came through a float
-is refused, not rounded into one (`CLAUDE.md` invariant 1).
+**Exact, end to end.** ``--exact`` (fafnir #177) has `duk` print the
+warehouse's stored ``NUMERIC`` values as decimal text, JSON strings that no
+reader can round, so no price passes through a float anywhere on its way here
+(`CLAUDE.md` invariant 1). Anything that is not such text is refused, not
+read: a `duk` too old to take ``--exact`` stops the run with its usage error.
 
 **Two capabilities fafnir does not have**, both load-bearing:
 
@@ -50,12 +49,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tomllib
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Final
 
@@ -106,14 +106,9 @@ _FIELD_FLAGS: Final[dict[tuple[str, ...], str]] = {
     ("high", "low", "close"): "--hlc",
 }
 
-#: The scale of fafnir's raw prices (``core.daily_price.close NUMERIC(20, 6)``),
-#: and so the precision `duk` is asked to print them at.
-_PRICE_PLACES: Final = 6
-_PRICE_QUANTUM: Final = Decimal(1).scaleb(-_PRICE_PLACES)
-#: Below this a six-place price survives a float with an error under 10^-7, so
-#: rounding `duk`'s text to six places gives back exactly what is stored.
-_FLOAT_EXACT_BELOW: Final = Decimal(10) ** 9
-_FLOAT_NOISE: Final = Decimal("1e-7")
+#: How ``duk ph --exact`` prints a stored price: ``format(value, "f")`` of a
+#: ``NUMERIC``, so digits and at most one point, never a sign or an exponent.
+_EXACT_PRICE: Final = re.compile(r"[0-9]+(\.[0-9]+)?")
 
 #: SQLSTATEs that mean "this role cannot read that relation": undefined_table,
 #: insufficient_privilege. A warehouse without the drafted view, or a query
@@ -626,8 +621,7 @@ class FafnirProvider(MarketDataProvider):
             segment.end.isoformat(),
             _FIELD_FLAGS[fields],
             "--json",
-            "--precision",
-            str(_PRICE_PLACES),
+            "--exact",
         ]
         completed = self._run_duk(argv)
         said = " ".join((completed.stderr or completed.stdout or "").split())
@@ -645,8 +639,8 @@ class FafnirProvider(MarketDataProvider):
                 remedy=(
                     "Run the same command by hand to see why: "
                     f"`{' '.join(argv)}`. portable needs a duk whose `ph` takes "
-                    f"{_FIELD_FLAGS[fields]}, --json and --precision, reading as a "
-                    "fafnir_app role."
+                    f"{_FIELD_FLAGS[fields]}, --json and --exact (fafnir #177 or "
+                    "later), reading as a fafnir_app role."
                 ),
                 provider=self.name,
                 returncode=completed.returncode,
@@ -941,16 +935,14 @@ def _curve_rows(stdout: str) -> dict[date, dict[str, Decimal]]:
 def _bar_rows(
     stdout: str, named: str, segment: _Segment, provider: str, fields: tuple[str, ...]
 ) -> list[tuple[date, dict[str, Decimal]]]:
-    """`duk ph --json` output as exact six-place bars, or a refusal.
+    """`duk ph --json --exact` output as the warehouse's own decimals, or a refusal.
 
-    `duk` holds prices as floats and prints ten decimal places of them, so a
-    stored ``189.120000`` can print as ``189.1200000003``. Below 10^9 that
-    noise is under 10^-7, and rounding to the warehouse's six places gives back
-    exactly what is stored -- checked across every magnitude when this was
-    written. A value that is not within 10^-7 of a six-place number did not
-    come from ``NUMERIC(20, 6)`` through a float, and is refused rather than
-    rounded: so is anything else unexpected, because every price after it
-    would be suspect too. A bar whose low is above its high is refused too.
+    Every price arrives as the text of the stored ``NUMERIC``, a JSON string,
+    and is read straight into a ``Decimal``: nothing is rounded, because
+    nothing came through a float. Anything else is refused, not interpreted,
+    because every price after it would be suspect too: a JSON number (a `duk`
+    not printing exactly), text that is not a plain positive decimal, a record
+    of the wrong shape, a date out of range or order, a low above its high.
     """
     text = stdout.strip()
     if text.startswith("No data found"):
@@ -964,9 +956,9 @@ def _bar_rows(
             f"duk's prices for {named} ({segment.describe()}) cannot be read exactly: {why}",
             code=E_PROVIDER_UNAVAILABLE,
             remedy=(
-                f"portable reads `duk ph {_FIELD_FLAGS[fields]} --json --precision 6` "
-                f"output: a list of {shape} records. Check the duk version, and load "
-                "these dates from a file meanwhile."
+                f"portable reads `duk ph {_FIELD_FLAGS[fields]} --json --exact` "
+                f"output: a list of {shape} records whose prices are decimal text. "
+                "Check the duk version, and load these dates from a file meanwhile."
             ),
             provider=provider,
             identifier=named,
@@ -983,28 +975,22 @@ def _bar_rows(
     for record in parsed:
         if not isinstance(record, dict) or set(record) != {"date", *fields}:
             raise refuse(f"unexpected record {record!r}")
+        stated = record["date"]
         try:
-            on = date.fromisoformat(str(record["date"])[:10])
-        except ValueError as exc:
-            raise refuse(f"unexpected date {record['date']!r}") from exc
+            on = date.fromisoformat(stated) if isinstance(stated, str) else None
+        except ValueError:
+            on = None
+        if on is None or on.isoformat() != stated:
+            raise refuse(f"unexpected date {stated!r}")
         bar: dict[str, Decimal] = {}
         for field in fields:
             value = record[field]
-            if not isinstance(value, Decimal) or not value.is_finite() or value <= 0:
-                raise refuse(f"{on.isoformat()} has {field} {value!r}")
-            if value >= _FLOAT_EXACT_BELOW:
-                raise refuse(
-                    f"{on.isoformat()} has {field} {value}, too large to survive a float"
-                )
-            try:
-                exact = value.quantize(_PRICE_QUANTUM)
-            except InvalidOperation as exc:
-                raise refuse(f"{on.isoformat()} has {field} {value}") from exc
-            if abs(value - exact) >= _FLOAT_NOISE:
-                raise refuse(
-                    f"{on.isoformat()} has {field} {value}, which is not a six-place price"
-                )
-            bar[field] = exact
+            if not isinstance(value, str) or not _EXACT_PRICE.fullmatch(value):
+                raise refuse(f"{on.isoformat()} has {field} {value!r}, not exact decimal text")
+            price = from_text(value)
+            if price <= 0:
+                raise refuse(f"{on.isoformat()} has {field} {value}")
+            bar[field] = price
         if "low" in bar and bar["low"] > bar["high"]:
             raise refuse(f"{on.isoformat()} has a low above its high")
         if not segment.start <= on <= segment.end:

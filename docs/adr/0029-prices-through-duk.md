@@ -1,6 +1,6 @@
 # ADR 0029 — Prices through `duk ph`; identity and corporate actions through `mart`
 
-- **Status:** Accepted — implemented in `providers/fafnir.py`. The fafnir view it reads for corporate actions is fafnir migration 0033 ([rtrimble13/fafnir#175](https://github.com/rtrimble13/fafnir/pull/175)), which a warehouse has once it is migrated
+- **Status:** Accepted — implemented in `providers/fafnir.py`. The fafnir view it reads for corporate actions is fafnir migration 0033 ([rtrimble13/fafnir#175](https://github.com/rtrimble13/fafnir/pull/175)), which a warehouse has once it is migrated. Amended 2026-10-21: prices are read through `duk ph --exact` ([rtrimble13/fafnir#177](https://github.com/rtrimble13/fafnir/pull/177)), which retires §2's exception to invariant 1
 - **Date:** 2026-10-20
 - **Milestone:** v0.2
 - **Governs:** `CLAUDE.md` invariants 1, 6, 9; `PORT-GIPS-A01`, `PORT-GIPS-J03`
@@ -36,7 +36,7 @@ Two facts have changed since then.
 ### 1. Prices come from `duk -S db ph`
 
 ```
-duk -S db ph <identifier> --start-date S --end-date E --close --json --precision 6
+duk -S db ph <identifier> --start-date S --end-date E --close --json --exact
 ```
 
 - **`-S db`**, always: the warehouse, never FMP live. Live is a moving vendor
@@ -45,44 +45,42 @@ duk -S db ph <identifier> --start-date S --end-date E --close --json --precision
   date, and adjusted prices double-count splits alongside explicit
   corporate-action transactions. The argument list is built in one place and
   has no adjusted branch.
-- **`--precision 6`.** `duk` rounds JSON prices to two places by default.
-  fafnir stores raw closes as `NUMERIC(20, 6)`, so six places carry every
-  stored digit.
+- **`--exact`.** `duk` prints each price as the text of the stored `NUMERIC`
+  (§2).
 - **`--hlc` for a day's range.** `pt trade check` asks the same way for the
   high, low and close (2026-10-20), and reads them by the same rules. It
   checks fills against them and stores none of them.
 
-### 2. The float is `duk`'s, and it is undone exactly or refused
+### 2. Prices arrive as the warehouse's decimals, or are refused
 
-`duk` converts the warehouse's exact decimals to a float DataFrame, and pandas
-prints ten decimal places of each float. So a stored `13247980.736555` arrives
-as `13247980.7365550008`. This puts binary floating point on the price path,
-outside `portable`'s process. CLAUDE.md invariant 1 forbids that, so this
-section is the argument for allowing it, and the condition under which it
-holds.
+`ph --exact` (fafnir #177) prints every price as the text of the
+`NUMERIC(20, 6)` fafnir stores, `format(value, "f")`, as a JSON string:
+`"13247980.736555"`, `"189.120000"`. `portable` reads that text straight into
+a `Decimal`. Nothing is rounded, because nothing passed through a float, and
+invariant 1 holds end to end without exception.
 
-Inside `portable` there is still no float. The text is parsed with
-`json.loads(..., parse_float=Decimal)` and rounded to six places. **For any
-price below 10⁹ that recovers the stored value exactly.** Such a value has at
-most fifteen significant digits, so the float nearest to it is within 6×10⁻⁸
-of it. Both `duk`'s rounding to six places and pandas' ten-place printing
-preserve that bound. 400,000 random six-place prices across every magnitude
-below 10⁹ went through `duk`'s own `round_price_columns` and pandas `to_json`
-when this was written: none differed after rounding, and the worst noise was
-5.96×10⁻⁸.
+A price is **refused**, and the run stops, when:
 
-The condition is enforced, not assumed. A price is **refused**, and the run
-stops, when:
-
-- it is 10⁹ or more;
-- it is not within 10⁻⁷ of a six-place number;
-- it is zero, negative, null or not finite;
-- a record is anything but `{date, close}`;
-- a date is outside the range asked for, or out of order.
+- it is not a JSON string of plain decimal digits: a JSON number, an exponent,
+  a sign, or null;
+- it is zero;
+- a record is anything but `{date, close}` (`{date, high, low, close}` for a
+  day's range), or its date is not `YYYY-MM-DD`;
+- a date is outside the range asked for, or out of order;
+- a day's low is above its high.
 
 Any of these means `duk` is not doing what this section depends on, and every
-price after it would be suspect too. Prices are stored at six places, as
-fafnir holds them.
+price after it would be suspect too. A `duk` older than #177 does not take
+`--exact` and exits 2 with a usage error; that stops the run as any usage
+error does (§3), and the remedy says which `duk` is needed.
+
+**What this replaced.** Until #177, `duk` printed only its float DataFrame,
+and this section allowed an exception to invariant 1: `--precision 6`, and
+rounding the text back to six places, which recovered every stored price below
+10⁹ exactly (checked over 400,000 random prices: worst noise 5.96×10⁻⁸), with
+anything else refused. The owner chose to fix it at the source instead
+(2026-10-20), and the exception, its 10⁹ ceiling and its noise tolerance are
+gone.
 
 ### 3. The security is named to `duk` by identifier, never by ticker
 
@@ -165,15 +163,16 @@ eod_prices" would send the owner to the warehouse.
   refusal names the view and the migration. Until then, actions come from
   `--source file`.
 - **`psycopg` is still required** for the identity reads, and `duk` now is
-  too, for prices.
+  too, for prices: a `duk` from fafnir #177 or later, which takes `--exact`.
 
 ## Alternatives considered
 
 - **Read `mart.v_daily_price_raw` directly**, the view `duk` itself reads.
   It is exact `NUMERIC`, keeps no float anywhere, and needs no subprocess.
   This was recommended to the owner. The owner chose `duk`, to keep one tool
-  as the way prices are sourced. §2 is what makes that choice safe, and its
-  refusals are what keep it safe if `duk` changes.
+  as the way prices are sourced, and had `duk` taught to print exactly
+  (fafnir #177) rather than keep a float on the path. §2's refusals are what
+  keep that safe if `duk` changes.
 - **Ask `duk` by ticker and trust its ladder.** Rejected: its first rung is
   "who holds this ticker now", which is ADR 0020 R5's failure.
 - **Fall back to the ticker when a security has no identifier**, when the

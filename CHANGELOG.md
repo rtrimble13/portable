@@ -336,10 +336,12 @@ Two rules specific to this repository:
   SSH tunnel the role is in `fafnir_app`, which cannot see fafnir's `core`
   schema, and every query the adapter made named it -- so `pt price load`,
   `pt instrument sync` and `pt ca sync` against fafnir could not have worked
-  there. Prices are now `duk -S db ph <identifier> --close --json --precision 6`:
+  there. Prices are now `duk -S db ph <identifier> --close --json --exact`:
   raw, from the warehouse, named by ISIN, CUSIP or CIK so a reused ticker
-  cannot answer for another issuer, and read back from duk's float output to
-  the warehouse's six places exactly -- or refused. Symbol history, the
+  cannot answer for another issuer, and printed by duk as the warehouse's
+  stored decimals, so no price passes through a float anywhere. That needs a
+  duk with `--exact` (rtrimble13/fafnir#177); an older one is refused by
+  name. Anything that is not exact decimal text is refused. Symbol history, the
   security master and corporate actions are read from `mart` views over the
   same DSN, which duk is given too. Corporate actions need
   `mart.v_corporate_action`, added by fafnir migration 0033

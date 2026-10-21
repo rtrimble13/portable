@@ -9,8 +9,10 @@ handling is exercised too.
 
 Prices come through `duk` (ADR 0029), so the fake `duk` answers from the same
 warehouse: it resolves the identifier it is given, reads the raw bars, and
-prints them the way duk does -- through a float, at ten decimal places, so a
-stored ``13247980.736555`` arrives as ``13247980.7365550008``.
+prints them the way duk does. With ``--exact`` that is the stored
+``NUMERIC(20, 6)`` as JSON strings (``"189.120000"``); without it, a float at
+ten decimal places, so a stored ``13247980.736555`` arrives as
+``13247980.7365550008`` -- which the adapter refuses.
 
 ADR 0020 R5 is the reason most of these exist: a ticker can name one security
 for part of a range and another for the rest, and a historical load spans
@@ -210,6 +212,11 @@ def _as_duk_prints(stored: str) -> str:
     return text + "0" if text.endswith(".") else text
 
 
+def _as_duk_exact(stored: str) -> str:
+    """``duk ph --exact``: the NUMERIC(20, 6) as decimal text, a JSON string."""
+    return '"' + format(D(stored).quantize(D("0.000001")), "f") + '"'
+
+
 @dataclass
 class _Duk:
     """`duk -S db ph` over the fake warehouse, recording how it was called."""
@@ -253,12 +260,13 @@ class _Duk:
                 argv, 0, stdout=f"No data found for {value}\n", stderr=""
             )
         fields = ("high", "low", "close") if "--hlc" in argv else ("close",)
+        exact = "--exact" in argv
         printed = ",".join(
             "{"
             + ",".join(
-                [f'"date":"{on}T00:00:00.000"']
+                [f'"date":"{on}"' if exact else f'"date":"{on}T00:00:00.000"']
                 + [
-                    f'"{name}":{_as_duk_prints(value)}'
+                    f'"{name}":{_as_duk_exact(value) if exact else _as_duk_prints(value)}'
                     for name, value in (("high", high), ("low", low), ("close", close))
                     if name in fields
                 ]
@@ -388,25 +396,26 @@ def test_overlapping_periods_prefer_the_securitys_primary_ticker(
     assert [p.price for p in prices] == [D("1.00")]
 
 
-def test_a_price_is_exact_through_duks_float_and_carries_its_lineage(
+def test_a_price_is_the_stored_decimal_and_carries_its_lineage(
     warehouse: _Warehouse, fafnir: FafnirProvider
 ) -> None:
     """Invariant 1 and PORT-GIPS-J03: the stored value, and the security behind it.
 
-    duk prints a float at ten places, so a stored price can arrive with noise
-    after the sixth. Rounding back to the warehouse's six places recovers it
-    exactly, at the scale it is stored at.
+    Through ``duk ph --exact`` a price is the warehouse's NUMERIC as text, so it
+    arrives digit for digit, at any magnitude: there is no float to undo.
     """
     warehouse.security(1, "ABC", isin="US0000000001")
     warehouse.ticker("ABC", 1)
     warehouse.bar(1, "2025-06-30", "13247980.736555")
     warehouse.bar(1, "2025-07-01", "189.120000")
-    assert _as_duk_prints("13247980.736555") == "13247980.7365550008", "the noise is real"
+    warehouse.bar(1, "2025-07-02", "98765432109876.543210")  # past any float's exact range
+    assert _as_duk_prints("13247980.736555") == "13247980.7365550008", "as floats, noise"
 
-    first, second = fafnir.eod_prices("ABC", date(2025, 6, 30), date(2025, 7, 1))
+    first, second, third = fafnir.eod_prices("ABC", date(2025, 6, 30), date(2025, 7, 2))
 
     assert first.price == D("13247980.736555")
     assert str(second.price) == "189.120000", "six places, as the warehouse holds it"
+    assert str(third.price) == "98765432109876.543210"
     assert first.provider_ref == "security_id=1;trade_date=2025-06-30;via=isin:US0000000001"
     assert first.source == "fafnir:duk ph"
     assert first.valuation_level == 1
@@ -416,7 +425,7 @@ def test_a_price_is_exact_through_duks_float_and_carries_its_lineage(
 def test_duk_is_asked_for_raw_closes_from_the_warehouse_this_adapter_reads(
     warehouse: _Warehouse, fafnir: FafnirProvider, duk: _Duk
 ) -> None:
-    """PORT-GIPS-A01, ADR 0029: `-S db`, never `--adj`, six places, one DSN.
+    """PORT-GIPS-A01, ADR 0029: `-S db`, never `--adj`, exact text, one DSN.
 
     PORTABLE_FAFNIR_DSN means nothing to duk, so without FAFNIR_DSN in its
     environment the price read could go to a different warehouse from the
@@ -432,7 +441,7 @@ def test_duk_is_asked_for_raw_closes_from_the_warehouse_this_adapter_reads(
         [
             "duk", "-S", "db", "ph", "cusip:C00000001",
             "--start-date", "2025-06-30", "--end-date", "2025-06-30",
-            "--close", "--json", "--precision", "6",
+            "--close", "--json", "--exact",
         ]
     ]  # fmt: skip
     assert duk.envs[0]["FAFNIR_DSN"] == "host=fake"
@@ -495,7 +504,7 @@ def test_an_identifier_duk_cannot_pin_to_one_security_is_refused(
     ("returncode", "stderr"),
     [
         (1, "Error: Failed to fetch price history: permission denied for schema core"),
-        (2, "Error: No such option: --precision"),
+        (2, "Error: No such option: --exact"),
     ],
 )
 def test_duk_failing_outright_stops_the_run(
@@ -510,22 +519,26 @@ def test_duk_failing_outright_stops_the_run(
         fafnir.eod_prices("ABC", date(2025, 6, 30), date(2025, 6, 30))
     assert refused.value.code == "PT-E-PROVIDER-UNAVAILABLE"
     assert stderr in refused.value.message
+    assert "--exact (fafnir #177 or later)" in (refused.value.remedy or "")
 
 
 @pytest.mark.parametrize(
     ("stdout", "why"),
     [
-        ('[{"date":"2025-06-30T00:00:00.000","close":1.2345678}]', "not a six-place price"),
-        ('[{"date":"2025-06-30T00:00:00.000","close":1000000000.0}]', "too large"),
-        ('[{"date":"2025-06-30T00:00:00.000","close":null}]', "has close None"),
-        ('[{"date":"2025-06-30T00:00:00.000","close":0.0}]', "has close"),
-        ('[{"date":"2025-06-30T00:00:00.000","close":1.0,"volume":100}]', "unexpected record"),
-        ('[{"date":"2025-07-01T00:00:00.000","close":1.0}]', "outside the dates"),
-        ('{"close": 1.0}', "not a list"),
+        # A JSON number came through a float somewhere: the very thing --exact rules out.
+        ('[{"date":"2025-06-30","close":189.12}]', "not exact decimal text"),
+        ('[{"date":"2025-06-30","close":"1.89120E+2"}]', "not exact decimal text"),
+        ('[{"date":"2025-06-30","close":"-1.000000"}]', "not exact decimal text"),
+        ('[{"date":"2025-06-30","close":null}]', "not exact decimal text"),
+        ('[{"date":"2025-06-30","close":"0.000000"}]', "has close 0.000000"),
+        ('[{"date":"2025-06-30T00:00:00.000","close":"1.000000"}]', "unexpected date"),
+        ('[{"date":"2025-06-30","close":"1.000000","volume":"100"}]', "unexpected record"),
+        ('[{"date":"2025-07-01","close":"1.000000"}]', "outside the dates"),
+        ('{"close": "1.000000"}', "not a list"),
         ("[oops", "not JSON"),
     ],
 )
-def test_output_that_is_not_an_exact_six_place_price_is_refused(
+def test_output_that_is_not_exact_decimal_text_is_refused(
     warehouse: _Warehouse, fafnir: FafnirProvider, duk: _Duk, stdout: str, why: str
 ) -> None:
     """Refused, never rounded into shape: every price after it would be suspect."""
@@ -692,7 +705,7 @@ def test_a_bar_whose_low_is_above_its_high_is_refused(
     warehouse.ticker("ABC", 1)
     duk.answer = (
         0,
-        '[{"date":"2025-06-30T00:00:00.000","high":1.0,"low":2.0,"close":1.5}]',
+        '[{"date":"2025-06-30","high":"1.000000","low":"2.000000","close":"1.500000"}]',
         "",
     )
 
