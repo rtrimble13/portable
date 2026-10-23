@@ -19,10 +19,11 @@ from portable_core.cli.runner import dry_run_note, run_command
 from portable_core.decimals import from_text
 from portable_core.errors import UsageError
 from portable_core.formatters import CommandResult
+from portable_core.services.price_acceptance import PriceLine
 from portable_core.services.snapshots import removal_notices
 from portable_pt import state
 
-__all__ = ["RefOpt", "dispatch", "money_arg", "resolve_date"]
+__all__ = ["RefOpt", "dispatch", "money_arg", "price_line_row", "resolve_date"]
 
 #: Every command that writes a ledger row takes one of these.
 #:
@@ -105,3 +106,21 @@ def money_arg(value: str | None, *, what: str) -> Decimal:
         raise UsageError(
             f"{what} must be a decimal number, got {value!r}", value=value
         ) from exc
+
+
+def price_line_row(line: PriceLine) -> dict[str, object]:
+    """A statement line's price check as the JSON envelope carries it (ADR 0031)."""
+    return {
+        "account": line.account,
+        "statement_date": line.statement_date.isoformat(),
+        "symbol": line.symbol,
+        "quantity": line.quantity,
+        "market_value": line.market_value,
+        "stated_price": line.stated_price,
+        "price": line.price,
+        "price_date": line.price_date.isoformat() if line.price_date else None,
+        "price_source": line.price_source,
+        "difference": line.difference,
+        "status": str(line.status),
+        "note": line.note or None,
+    }

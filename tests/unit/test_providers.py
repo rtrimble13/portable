@@ -157,16 +157,16 @@ def test_corporate_actions_come_back_in_date_order(tmp_path: Path) -> None:
 
 
 @pytest.mark.gips
-def test_fafnir_declares_no_benchmark_capability() -> None:
+def test_fafnir_declares_no_benchmark_capability(monkeypatch: pytest.MonkeyPatch) -> None:
     """ADR 0006, and the reason it matters.
 
     The warehouse carries security prices, not index levels. PORT-GIPS-G01
     requires refusal rather than approximation -- so rather than implementing
     `benchmark_series` and returning something, this provider does not claim
-    the capability at all. Synthesising a total return by adding
-    core.corporate_action dividends to a price series would be a
-    defensible-looking wrong number.
+    the capability at all. Synthesising a total return by adding fafnir's
+    dividends to a price series would be a defensible-looking wrong number.
     """
+    monkeypatch.setattr("portable_core.providers.fafnir.shutil.which", lambda _: "/bin/duk")
     provider = FafnirProvider(dsn="host=nowhere")
     assert Capability.BENCHMARKS not in provider.capabilities
     assert Capability.FX not in provider.capabilities
@@ -177,20 +177,20 @@ def test_fafnir_declares_no_benchmark_capability() -> None:
     assert "eod_prices" in (exc.value.remedy or "")
 
 
-def test_fafnir_reads_the_unadjusted_table_and_never_the_adjusted_view() -> None:
+def test_fafnir_asks_for_raw_prices_and_never_adjusted_ones() -> None:
     """PORT-GIPS-A01. The adjusted path is unwritten, not merely discouraged.
 
     Adjusted prices are not fair values on the measurement date and would
     double-count splits. Asserted against the source text, because the point is
-    that the SQL to do it does not exist.
+    that neither the query nor the `duk` argument that would do it exists.
     """
     source = Path(FafnirProvider.__module__.replace(".", "/") + ".py")
     text = (Path("src") / source).read_text(encoding="utf-8")
 
-    assert SCHEMA["daily_price"] == "core.daily_price"
     assert "v_daily_price_adjusted" not in _sql_only(text), (
         "the adjusted mart view must not appear in any query"
     )
+    assert '"--adj"' not in text, "duk must never be passed --adj"
 
 
 def _sql_only(text: str) -> str:
@@ -208,12 +208,11 @@ def _sql_only(text: str) -> str:
 
 
 def test_the_fafnir_schema_names_live_in_one_mapping() -> None:
-    """So a fafnir migration is a one-file change here (ADR 0006)."""
+    """So a fafnir migration is a one-file change here, and none of it is `core` (ADR 0029)."""
     assert SCHEMA == {
-        "security": "core.security",
-        "symbol_xref": "core.symbol_xref",
-        "daily_price": "core.daily_price",
-        "corporate_action": "core.corporate_action",
+        "security": "mart.v_security_profile",
+        "symbol_xref": "mart.v_symbol_lookup",
+        "corporate_action": "mart.v_corporate_action",
         "trading_calendar": "ref.trading_calendar",
     }
 

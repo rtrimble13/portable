@@ -36,9 +36,11 @@ from portable_core.domain.models import (
     Position,
     PositionLeg,
     Price,
+    PriceAcceptance,
     RealizedGain,
     ReturnPolicy,
     SnapshotPrice,
+    StatementPosition,
     TaxRateSchedule,
     Transaction,
     ValuationSnapshot,
@@ -64,6 +66,7 @@ __all__ = [
     "PriceRepository",
     "RemovedSnapshots",
     "Repositories",
+    "StatementRepository",
     "TransactionRepository",
     "ValuationRepository",
 ]
@@ -257,7 +260,7 @@ class AccountRepository(_Repository):
         cursor = self.con.execute(
             "INSERT INTO tax_rate_schedule (account_id, effective_from, "
             "short_term_federal, long_term_federal, state, niit, qualified_dividend, "
-            "note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "note, created_at, corrects_rate_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 schedule.account_id,
                 schedule.effective_from.isoformat(),
@@ -268,15 +271,31 @@ class AccountRepository(_Repository):
                 _text(schedule.qualified_dividend),
                 schedule.note,
                 _now(),
+                schedule.corrects_rate_id,
             ),
         )
         return int(cursor.lastrowid or 0)
 
-    def rate_schedules(self, account_id: int) -> list[TaxRateSchedule]:
+    def rate_schedules(
+        self, account_id: int, *, include_corrected: bool = False
+    ) -> list[TaxRateSchedule]:
+        """The account's schedules by date: the ones in force, unless told otherwise.
+
+        A schedule another one corrects (ADR 0025) is kept, so the history shows
+        it, and is never read for a rate.
+        """
+        current = (
+            ""
+            if include_corrected
+            else " AND NOT EXISTS (SELECT 1 FROM tax_rate_schedule c "
+            "WHERE c.corrects_rate_id = t.rate_id)"
+        )
         return [
             mappers.to_tax_rate_schedule(r)
             for r in self.con.execute(
-                "SELECT * FROM tax_rate_schedule WHERE account_id = ? ORDER BY effective_from",
+                "SELECT * FROM tax_rate_schedule t WHERE account_id = ?"  # noqa: S608 -- appends a fixed clause only; values are bound
+                + current
+                + " ORDER BY effective_from, rate_id",
                 (account_id,),
             )
         ]
@@ -587,6 +606,89 @@ class CorporateActionRepository(_Repository):
             params.append(instrument_id)
         sql += " ORDER BY ex_date, corporate_action_id"
         return [mappers.to_corporate_action(r) for r in self.con.execute(sql, params)]
+
+
+class StatementRepository(_Repository):
+    """Custodian statement lines, and the acceptances of their disagreements. ADR 0031."""
+
+    def record(self, position: StatementPosition) -> tuple[int, bool]:
+        """Store *position*, replacing the line for its account, date and instrument.
+
+        Returns its id and whether anything changed: a new line, or a stated
+        quantity, market value or source that differs from the one stored.
+        """
+        before = self.get(position.account_id, position.statement_date, position.instrument_id)
+        self.con.execute(
+            "INSERT INTO statement_position (account_id, statement_date, instrument_id, "
+            "quantity, market_value, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(account_id, statement_date, instrument_id) DO UPDATE SET "
+            "quantity = excluded.quantity, market_value = excluded.market_value, "
+            "source = excluded.source",
+            (
+                position.account_id,
+                position.statement_date.isoformat(),
+                position.instrument_id,
+                to_text(position.quantity),
+                to_text(position.market_value),
+                position.source,
+                _now(),
+            ),
+        )
+        after = self.get(position.account_id, position.statement_date, position.instrument_id)
+        assert after is not None
+        changed = before is None or (before.quantity, before.market_value, before.source) != (
+            after.quantity,
+            after.market_value,
+            after.source,
+        )
+        return after.statement_position_id, changed
+
+    def get(
+        self, account_id: int, statement_date: date, instrument_id: int
+    ) -> StatementPosition | None:
+        row = self.con.execute(
+            "SELECT * FROM statement_position WHERE account_id = ? AND statement_date = ? "
+            "AND instrument_id = ?",
+            (account_id, statement_date.isoformat(), instrument_id),
+        ).fetchone()
+        return None if row is None else mappers.to_statement_position(row)
+
+    def all(self, account_id: int | None = None) -> list[StatementPosition]:
+        """Every recorded line, by date, account and instrument."""
+        sql = "SELECT * FROM statement_position"
+        params: list[object] = []
+        if account_id is not None:
+            sql += " WHERE account_id = ?"
+            params.append(account_id)
+        sql += " ORDER BY statement_date, account_id, instrument_id"
+        return [mappers.to_statement_position(r) for r in self.con.execute(sql, params)]
+
+    def accept(self, acceptance: PriceAcceptance) -> int:
+        cursor = self.con.execute(
+            "INSERT INTO price_acceptance (statement_position_id, quantity, market_value, "
+            "price, price_date, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                acceptance.statement_position_id,
+                to_text(acceptance.quantity),
+                to_text(acceptance.market_value),
+                to_text(acceptance.price),
+                acceptance.price_date.isoformat(),
+                acceptance.reason,
+                _now(),
+            ),
+        )
+        return int(cursor.lastrowid or 0)
+
+    def acceptances(self, statement_position_id: int) -> list[PriceAcceptance]:
+        """Every acceptance recorded for one line, oldest first."""
+        return [
+            mappers.to_price_acceptance(r)
+            for r in self.con.execute(
+                "SELECT * FROM price_acceptance WHERE statement_position_id = ? "
+                "ORDER BY price_acceptance_id",
+                (statement_position_id,),
+            )
+        ]
 
 
 class PriceRepository(_Repository):
@@ -1733,7 +1835,7 @@ class PolicyRepository(_Repository):
             "INSERT INTO return_policy (effective_from, large_flow_basis, "
             "large_flow_value, significant_flow_basis, significant_flow_value, "
             "materiality_return_bps, materiality_value, risk_measure_basis, note, "
-            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "created_at, corrects_policy_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 policy.effective_from.isoformat(),
                 policy.large_flow_basis,
@@ -1745,9 +1847,15 @@ class PolicyRepository(_Repository):
                 policy.risk_measure_basis,
                 policy.note,
                 _now(),
+                policy.corrects_policy_id,
             ),
         )
         return int(cursor.lastrowid or 0)
+
+    #: A policy another one corrects (ADR 0025) is kept and never read.
+    _CURRENT: ClassVar[str] = (
+        "NOT EXISTS (SELECT 1 FROM return_policy c WHERE c.corrects_policy_id = p.policy_id)"
+    )
 
     def in_force(self, on: date) -> ReturnPolicy | None:
         """The policy effective on *on*, or None.
@@ -1757,16 +1865,20 @@ class PolicyRepository(_Repository):
         ``PORT-GIPS-B03`` makes a missing definition an error and not a zero.
         """
         row = self.con.execute(
-            "SELECT * FROM return_policy WHERE effective_from <= ? "
+            f"SELECT * FROM return_policy p WHERE effective_from <= ? AND {self._CURRENT} "  # noqa: S608 -- a class constant; values are bound
             "ORDER BY effective_from DESC LIMIT 1",
             (on.isoformat(),),
         ).fetchone()
         return None if row is None else mappers.to_return_policy(row)
 
-    def all(self) -> list[ReturnPolicy]:
+    def all(self, *, include_corrected: bool = False) -> list[ReturnPolicy]:
+        """Every policy by date: the ones in force, unless told otherwise."""
+        where = "" if include_corrected else f" WHERE {self._CURRENT}"
         return [
             mappers.to_return_policy(r)
-            for r in self.con.execute("SELECT * FROM return_policy ORDER BY effective_from")
+            for r in self.con.execute(
+                f"SELECT * FROM return_policy p{where} ORDER BY effective_from, policy_id"  # noqa: S608 -- a class constant; values are bound
+            )
         ]
 
 
@@ -1804,6 +1916,33 @@ class BenchmarkRepository(_Repository):
             for r in self.con.execute("SELECT * FROM benchmark ORDER BY name")
         ]
 
+    def assign(
+        self, benchmark_id: int, effective_from: date, *, change_type: str, change_reason: str
+    ) -> int:
+        """Make *benchmark_id* the portfolio's benchmark from *effective_from* (G04)."""
+        cursor = self.con.execute(
+            "INSERT INTO portfolio_benchmark (benchmark_id, effective_from, change_type, "
+            "change_reason, created_at) VALUES (?, ?, ?, ?, ?)",
+            (benchmark_id, effective_from.isoformat(), change_type, change_reason, _now()),
+        )
+        return int(cursor.lastrowid or 0)
+
+    def assignments(self) -> list[tuple[date, Benchmark, str, str]]:
+        """Every assignment: its date, the benchmark, the change type and reason, by date."""
+        return [
+            (
+                date.fromisoformat(r["effective_from"]),
+                mappers.to_benchmark(r),
+                str(r["change_type"]),
+                str(r["change_reason"]),
+            )
+            for r in self.con.execute(
+                "SELECT pb.effective_from, pb.change_type, pb.change_reason, b.* "
+                "FROM portfolio_benchmark pb JOIN benchmark b USING (benchmark_id) "
+                "ORDER BY pb.effective_from, pb.id"
+            )
+        ]
+
 
 # ── the bundle ───────────────────────────────────────────────────────────────
 
@@ -1828,6 +1967,7 @@ class Repositories:
         self.valuations = ValuationRepository(con)
         self.policies = PolicyRepository(con)
         self.benchmarks = BenchmarkRepository(con)
+        self.statements = StatementRepository(con)
 
     #: Derived tables, with the column ordering that makes a digest of them
     #: stable, and the surrogate key to exclude from it. Surrogate ids are
@@ -1934,6 +2074,8 @@ class Repositories:
         "instrument_option",
         "instrument_bond",
         "price",
+        "statement_position",
+        "price_acceptance",
         "corporate_action",
         "benchmark",
         "benchmark_component",

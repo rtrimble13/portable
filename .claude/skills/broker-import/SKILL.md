@@ -1,6 +1,6 @@
 ---
 name: broker-import
-description: Bring a custodian's exports into a `pt` portfolio, or bring an existing one up to date. Use when the owner has new statement exports (xlsx or csv), wants to add a custodian or account, or asks to reconcile the book against the custodian. Authors the adapter's mapping files by interview, never by guessing; runs the segmented first import and the incremental update loop; accepts on reconciliation.
+description: Bring a custodian's exports into a `pt` portfolio, or bring an existing one up to date, and price its history. Use when the owner has new statement exports (xlsx or csv), wants to add a custodian or account, asks to reconcile the book against the custodian, or needs the history priced for valuation. Authors the adapter's mapping files by interview, never by guessing; runs the segmented first import and the incremental update loop; accepts on reconciliation; prices through duk, with files for the gaps.
 ---
 
 # Broker import
@@ -29,6 +29,7 @@ entry, or you are about to encode a judgment that belongs to the owner.
 | exports from a custodian with no adapter directory yet | §2 then §3 then §4 |
 | an adapter and a portfolio with these accounts already in it | §5 |
 | an adapter and a new account at the same custodian | §4 for that account only (`--cutover`), then §5 |
+| an accepted ledger with days not yet priced | §7 |
 
 ## 2. Get the files to the CSV boundary
 
@@ -144,6 +145,7 @@ pt import broker <adapter> --incremental -o update.json
 pt import batch update.json --dry-run
 pt import batch update.json
 pt reconcile --against stated.csv --realized <adapter>
+pt -S fafnir price load --from <first date of the new export>   # then §7 step 3 for any gaps
 ```
 
 The overlap with the last export shows as `ledger:already-recorded` skips.
@@ -167,9 +169,100 @@ An import is accepted when it reconciles, not when it parses (§9). Run
   `pt income roc`; you never infer it.
 - **A `custodian_only` sale**: a row the history is missing. Find it.
 
-## 7. Report to the owner
+## 7. Price the history
+
+A return needs a price for every instrument held, on every day it was held,
+including every position since sold. Prices come from fafnir through `duk`, and
+from price files for what fafnir does not hold (ADR 0029; `docs/market-data.md`
+"Filling what fafnir does not hold"). Price only a ledger that §6 accepted:
+what was held, and when, comes from the ledger.
+
+**Before anything, check the route** from the owner's shell. The SSH tunnel to
+the warehouse is up, and `duk -S db ph AAPL -n 1` prints a price: that is duk
+reading the warehouse as the owner's role. `pt` needs the same DSN duk uses
+(`FAFNIR_DSN` or `~/.dukrc`) and `psycopg` (`pip install 'portable[fafnir]'`).
+If `duk` is not on `PATH`, set `duk_path` in `~/.portablerc`. `duk ph --help`
+must list `--exact` (fafnir #177 or later): without it, every price load stops
+with duk's usage error until the owner installs a newer fafnir.
+
+1. **Instruments.** `pt -S fafnir instrument sync` compares every instrument
+   ever held with fafnir, as of the last day it was held. Go through each
+   difference with the owner, and settle the §3 "symbol to verify" list here.
+   An instrument fafnir does not know goes on the file list (step 3).
+2. **Load.** Run `pt -S fafnir price load --from <cutover> --to <as-of>
+   --dry-run`, read every warning, then run it without `--dry-run`. It is
+   idempotent; re-run it after any fix. What each warning means:
+   - `no ISIN, CUSIP or CIK`: fafnir cannot name the security to duk. Those
+     dates go on the file list.
+   - `matches N securities`: the identifier is ambiguous in fafnir. That is a
+     fafnir data question for the owner. Use a file meanwhile.
+   - `does not name a security ... on every date`: the ticker was not in use
+     for the whole stretch. Usually it is a rename the ledger has not recorded.
+     Ask the owner, record it with `pt ca symbol-change`, and re-run. Never
+     guess the old ticker.
+   - `no fafnir prices for X`: the warehouse does not hold it. Backfilling
+     fafnir is the owner's call; otherwise it goes on the file list.
+   - `had no price in the days before they began`: informational.
+
+   Then `pt -S fafnir price gaps` lists every held trading day still without a
+   price, as runs per instrument, judged by each venue's calendar. That list
+   is the file list for step 3. Report the symbols and the number of
+   sessions; the dates go to the owner when you ask for the source.
+
+   `PT-E-PROVIDER-UNAVAILABLE` stops the run. The cause is the tunnel, the
+   role, or duk itself, and the message says which. Fix it and re-run.
+3. **Fill the gaps from files.** The owner supplies the source: custodian
+   statements, a fund company's NAV history. Never invent or interpolate a
+   price. Write `symbol,date,price,source,valuation_level`. `source` says where
+   each figure came from, and it becomes the price's lineage. Keep the file
+   with the raw exports, outside the repository. Run `pt price load --file
+   gaps.csv --dry-run` and read what it did not load: a ticker not held under
+   that name (a typo, or a pre-rename ticker) and rows outside the days held.
+   Then load it, and run `pt -S fafnir price gaps` again: what it still
+   lists is either still to source or a day nothing priced.
+   - `PT-E-PRICE-CONFLICT`: the file and fafnir, or a hand-set price, disagree
+     on a day. Do not pick. Give the owner the list. `--on-conflict keep` or
+     `--on-conflict replace` is their decision. A wrong warehouse price is
+     corrected in fafnir, not here.
+   - An instrument nothing quotes (a CVR) is not given a price.
+     `pt instrument market-price SYMBOL --none` (ADR 0028) is the owner's
+     decision, offered, never taken for them.
+4. **Corporate actions.** `pt -S fafnir ca sync --from <cutover>` lists what
+   fafnir records against what the ledger does. It needs
+   `mart.v_corporate_action`, fafnir migration 0033. On a warehouse not yet
+   migrated to it, the refusal says so: the operator runs `fafnir db migrate`.
+   Tell the owner and move on.
+5. **Value, and check.** Run `pt value --from <cutover> --to <as-of>`. An
+   incomplete snapshot names what it could not price: back to step 3. Then
+   `pt validate`.
+6. **Accept the history against the statements** (ADR 0031). The anchors are
+   the holdings export and each account's year-end statement since 2022; ask
+   the owner for the ones not yet in hand. Convert each to a CSV with
+   `account,symbol,quantity,market_value` (and the `cash` line), kept with the
+   raw exports, then for each:
+   `pt reconcile --against <statement.csv> --as-of <its date> --record`.
+   `pt price check` re-checks every recorded line whenever prices change.
+   - A **price break** is a price from the wrong day or instrument until shown
+     otherwise: look at the price's source and date first, and reload it.
+   - Only the owner accepts a difference, with a reason in their words:
+     `pt price accept SYMBOL -a ACCOUNT --date D --reason "..."`. Propose it
+     with the evidence (an evaluated bond price, a different closing print);
+     never run it for them.
+   - An **unpriced** line needs a price, not an acceptance.
+   Report counts and symbols per status, never the amounts.
+7. **Check the fills.** `pt -S fafnir trade check` sets each recorded fill
+   beside the day's range (stocks) or NAV (funds). Flags are for review, not
+   breaks. Take each `outside` or `off_nav` to the owner with its date and
+   note: a wrong price or date is fixed with `pt trade reverse` and a
+   corrected entry; an extended-hours fill stays as it is. `no_data` means a
+   range or NAV is missing, which `pt price gaps` usually shows too. Report
+   counts and symbols, never the prices.
+
+## 8. Report to the owner
 
 One memo, no amounts: what imported (counts), the reconciliation result and the
 explanation of every break, every assumption you made, every symbol to verify,
-and every treatment you chose that the owner should confirm. The owner's
+and every treatment you chose that the owner should confirm. When §7 ran:
+which instruments came from fafnir, which from files and from what source,
+which are still unpriced, and every conflict left for the owner. The owner's
 answers become rules, not code.

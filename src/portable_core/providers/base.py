@@ -29,16 +29,22 @@ __all__ = [
     "Capability",
     "CorporateActionCapability",
     "CorporateActionRecord",
+    "DailyRange",
+    "DailyRangeCapability",
     "EndOfDayPriceCapability",
     "FxCapability",
     "MarketDataProvider",
     "RiskFreeRate",
     "RiskFreeRateCapability",
     "SecurityMasterCapability",
+    "TradingCalendar",
+    "TradingCalendarCapability",
     "as_benchmark_provider",
     "as_corporate_action_provider",
+    "as_daily_range_provider",
     "as_eod_provider",
     "as_security_master",
+    "as_trading_calendar_provider",
     "require_capability",
 ]
 
@@ -48,12 +54,14 @@ class Capability(StrEnum):
 
     SECURITY_MASTER = "security_master"
     EOD_PRICES = "eod_prices"
+    DAILY_RANGE = "daily_range"
     INTRADAY_PRICES = "intraday_prices"
     CORPORATE_ACTIONS = "corporate_actions"
     DIVIDENDS = "dividends"
     BENCHMARKS = "benchmarks"
     RISK_FREE_RATE = "risk_free_rate"
     FX = "fx"
+    TRADING_CALENDAR = "trading_calendar"
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +119,45 @@ class RiskFreeRate:
     source: str
 
 
+@dataclass(frozen=True, slots=True)
+class DailyRange:
+    """One day's traded range for a security: where a fill that day could be.
+
+    A check on a recorded trade, not a price to value at, so nothing stores
+    it. Unadjusted, like every price `portable` values with: a fill is
+    recorded as traded, before any later split.
+    """
+
+    price_date: date
+    low: Decimal
+    high: Decimal
+    close: Decimal
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
+class TradingCalendar:
+    """One venue's sessions over a range of dates, and the span its calendar covers.
+
+    A calendar knows the days between ``first`` and ``last``. Inside that span
+    a day that is not in ``open_days`` was not a session: a weekend, a holiday,
+    a closure. Outside it, nothing is known, and treating a day there as closed
+    would hide a missing price as surely as treating it as open would invent
+    one (ADR 0020 R9).
+    """
+
+    #: The venue whose calendar this is, which may not be the one asked for.
+    exchange: str
+    #: The sessions in the range asked for.
+    open_days: frozenset[date]
+    first: date
+    last: date
+    source: str
+
+    def covers(self, on: date) -> bool:
+        return self.first <= on <= self.last
+
+
 # ── capability protocols ─────────────────────────────────────────────────────
 
 
@@ -126,6 +173,11 @@ class SecurityMasterCapability(Protocol):
 @runtime_checkable
 class EndOfDayPriceCapability(Protocol):
     def eod_prices(self, symbol: str, start: date, end: date) -> list[Price]: ...
+
+
+@runtime_checkable
+class DailyRangeCapability(Protocol):
+    def daily_ranges(self, symbol: str, start: date, end: date) -> list[DailyRange]: ...
 
 
 @runtime_checkable
@@ -155,6 +207,19 @@ class FxCapability(Protocol):
     """Interface only in v0.1. Multi-currency is a backlog item (P1)."""
 
     def fx_rate(self, base: str, quote: str, on: date) -> Decimal: ...
+
+
+@runtime_checkable
+class TradingCalendarCapability(Protocol):
+    """The sessions of *exchange*, or of the venue the provider judges it by.
+
+    *exchange* may be ``None``, for an instrument with no venue on record; the
+    calendar returned names the venue it is.
+    """
+
+    def trading_calendar(
+        self, exchange: str | None, start: date, end: date
+    ) -> TradingCalendar: ...
 
 
 # ── the base class ───────────────────────────────────────────────────────────
@@ -218,6 +283,14 @@ def as_eod_provider(provider: MarketDataProvider) -> EndOfDayPriceCapability:
     return provider
 
 
+def as_daily_range_provider(provider: MarketDataProvider) -> DailyRangeCapability:
+    """Narrow a provider to its daily-range capability, or refuse."""
+    require_capability(provider, Capability.DAILY_RANGE)
+    if not isinstance(provider, DailyRangeCapability):
+        raise _mismatch(provider, Capability.DAILY_RANGE)
+    return provider
+
+
 def as_security_master(provider: MarketDataProvider) -> SecurityMasterCapability:
     """Narrow a provider to its security-master capability, or refuse."""
     require_capability(provider, Capability.SECURITY_MASTER)
@@ -246,6 +319,14 @@ def as_benchmark_provider(provider: MarketDataProvider) -> BenchmarkCapability:
     require_capability(provider, Capability.BENCHMARKS)
     if not isinstance(provider, BenchmarkCapability):
         raise _mismatch(provider, Capability.BENCHMARKS)
+    return provider
+
+
+def as_trading_calendar_provider(provider: MarketDataProvider) -> TradingCalendarCapability:
+    """Narrow a provider to its trading-calendar capability, or refuse."""
+    require_capability(provider, Capability.TRADING_CALENDAR)
+    if not isinstance(provider, TradingCalendarCapability):
+        raise _mismatch(provider, Capability.TRADING_CALENDAR)
     return provider
 
 

@@ -16,6 +16,60 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`pt trade check`: each recorded fill against the day's trading** (ADR
+  0020 R10, the trade-price check). A stock's fill is checked within the
+  day's raw low and high, read through `duk ph --hlc` (a new `daily_range`
+  capability) and never stored. A fund's fill is checked against the NAV
+  held for the day, to the cent. Options and bonds are listed, not checked.
+  Flags are for review, with a note saying by how much; the command exits 0.
+
+- **`pt price gaps`: every held trading day with no price** (ADR 0020 R3,
+  R9). Each day an account held an instrument is checked against its venue's
+  trading calendar, so a holiday is not a gap and a missing session is. A gap
+  surfaced before only as one incomplete account-day at a time, and the
+  staleness tolerance hid most. Calendars come from fafnir's
+  `ref.trading_calendar` (a new `trading_calendar` capability), with NASDAQ's
+  for a venue that has none. Days outside a calendar's span are listed as
+  unchecked. A report: exit 0.
+
+- **A tax rate schedule or return policy entered wrongly can be corrected on
+  its own date** (ADR 0025, decision 5). `pt account tax-rates set
+  --corrects` and `pt policy set --corrects` record a row in place of the one
+  in force on that date. The wrong row is kept as history and never read
+  again. Before, a date took one row, so a rate mistyped for 2024-01-01 could
+  be overridden only from 2024-01-02, and a sale on 2024-01-01 kept the wrong
+  rate. A correction that changes a recorded figure still needs `--restate`.
+  `pt account show` and `pt policy show` list each corrected row with the id
+  of its replacement.
+
+- **Price history is accepted against the custodian's statements** (ADR 0031,
+  answering ADR 0020 R10). `pt reconcile --against STATEMENT --as-of DATE`
+  now reconciles a past statement against the book as it stood that day, and
+  checks each position's price against the statement's market value, to the
+  cent a unit. `--record` keeps the statement's lines; `pt price check`
+  re-checks them whenever prices change and exits 6 on a break or an unpriced
+  line; `pt price accept` records the owner's reason for one disagreement,
+  which holds only while its figures are unchanged. An unresolved line blocks
+  the account's returns from its date, and `pt value` says so.
+
+- **The default benchmark is `Cash (0%)`** (ADR 0030, answering ADR 0020 R8;
+  `PORT-GIPS-G02`, `G04`). A date with no benchmark assigned is set beside a
+  return of zero, labelled as exactly that: not a Treasury-bill series, and a
+  return above it is the portfolio's own. Leaving it is a disclosed benchmark
+  change. `pt benchmark show` prints the benchmark in effect, its history and
+  each disclosure. Assigning one waits for the owner's benchmark tool.
+
+- **`pt price load --file PATH`** fills what fafnir does not hold from a CSV
+  or JSON price file (ADR 0029, answering ADR 0020 R1). It loads the
+  instruments the file names over the days they were held, the range defaulting
+  to the file's own, and reports file rows it did not load and why.
+- **Two sources disagreeing on a price is refused** (`PT-E-PRICE-CONFLICT`,
+  exit 4). A valuation uses the price written last, so a file price and a
+  warehouse price that differed for one day were settled by the order the
+  commands ran in. `pt price load` now stores nothing for an instrument any of
+  whose prices another source already gives differently, and lists each
+  disagreement; `--on-conflict keep` or `replace` is the person's decision.
+
 - **An instrument nothing quotes can be marked so** (ADR 0028, answering
   ADR 0020 R7). `pt instrument market-price SYMBOL --none`, or `pt instrument
   add --no-market-price`. A holding of one is valued at zero as a level-5
@@ -242,6 +296,17 @@ Two rules specific to this repository:
 
 ### Schema
 
+- **`schema_version` 8 → 9**, migration `0009_config_row_corrections`
+  (ADR 0025). A rebuild of `tax_rate_schedule` and `return_policy`
+  (ADR 0019) that adds `corrects_rate_id` and `corrects_policy_id`. Each
+  table's `UNIQUE` date constraint becomes a partial unique index over
+  originals, plus one letting each row be corrected once, and a trigger keeps
+  a correction to its row's account and date. Every row and id is kept.
+- **`schema_version` 7 → 8**, migration `0008_price_acceptance` (ADR 0031).
+  Additive: `statement_position`, the custodian's stated quantity and market
+  value per account, date and instrument; and `price_acceptance`, a reason for
+  one disagreement with the figures it accepted. Neither is derived; `pt
+  rebuild` leaves both alone and `pt export` carries both.
 - **`schema_version` 6 → 7**, migration `0007_no_market_price` (ADR 0028).
   Additive: `instrument.has_market_price`, default 1, with a `CHECK`. Every
   existing instrument stays quoted.
@@ -265,6 +330,25 @@ Two rules specific to this repository:
   preserved and nothing else moves.
 
 ### Changed
+
+- **fafnir prices come through `duk`, and nothing reads `core`** (ADR 0029,
+  decided by the owner; supersedes ADR 0006's price path). Over the owner's
+  SSH tunnel the role is in `fafnir_app`, which cannot see fafnir's `core`
+  schema, and every query the adapter made named it -- so `pt price load`,
+  `pt instrument sync` and `pt ca sync` against fafnir could not have worked
+  there. Prices are now `duk -S db ph <identifier> --close --json --exact`:
+  raw, from the warehouse, named by ISIN, CUSIP or CIK so a reused ticker
+  cannot answer for another issuer, and printed by duk as the warehouse's
+  stored decimals, so no price passes through a float anywhere. That needs a
+  duk with `--exact` (rtrimble13/fafnir#177); an older one is refused by
+  name. Anything that is not exact decimal text is refused. Symbol history, the
+  security master and corporate actions are read from `mart` views over the
+  same DSN, which duk is given too. Corporate actions need
+  `mart.v_corporate_action`, added by fafnir migration 0033
+  (rtrimble13/fafnir#175); on a warehouse not yet migrated to it,
+  `pt ca sync -S fafnir` says so. Prices are recorded with source
+  `fafnir:duk ph`; `provider_ref` no longer carries the ingestion run, which
+  `mart` does not expose.
 
 - **`--dry-run` is the real write, rolled back** (ADR 0026, decided by the
   owner). Most commands returned before writing, so a dry run could not say
@@ -321,6 +405,13 @@ Two rules specific to this repository:
   built from the example fixture should be re-extracted.
 
 ### Fixed
+
+- **A JSON price, action or benchmark file lost digits past a float's
+  precision.** `FileProvider` parsed JSON numbers as floats and then took
+  their text: `150.12345678901234567` was stored as `150.12345678901235`.
+  Numbers are now read as decimals from their text (`CLAUDE.md` invariant 1).
+- **A price file's `source` column was documented as recorded and was
+  ignored.** It is now the price's `provider_ref`.
 
 - **Commands left the portfolio open.** No command closed the connection it
   opened. A process exiting closes it, so nothing failed on Python 3.11 or

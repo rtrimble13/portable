@@ -269,8 +269,42 @@ Done without a warehouse, because each was needed however R1 resolves:
   as having no market price is valued at zero, at level 5, and the snapshot
   holding it is complete ([ADR 0028](0028-instrument-with-no-market-price.md)).
 
-Still open: R1 (is there a warehouse to point at), R3's coverage report and
-R9's calendar, R8 (the benchmark), R10 (the acceptance test).
+## Progress (2026-10-20)
+
+- **R1, decided by the owner: fafnir through `duk`, files for the rest.**
+  "duk is the primary tool for pt to source prices", run on the owner's
+  machine against the warehouse over an SSH tunnel; prices fafnir does not
+  hold come from CSV or JSON files. The tunnel's `fafnir_app` role cannot read
+  `core`, which every adapter query named, so the route changed with it:
+  [ADR 0029](0029-prices-through-duk.md). Corporate actions need a fafnir
+  `mart` view, drafted there for the owner to apply.
+
+- **R8, decided by the owner: the default benchmark is cash.** At 0%,
+  labelled as exactly that, until a benchmark is assigned
+  ([ADR 0030](0030-default-benchmark-is-cash-at-zero.md)). The owner is
+  building a separate tool to construct benchmark series; bringing its output
+  in -- the assignment command and the series import -- waits for it.
+
+- **R10, decided by the owner on the recommendations put to them:** anchors
+  are the holdings export and each year-end statement since 2022-05-18; the
+  price is compared to the cent a unit, not by a percentage of value; a break
+  blocks the account's returns from its date until fixed or accepted with a
+  reason; the check lives in `pt reconcile`. Built as
+  [ADR 0031](0031-price-acceptance-against-statements.md). The trade-price
+  check is `pt trade check`: a stock's fill within the day's raw range, read
+  through `duk --hlc` and never stored; a fund's at the NAV held for the day,
+  to the cent; options and bonds listed, not checked. Flags are for review
+  and it exits 0. `docs/market-data.md` "Fills against the day's range".
+
+- **R3's coverage report and R9's calendar:** `pt price gaps` lists every held
+  session with no price from any source, judged by the venue's trading
+  calendar from fafnir's `ref.trading_calendar`, NASDAQ's where the venue has
+  none, as fafnir falls back. A day outside the calendar's span is reported
+  as unchecked, not as a gap or as closed. `docs/market-data.md` "Finding the
+  gaps".
+
+Still open: R3's conversion step (a vendor export into the price file
+schema), and R8's real benchmark series.
 
 ## Alternatives considered
 

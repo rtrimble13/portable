@@ -668,6 +668,40 @@ def test_migration_0007_leaves_every_existing_instrument_quoted(tmp_path: Path) 
     con.close()
 
 
+def test_migration_0008_adds_statement_anchors_and_changes_nothing_else(
+    tmp_path: Path,
+) -> None:
+    """ADR 0031. Additive: two new tables, every existing row untouched."""
+    con = _at(tmp_path / "p.port", 7)
+    _seed(con)
+    before = [tuple(r) for r in con.execute('SELECT * FROM "transaction" ORDER BY txn_id')]
+
+    M._apply(con, next(m for m in M.available_migrations() if m.version == 8))
+
+    assert M.schema_version(con) == 8
+    assert [tuple(r) for r in con.execute('SELECT * FROM "transaction" ORDER BY txn_id')] == (
+        before
+    )
+    con.execute(
+        "INSERT INTO statement_position (account_id, statement_date, instrument_id, "
+        "quantity, market_value, source, created_at) "
+        "VALUES (1, '2024-12-31', 1, '10', '1000.00', 's.csv', 'x')"
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+        con.execute(
+            "INSERT INTO statement_position (account_id, statement_date, instrument_id, "
+            "quantity, market_value, source, created_at) "
+            "VALUES (1, '2024-12-31', 1, '11', '1100.00', 's.csv', 'x')"
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+        con.execute(
+            "INSERT INTO price_acceptance (statement_position_id, quantity, market_value, "
+            "price, price_date, reason, created_at) "
+            "VALUES (1, '10', '1000.00', '99.00', '2024-12-31', '  ', 'x')"
+        )
+    con.close()
+
+
 def test_an_older_file_is_refused_until_it_is_migrated(tmp_path: Path) -> None:
     """PT-E-SCHEMA-TOO-OLD was defined and never raised: a v4 file read by v5
     code failed on its first new column with "No item with that key"."""
@@ -679,4 +713,76 @@ def test_an_older_file_is_refused_until_it_is_migrated(tmp_path: Path) -> None:
     assert "pt migrate" in (refused.value.remedy or "")
 
     M.check_openable(con, allow_older=True)  # what `pt migrate` asks for
+    con.close()
+
+
+def test_migration_0009_keeps_every_config_row_and_admits_a_correction(
+    tmp_path: Path,
+) -> None:
+    """ADR 0025. Both tables rebuilt: every column of every row kept, ids too,
+    so a realized gain still names the schedule it was taxed at."""
+    con = _at(tmp_path / "p.port", 8)
+    _seed(con)
+    con.execute(
+        "INSERT INTO tax_rate_schedule (account_id, effective_from, short_term_federal, "
+        "long_term_federal, state, niit, qualified_dividend, note, created_at) "
+        "VALUES (1, '2024-01-01', '0.37', '0.20', '0.05', '0.038', '0.15', 'n', 'x')"
+    )
+    con.execute(
+        "INSERT INTO return_policy (effective_from, large_flow_basis, large_flow_value, "
+        "significant_flow_basis, significant_flow_value, materiality_return_bps, "
+        "materiality_value, risk_measure_basis, note, created_at) VALUES ('2024-01-01', "
+        "'amount', '100000', 'percent', '0.25', '10', '1000', 'net_of_fees', 'n', 'x')"
+    )
+    tables = {"tax_rate_schedule": "rate_id", "return_policy": "policy_id"}
+    before = {}
+    for table, key in tables.items():
+        columns = [r[1] for r in con.execute(f'PRAGMA table_info("{table}")')]
+        for column in columns:
+            assert con.execute(
+                f'SELECT COUNT(*) FROM "{table}" WHERE "{column}" IS NOT NULL'
+            ).fetchone()[0], f"no row carries {table}.{column}, so the copy of it is untested"
+        before[table] = (
+            columns,
+            [tuple(r) for r in con.execute(f'SELECT * FROM "{table}" ORDER BY {key}')],
+        )
+    con.commit()
+
+    M._apply(con, next(m for m in M.available_migrations() if m.version == 9))
+
+    assert M.schema_version(con) == 9
+    for table, key in tables.items():
+        columns, rows = before[table]
+        listed = ", ".join(columns)
+        assert [
+            tuple(r) for r in con.execute(f'SELECT {listed} FROM "{table}" ORDER BY {key}')
+        ] == rows
+
+    def rate(on: str, corrects: int | None) -> None:
+        con.execute(
+            "INSERT INTO tax_rate_schedule (account_id, effective_from, short_term_federal, "
+            "long_term_federal, created_at, corrects_rate_id) "
+            "VALUES (1, ?, '0.37', '0.20', 'x', ?)",
+            (on, corrects),
+        )
+
+    rate("2024-01-01", 1)  # a correction on the original's own date
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+        rate("2024-01-01", None)  # still one original per date
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+        rate("2024-01-01", 1)  # a row is corrected once; the chain goes on from 2
+    with pytest.raises(sqlite3.IntegrityError, match="same account and date"):
+        rate("2024-02-01", 2)
+    rate("2024-01-01", 2)
+
+    with pytest.raises(sqlite3.IntegrityError, match="same date"):
+        con.execute(
+            "INSERT INTO return_policy (effective_from, large_flow_basis, large_flow_value, "
+            "created_at, corrects_policy_id) VALUES ('2024-02-01', 'amount', '1', 'x', 1)"
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+        con.execute(
+            "INSERT INTO return_policy (effective_from, large_flow_basis, large_flow_value, "
+            "created_at) VALUES ('2024-01-01', 'amount', '1', 'x')"
+        )
     con.close()

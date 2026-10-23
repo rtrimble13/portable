@@ -1,4 +1,4 @@
-"""Reporting: holdings, pnl, tax, activity, cash-flows, reconcile, policy."""
+"""Reporting: holdings, pnl, tax, activity, cash-flows, reconcile, policy, benchmark."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from portable_core.errors.kinds import E_GIPS_NO_FLOW_POLICY, E_RECONCILE_BREAK
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.importers import TabularAdapter
 from portable_core.importers.source import REALIZED
-from portable_core.services import cash_flow, restatement
+from portable_core.services import benchmarks, cash_flow, restatement
 from portable_core.services.reconciliation import (
     ExternalHolding,
     RealizedTieLine,
@@ -30,9 +30,10 @@ from portable_core.services.reconciliation import (
 from portable_core.services.replay import effective_ledger, state_on
 from portable_core.services.tax import TaxEngine, TaxSummary
 from portable_pt import state
-from portable_pt.commands._shared import dispatch, money_arg, resolve_date
+from portable_pt.commands._shared import dispatch, money_arg, price_line_row, resolve_date
 
 policy_app = typer.Typer(help="Return policy thresholds.", no_args_is_help=True)
+benchmark_app = typer.Typer(help="The benchmark returns are set beside.", no_args_is_help=True)
 
 ZERO = Decimal("0.00")
 
@@ -828,14 +829,33 @@ def reconcile(
     tolerance: Annotated[
         str, typer.Option("--tolerance", help="Absolute, per line, for quantities and money.")
     ] = "0.01",
+    record: Annotated[
+        bool,
+        typer.Option(
+            "--record",
+            help=(
+                "Store the statement's priced lines as anchors for `pt price check` "
+                "(ADR 0031). Needs an explicit --as-of: the statement's date."
+            ),
+        ),
+    ] = False,
 ) -> None:
-    """Compare holdings and cash against a custodian's statement, per account.
+    """Compare holdings, cash and prices against a custodian's statement, per account.
 
     **The file:** one row per line of the statement. `quantity` plus one of
     `symbol`, `cusip` or `isin`. Optionally `account` -- required once more than
     one account is being reconciled -- and `cash`, marking a row as the cash
     line or a sweep vehicle, whose amount is taken from `market_value` when
     present.
+
+    **The date** is `--as-of`: holdings and cash are compared as they stood at
+    the end of it (ADR 0021), so a year-end statement reconciles against that
+    year-end.
+
+    **Prices:** a position line with a `market_value` is also checked against
+    the price valuation would use on that date, to the cent a unit (ADR 0031).
+    `--record` stores those lines, so that `pt price check` can re-check them
+    whenever prices change and an unresolved one blocks returns from its date.
 
     Cash is compared, not only quantities. It is the only check that catches a
     sign error, a dropped row, or a double-counted transfer: the failures that
@@ -871,16 +891,14 @@ def reconcile(
                 ),
             )
 
-        if state.current_options().as_of is not None:
-            # Reconciliation compares what the portfolio holds *now* against the
-            # statement. Positions as of a past date exist (ADR 0021), but the
-            # reconciliation service has not been built on them, and silently
-            # ignoring the flag would answer a question nobody asked.
+        if record and (against is None or state.current_options().as_of is None):
             raise ValidationError(
-                "`pt reconcile` compares current holdings, so --as-of does not apply",
+                "--record stores a statement's lines under its date, so it needs "
+                "--against and an explicit --as-of",
                 remedy=(
-                    "Drop --as-of and reconcile against a current statement. Reconciling "
-                    "to a past statement is not built yet (ADR 0021, Consequences)."
+                    "Give the statement and its date: `pt reconcile --against "
+                    "STATEMENT.csv --as-of YYYY-MM-DD --record`. A defaulted date would "
+                    "file a year-end statement under today."
                 ),
             )
 
@@ -912,6 +930,7 @@ def reconcile(
 
         service = ReconciliationService(repos)
         breaks: list[str] = []
+        warnings_out: list[str] = []
         data: dict[str, object] = {
             "tolerance": limit,
             "accounts": [target.name for target in targets],
@@ -920,9 +939,24 @@ def reconcile(
 
         if against is not None:
             external = _read_statement(against)
-            outcome = service.reconcile(
-                external, targets, tolerance=limit, cash_override=overrides
+            on = ctx.as_of
+            staleness = int(ctx.config.get("staleness_tolerance_days", 5))
+            if record:
+                with ctx.write():
+                    recorded, changed = service.record(
+                        external, targets, on, source=against.name
+                    )
+                data["recorded"] = recorded
+                data["recorded_changed"] = changed
+            as_of_state = state_on(
+                repos,
+                on,
+                lambda: service.reconcile(
+                    external, targets, tolerance=limit, cash_override=overrides, on=on
+                ),
             )
+            outcome = as_of_state.results[0]
+            priced = service.prices(external, targets, on, staleness_days=staleness)
             table = Table(
                 columns=(
                     Column("account", "Account"),
@@ -933,27 +967,54 @@ def reconcile(
                     Column("difference", "Difference", ColumnKind.QUANTITY),
                     Column("break", "Break", ColumnKind.BOOL),
                 ),
-                rows=tuple(
-                    {
-                        "account": line.account,
-                        "kind": line.kind,
-                        "identifier": line.identifier,
-                        "portable": line.ours,
-                        "custodian": line.theirs,
-                        "difference": line.difference,
-                        "break": line.is_break,
-                    }
-                    for line in outcome.lines
+                rows=(
+                    *(
+                        {
+                            "account": line.account,
+                            "kind": line.kind,
+                            "identifier": line.identifier,
+                            "portable": line.ours,
+                            "custodian": line.theirs,
+                            "difference": line.difference,
+                            "break": line.is_break,
+                        }
+                        for line in outcome.lines
+                    ),
+                    *(
+                        {
+                            "account": line.account,
+                            "kind": f"price ({line.status})",
+                            "identifier": line.symbol,
+                            "portable": line.price,
+                            "custodian": line.stated_price,
+                            "difference": (
+                                line.price - line.stated_price
+                                if line.price is not None and line.stated_price is not None
+                                else None
+                            ),
+                            "break": line.is_unresolved,
+                        }
+                        for line in priced
+                    ),
                 ),
-                title=f"Reconciliation against {against.name}",
+                title=f"Reconciliation against {against.name} as of {on.isoformat()}",
+                footnotes=tuple(
+                    f"{line.account} {line.symbol}: {line.status} -- {line.note}"
+                    for line in priced
+                    if line.note
+                ),
             )
-            data["breaks"] = len(outcome.breaks)
+            data["as_of"] = on.isoformat()
+            data["breaks"] = len(outcome.breaks) + sum(1 for x in priced if x.is_unresolved)
             data["lines"] = len(outcome.lines)
+            data["prices"] = [price_line_row(line) for line in priced]
+            warnings_out.extend(as_of_state.warnings)
             breaks.extend(
                 f"{line.account} {line.kind} {line.identifier}: "
                 f"portable {line.ours} vs custodian {line.theirs}"
                 for line in outcome.breaks
             )
+            breaks.extend(line.describe() for line in priced if line.is_unresolved)
 
         if realized is not None:
             tie = service.tie_realized(_read_closed_lots(realized), targets, tolerance=limit)
@@ -1004,7 +1065,11 @@ def reconcile(
             table = table or tie_table
 
         result = CommandResult(
-            command="reconcile", table=table, data=data, portfolio=ctx.portfolio_name()
+            command="reconcile",
+            table=table,
+            data=data,
+            warnings=tuple(warnings_out),
+            portfolio=ctx.portfolio_name(),
         )
 
         if breaks:
@@ -1018,7 +1083,10 @@ def reconcile(
                     "quantities usually means a sign convention or a transfer counted "
                     "twice. A realized break with the lots agreeing is a basis the "
                     "custodian adjusted without a row -- a distribution reclassified as "
-                    "return of capital is the usual one -- and is yours to record."
+                    "return of capital is the usual one -- and is yours to record. A "
+                    "price break is a price from the wrong day or instrument: load the "
+                    "right one, or, where the custodian's figure is the exception, "
+                    "accept the difference with `pt price accept` and a reason."
                 ),
                 breaks=breaks,
             )
@@ -1095,6 +1163,7 @@ def _read_statement(path: Path) -> list[ExternalHolding]:
 
         # A statement's cash row carries a value and no share count.
         raw = (cleaned.get("market_value") if is_cash else "") or cleaned.get("quantity", "")
+        stated_value = None if is_cash else (cleaned.get("market_value") or None)
         if not raw:
             raise ValidationError(
                 f"{path}:{line_number}: no quantity" + (" or market_value" if is_cash else ""),
@@ -1112,12 +1181,25 @@ def _read_statement(path: Path) -> list[ExternalHolding]:
                 line=line_number,
             ) from exc
 
+        market_value = None
+        if stated_value is not None:
+            try:
+                market_value = from_text(stated_value.replace(",", "").replace("$", ""))
+            except ValueError as exc:
+                raise ValidationError(
+                    f"{path}:{line_number}: market_value {stated_value!r} is not a decimal",
+                    remedy="Amounts are plain decimals; strip any currency formatting.",
+                    path=str(path),
+                    line=line_number,
+                ) from exc
+
         rows.append(
             ExternalHolding(
                 account=cleaned.get("account") or None,
                 identifier=identifier.upper() or "CASH",
                 amount=amount,
                 is_cash_equivalent=is_cash,
+                market_value=market_value,
             )
         )
     return rows
@@ -1145,6 +1227,13 @@ def set_policy(
             help="Record a policy that changes stored snapshots, and restate them.",
         ),
     ] = False,
+    corrects: Annotated[
+        bool,
+        typer.Option(
+            "--corrects",
+            help="Replace the policy entered wrongly on this date; it is kept as history.",
+        ),
+    ] = False,
 ) -> None:
     """Set the effective-dated return policy.
 
@@ -1157,6 +1246,10 @@ def set_policy(
     by accident: one that changes a stored snapshot is refused with
     PT-E-RESTATES-HISTORY, and `--restate` records it and restates them,
     keeping the prices they recorded (ADR 0025).
+
+    A policy is never edited. One entered wrongly is replaced on its own date
+    with `--corrects`; the wrong one is kept, marked as corrected, and no longer
+    read. A correction that changes a stored snapshot still needs `--restate`.
     """
 
     def action() -> CommandResult:
@@ -1195,11 +1288,18 @@ def set_policy(
             "materiality_return_bps": policy.materiality_return_bps,
         }
         with ctx.write():
-            recorded = restatement.record_policy(repos, policy, restate=restate)
+            recorded = restatement.record_policy(
+                repos, policy, restate=restate, corrects=corrects
+            )
 
         return CommandResult(
             command="policy set",
-            data={**payload, "policy_id": recorded.row_id, "restated": bool(recorded.restated)},
+            data={
+                **payload,
+                "policy_id": recorded.row_id,
+                "corrects": corrects,
+                "restated": bool(recorded.restated),
+            },
             warnings=recorded.restated,
             portfolio=ctx.portfolio_name(),
         )
@@ -1218,7 +1318,12 @@ def show_policy() -> None:
     def action() -> CommandResult:
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
-        policies = repos.policies.all()
+        policies = repos.policies.all(include_corrected=True)
+        corrected_by = {
+            p.corrects_policy_id: p.policy_id
+            for p in policies
+            if p.corrects_policy_id is not None
+        }
         in_force = repos.policies.in_force(ctx.as_of)
 
         if in_force is None:
@@ -1233,7 +1338,11 @@ def show_policy() -> None:
                     "will not default it to zero."
                 ),
                 as_of=ctx.as_of.isoformat(),
-                known_policies=[p.effective_from.isoformat() for p in policies],
+                known_policies=[
+                    p.effective_from.isoformat()
+                    for p in policies
+                    if p.policy_id not in corrected_by
+                ],
             )
 
         return CommandResult(
@@ -1246,6 +1355,8 @@ def show_policy() -> None:
                     Column("significant_flow_value", "Significant Flow", ColumnKind.RATE),
                     Column("materiality_return_bps", "Materiality (bps)", ColumnKind.MONEY),
                     Column("risk_measure_basis", "Risk Basis"),
+                    Column("policy_id", "Id", ColumnKind.INTEGER),
+                    Column("corrected_by", "Corrected By", ColumnKind.INTEGER),
                 ),
                 rows=tuple(
                     {
@@ -1255,6 +1366,8 @@ def show_policy() -> None:
                         "significant_flow_value": p.significant_flow_value,
                         "materiality_return_bps": p.materiality_return_bps,
                         "risk_measure_basis": p.risk_measure_basis,
+                        "policy_id": p.policy_id,
+                        "corrected_by": corrected_by.get(p.policy_id),
                     }
                     for p in policies
                 ),
@@ -1266,6 +1379,15 @@ def show_policy() -> None:
                     "(PORT-GIPS-B03, E09).",
                     "Because portable values daily, the large-flow threshold is "
                     "informational: the sub-period requirement is already satisfied.",
+                    *(
+                        (
+                            "A policy with a Corrected By id was entered wrongly and is "
+                            "never read; the policy with that id replaced it on the same "
+                            "date (ADR 0025).",
+                        )
+                        if corrected_by
+                        else ()
+                    ),
                 ),
             ),
             data={
@@ -1310,3 +1432,55 @@ def _tax_notes(summary: TaxSummary) -> tuple[str, ...]:
             f"a gain. For those years the custodian's 1099-B is the authority."
         )
     return tuple(notes)
+
+
+@benchmark_app.command(name="show")
+def show_benchmark() -> None:
+    """The benchmark in effect, and its history (ADR 0030).
+
+    With none assigned it is Cash (0%), the owner's default: a return of zero
+    in every period, labelled as such. Each change of benchmark carries its
+    date and reason, which PORT-GIPS-G04 requires to be disclosed.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        timeline = benchmarks.history(repos)
+        current = benchmarks.in_effect(repos, ctx.as_of)
+        return CommandResult(
+            command="benchmark show",
+            table=Table(
+                columns=(
+                    Column("effective_from", "Effective From", ColumnKind.DATE),
+                    Column("benchmark", "Benchmark"),
+                    Column("return_type", "Return Type"),
+                    Column("default", "Default", ColumnKind.BOOL),
+                    Column("change_type", "Change"),
+                ),
+                rows=tuple(
+                    {
+                        "effective_from": (
+                            a.effective_from.isoformat() if a.effective_from else None
+                        ),
+                        "benchmark": a.benchmark.name,
+                        "return_type": str(a.benchmark.return_type),
+                        "default": a.is_default,
+                        "change_type": a.change_type,
+                    }
+                    for a in timeline
+                ),
+                title="Benchmark history",
+                footnotes=tuple(a.disclosure for a in timeline),
+            ),
+            data={
+                "as_of": ctx.as_of.isoformat(),
+                "in_effect": current.benchmark.name,
+                "description": current.benchmark.description,
+                "is_default": current.is_default,
+                "disclosures": [a.disclosure for a in timeline],
+            },
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)

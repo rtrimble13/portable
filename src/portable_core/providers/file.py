@@ -96,7 +96,9 @@ class FileProvider(MarketDataProvider):
         text = path.read_text(encoding="utf-8")
 
         if path.suffix.lower() == ".json":
-            loaded = json.loads(text)
+            # Numbers as Decimal from their text: through a float, a price in
+            # the file would not be the price stored (`CLAUDE.md` invariant 1).
+            loaded = json.loads(text, parse_float=Decimal)
             rows = loaded if isinstance(loaded, list) else loaded.get("rows", [])
         else:
             rows = list(csv.DictReader(text.splitlines()))
@@ -152,12 +154,22 @@ class FileProvider(MarketDataProvider):
                     is_estimate=str(row.get("is_estimate") or "0").lower()
                     in {"1", "true", "yes"},
                     currency=str(row.get("currency") or "USD"),
+                    # Where the figure came from -- a statement, a fund's
+                    # site -- when the file says (PORT-GIPS-J03).
+                    provider_ref=str(row["source"]).strip() if row.get("source") else None,
                 )
             )
         for series in by_symbol.values():
             series.sort(key=lambda p: p.price_date)
         self._prices = by_symbol
         return by_symbol
+
+    def price_symbols(self) -> dict[str, tuple[int, date, date]]:
+        """Each symbol in the price file: how many rows, from which date to which."""
+        return {
+            symbol: (len(series), series[0].price_date, series[-1].price_date)
+            for symbol, series in sorted(self._load_prices().items())
+        }
 
     # ── capabilities ─────────────────────────────────────────────────────────
 
@@ -215,7 +227,9 @@ class FileProvider(MarketDataProvider):
         self.require(Capability.BENCHMARKS)
         assert self.benchmark_file is not None
 
-        loaded = json.loads(self.benchmark_file.read_text(encoding="utf-8"))
+        loaded = json.loads(
+            self.benchmark_file.read_text(encoding="utf-8"), parse_float=Decimal
+        )
         series = loaded.get(name) if isinstance(loaded, dict) else None
         if series is None:
             raise DataUnavailableError(

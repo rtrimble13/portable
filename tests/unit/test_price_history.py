@@ -8,18 +8,19 @@ asked for under each ticker it carried, for the days it carried it.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
 
 from portable_core.domain.enums import InstrumentType, ReliefMethod, TransactionType
-from portable_core.domain.models import Account, Instrument
+from portable_core.domain.models import Account, Instrument, Price
 from portable_core.errors import ValidationError
 from portable_core.persistence.repositories import Repositories
 from portable_core.services.price_history import (
     PriceRequest,
     Span,
+    conflicts,
     differences,
     held_spans,
     lookups_when_last_held,
@@ -193,3 +194,54 @@ def test_a_comparison_lists_what_the_provider_states_differently() -> None:
         "name: - -> Invesco QQQ",
         "cusip: - -> 46090E103",
     ], "an empty field there is not a claim; an empty one here is a gap"
+
+
+def _price(instrument: Instrument, on: date, value: str, source: str) -> Price:
+    return Price(
+        instrument_id=instrument.instrument_id,
+        price_date=on,
+        price=D(value),
+        source=source,
+        as_of=datetime.combine(on, datetime.min.time(), tzinfo=UTC),
+    )
+
+
+def test_a_price_another_source_already_gives_differently_is_a_conflict(
+    repos: Repositories, msft: Instrument
+) -> None:
+    """Otherwise the valuation would use whichever command happened to run last."""
+    on = date(2024, 4, 30)
+    repos.prices.add(_price(msft, on, "410.00", "fafnir:duk ph"))
+
+    found = conflicts(
+        repos,
+        "MSFT",
+        msft.instrument_id,
+        [
+            _price(msft, on, "409.50", "file:prices.csv"),
+            _price(msft, date(2024, 5, 1), "411.00", "file:prices.csv"),
+        ],
+    )
+
+    assert [c.describe() for c in found] == [
+        "MSFT 2024-04-30: fafnir:duk ph has 410.00, file:prices.csv has 409.50"
+    ]
+
+
+def test_the_same_number_or_the_same_source_is_not_a_conflict(
+    repos: Repositories, msft: Instrument
+) -> None:
+    """189.12 and 189.120000 agree; a source correcting its own price is PORT-GIPS-A09."""
+    on = date(2024, 4, 30)
+    repos.prices.add(_price(msft, on, "410.000000", "fafnir:duk ph"))
+
+    assert (
+        conflicts(repos, "MSFT", msft.instrument_id, [_price(msft, on, "410.00", "manual")])
+        == []
+    )
+    assert (
+        conflicts(
+            repos, "MSFT", msft.instrument_id, [_price(msft, on, "411.00", "fafnir:duk ph")]
+        )
+        == []
+    )

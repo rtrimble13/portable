@@ -106,6 +106,8 @@ class TaxRateSchedule:
     niit: Decimal = Decimal("0")
     qualified_dividend: Decimal | None = None
     note: str | None = None
+    #: The schedule of the same account and date this one corrects (ADR 0025).
+    corrects_rate_id: int | None = None
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)
@@ -234,6 +236,45 @@ class Price:
     currency: str = "USD"
     price_id: int | None = None
     provider_ref: str | None = None
+
+    def __post_init__(self) -> None:
+        check_decimal_fields(self)
+
+
+@dataclass(frozen=True, slots=True)
+class StatementPosition:
+    """What a custodian's statement says an account held on a date. ADR 0031.
+
+    The anchor price history is accepted against: the custodian's quantity and
+    market value, as stated. Whether it ties is derived when asked.
+    """
+
+    account_id: int
+    statement_date: date
+    instrument_id: int
+    quantity: Decimal
+    market_value: Decimal
+    source: str
+    statement_position_id: int = 0
+
+    def __post_init__(self) -> None:
+        check_decimal_fields(self)
+
+
+@dataclass(frozen=True, slots=True)
+class PriceAcceptance:
+    """A person's acceptance of one statement line's disagreement. ADR 0031.
+
+    It applies only while every figure it accepted is unchanged.
+    """
+
+    statement_position_id: int
+    quantity: Decimal
+    market_value: Decimal
+    price: Decimal
+    price_date: date
+    reason: str
+    price_acceptance_id: int = 0
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)
@@ -664,6 +705,8 @@ class ReturnPolicy:
     materiality_value: Decimal | None = None
     risk_measure_basis: str = "gross_of_fees"
     note: str | None = None
+    #: The policy of the same date this one corrects (ADR 0025).
+    corrects_policy_id: int | None = None
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)

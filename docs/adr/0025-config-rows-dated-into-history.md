@@ -1,6 +1,6 @@
 # ADR 0025 — A config row dated into history is refused, or restated on request
 
-- **Status:** Accepted — implemented in `services/restatement.py`, `pt account tax-rates set --restate` and `pt policy set --restate`
+- **Status:** Accepted — implemented in `services/restatement.py`, `pt account tax-rates set --restate` and `pt policy set --restate`; decision 5, the correction of a row on its own date, in migration `0009_config_row_corrections` and `--corrects` (2026-10-20)
 - **Date:** 2026-10-16
 - **Milestone:** v0.2
 - **Governs:** `CLAUDE.md` invariants 3, 9; `PORT-GIPS-B03`
@@ -55,18 +55,40 @@ the user told to rebuild explicitly. Nothing did that. Reproduced:
    are stored as before.
 4. **A second row for the same date is refused by name.** Config rows are
    effective-dated and not edited (ADR 0010). A later row replaces an earlier
-   one from its own date on.
+   one from its own date on. The refusal names `--corrects` for a row that
+   was entered wrongly.
+5. **A row entered wrongly is corrected on its own date by a superseding
+   row** (decided by the owner, 2026-10-20). `--corrects` records a second
+   row for the same date that names the one it replaces
+   (`tax_rate_schedule.corrects_rate_id`, `return_policy.corrects_policy_id`).
+   - **Nothing is edited.** The wrong row is kept, so the history shows what
+     was entered, what replaced it and when. Every lookup reads the row that
+     nothing corrects, so a corrected row is never read for a rate or a
+     threshold again.
+   - **A correction is a row like any other.** If it changes a recorded figure
+     it is refused under decision 1, and `--restate` is still needed. The
+     restatement re-derives with the corrected row, so a realized gain names
+     the schedule it was really taxed at.
+   - **A correction may be corrected,** so the rows of one date form a chain.
+     The schema keeps it one: a partial unique index allows one original per
+     date and another lets each row be corrected once. A trigger refuses a
+     correction naming a row of a different account or date.
+   - **`--corrects` with no row on that date is refused.** Without the flag the
+     row is simply the schedule from that date.
+   - `pt account show` and `pt policy show` list a corrected row with the id
+     of the row that replaced it.
 
 ## Consequences
 
 - `pt tax` can no longer report tax at a rate the schedule no longer holds
   without an error having been raised first.
-- **Open: a mistyped rate cannot be corrected on its own date.** Because rows
-  are not edited and a date takes one row, a schedule entered wrongly for
-  2024-01-01 can only be overridden from 2024-01-02. A gain realized on
-  2024-01-01 keeps the wrong rate. Supporting that needs a correction
-  mechanism for config rows (a superseding row, or an edit that is itself
-  recorded). That is a design question for the owner, not decided here.
+- **A mistyped rate can be corrected on its own date** (decision 5). Before
+  it, rows were not edited and a date took one row, so a schedule entered
+  wrongly for 2024-01-01 could only be overridden from 2024-01-02, and a gain
+  realized on 2024-01-01 kept the wrong rate.
+- **Schema 9 rebuilds both tables** to replace their `UNIQUE` constraint with
+  the partial indexes (ADR 0019). Every row and id is kept, so
+  `realized_gain.rate_id` still names the same schedules.
 - **The same rule binds any future config writer that replay reads.** Replay
   falls back to an account's default relief method when a closing trade names
   none. No command can change that default today
@@ -86,6 +108,10 @@ the user told to rebuild explicitly. Nothing did that. Reproduced:
   correct a rate; one overridden by storing the row and rebuilding later
   leaves the window this ADR closes. It also cannot restate snapshots, which
   a rebuild keeps (ADR 0024).
+- **Correct a row by editing it, with the edit itself recorded** (the other
+  option for decision 5). Rejected: it makes these tables mutable, and the
+  audit trail a separate log. A superseding row keeps both rows in the table
+  the lookups already read, and needs no new kind of history.
 - **Remove the affected snapshots, as a ledger write does.** Rejected for a
   policy change: it moves flags, not values, and re-deriving with the
   recorded prices is exact. A ledger write may change holdings that no

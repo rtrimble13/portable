@@ -9,6 +9,8 @@ was accepted and ignored (issue #39).
 
 from __future__ import annotations
 
+import json
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -115,12 +117,31 @@ def test_a_symbol_with_no_prices_is_a_warning_and_nothing_at_all_is_a_failure(
 def test_an_unreachable_warehouse_fails_rather_than_warning(
     run_pt: CliRunner, book: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """It used to be one warning per symbol and exit 0: an outage that 'succeeded'."""
+    """It used to be one warning per symbol and exit 0: an outage that 'succeeded'.
+
+    A `duk` is configured, so the refusal is the warehouse's and not duk's
+    absence (ADR 0029): the identity read reaches for the warehouse first.
+    """
     monkeypatch.setenv("PORTABLE_FAFNIR_DSN", UNREACHABLE)
+    monkeypatch.setenv("PORTABLE_DUK_PATH", sys.executable)
 
     failed = run_pt("--port", book, "-S", "fafnir", "price", "load", "AAPL", expect=5)
 
     assert failed.json()["error"]["code"] == "PT-E-PROVIDER-UNAVAILABLE"
+    assert "cannot reach the fafnir warehouse" in failed.json()["error"]["message"]
+
+
+def test_without_duk_fafnir_prices_are_refused_naming_duk(
+    run_pt: CliRunner, book: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0029: prices come through duk, and its absence is the reason given."""
+    monkeypatch.setenv("PORTABLE_FAFNIR_DSN", UNREACHABLE)
+    monkeypatch.setenv("PORTABLE_DUK_PATH", "no-such-duk")
+
+    failed = run_pt("--port", book, "-S", "fafnir", "price", "load", "AAPL", expect=5)
+
+    assert "`no-such-duk` is not on PATH" in failed.json()["error"]["message"]
+    assert "pt price load --file" in failed.json()["error"]["remedy"]
 
 
 def test_offline_refuses_a_fetch_before_reaching_the_provider(
@@ -159,3 +180,69 @@ def test_every_provider_command_fails_on_an_unreachable_warehouse(
     for command in (("ca", "sync"), ("instrument", "sync")):
         failed = run_pt("--port", book, "-S", "fafnir", *command, expect=5)
         assert failed.json()["error"]["code"] == "PT-E-PROVIDER-UNAVAILABLE", command
+
+
+# ── --file: prices the provider does not hold (ADR 0029) ────────────────────
+
+
+def test_a_file_fills_in_the_instruments_it_names_over_the_days_they_were_held(
+    run_pt: CliRunner, book: str, tmp_path: Path
+) -> None:
+    """No range given: the file's own. Nothing it does not name is reported missing."""
+    loaded = run_pt("--port", book, "price", "load", "--file", str(_price_file(tmp_path)))
+
+    assert (loaded.data["from"], loaded.data["to"]) == ("2023-12-18", "2024-04-30")
+    aapl = _dates(run_pt, book, "AAPL")
+    assert (aapl[0], aapl[-1]) == ("2023-12-29", "2024-02-29")
+    assert _dates(run_pt, book, "NVDA") == []
+    warnings = loaded.json()["warnings"]
+    assert any("not held" in w and "AAPX, NVDA" in w for w in warnings), warnings
+    assert any("were not loaded: they fall outside the days" in w for w in warnings), warnings
+
+
+def test_a_json_price_file_is_read_as_decimal_text(
+    run_pt: CliRunner, book: str, tmp_path: Path
+) -> None:
+    """Invariant 1. Through a float, the price stored would not be the price written."""
+    path = tmp_path / "prices.json"
+    path.write_text(
+        '[{"symbol": "MSFT", "date": "2024-02-01", "price": 150.12345678901234567, '
+        '"source": "custodian statement 2024-02"}]',
+        encoding="utf-8",
+    )
+
+    run_pt("--port", book, "price", "load", "--file", str(path))
+
+    shown = run_pt("--port", book, "price", "show", "MSFT", "--from", "2024-02-01",
+                   "--to", "2024-02-01").data  # fmt: skip
+    assert [row["price"] for row in shown["rows"]] == ["150.12345678901234567"]
+
+
+def test_a_price_another_source_gives_differently_is_refused_until_someone_decides(
+    run_pt: CliRunner, book: str, tmp_path: Path
+) -> None:
+    """Otherwise the valuation uses whichever command ran last, and nobody chose."""
+    prices = str(_price_file(tmp_path))
+    run_pt("--port", book, "price", "set", "MSFT", "--price", "999.00", "--date", "2024-04-30",
+           "--valuation-level", "1")  # fmt: skip
+
+    def msft_on_the_day() -> str:
+        snapshot = run_pt("--port", book, "value", "--date", "2024-04-30").data["rows"][0]
+        return str(snapshot["securities"])
+
+    refused = run_pt("--port", book, "price", "load", "--file", prices, expect=4)
+    error = refused.json()["error"]
+    assert error["code"] == "PT-E-PRICE-CONFLICT"
+    assert error["context"]["conflicts"] == [
+        "MSFT 2024-04-30: manual has 999.00, file:prices.csv has 400.30"
+    ]
+    assert _dates(run_pt, book, "MSFT") == ["2024-04-30"], "nothing of MSFT's was stored"
+    assert _dates(run_pt, book, "AAPL") != [], "the instrument nobody disputes was loaded"
+
+    kept = run_pt("--port", book, "price", "load", "--file", prices, "--on-conflict", "keep")
+    assert any("kept" in w for w in kept.json()["warnings"])
+    assert msft_on_the_day() == "9990.00"
+
+    run_pt("--port", book, "price", "load", "--file", prices, "--on-conflict", "replace")
+    assert msft_on_the_day() == "4003.00"
+    assert json.loads(json.dumps(error))  # the refusal is structured, for an agent to read

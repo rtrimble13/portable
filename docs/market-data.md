@@ -11,8 +11,9 @@ is handled. The design decision behind the fafnir adapter is
 A provider declares what it can do. Capabilities are **separately declarable
 protocols**, so a partial provider is legal and its gaps are *visible*:
 
-`security_master` · `eod_prices` · `intraday_prices` · `corporate_actions` ·
-`dividends` · `benchmarks` · `risk_free_rate` · `fx` (interface only in v0.1)
+`security_master` · `eod_prices` · `daily_range` · `intraday_prices` ·
+`corporate_actions` · `dividends` · `benchmarks` · `risk_free_rate` ·
+`trading_calendar` · `fx` (interface only in v0.1)
 
 That is not architectural neatness. A monolithic interface would have forced
 `FafnirProvider` to implement `benchmark_series` and return *something* — and
@@ -35,44 +36,73 @@ pt --port p.port instrument sync -S fafnir     # compare the master; mirrors duk
 
 ### `FafnirProvider` — the primary
 
-Reads the owner's [fafnir](https://github.com/rtrimble13/fafnir) warehouse
-directly over `psycopg`. Every table and column name lives in one `SCHEMA`
-mapping at the top of `providers/fafnir.py`, so a fafnir migration is a one-file
-change here.
+Reads the owner's [fafnir](https://github.com/rtrimble13/fafnir) warehouse two
+ways ([ADR 0029](adr/0029-prices-through-duk.md)): prices through `duk`, the
+owner's tool for sourcing them, and everything else straight from fafnir's
+`mart` views over `psycopg`. Both use the same DSN, so they read the same
+warehouse. Every view name lives in one `SCHEMA` mapping at the top of
+`providers/fafnir.py`, and every `duk` argument list is built there too, so a
+fafnir change is a one-file change here.
 
 | What | From |
 |---|---|
-| Security master | `core.security` |
-| Symbol resolution **as of a date** | `core.symbol_xref` |
-| End-of-day prices | `core.daily_price` — **unadjusted** |
-| Splits and cash dividends | `core.corporate_action` |
+| Security master | `mart.v_security_profile` |
+| Symbol resolution **as of a date** | `mart.v_symbol_lookup` |
+| End-of-day prices | `duk -S db ph <identifier> --close --json --exact` — **unadjusted** |
+| A day's range, to check fills | `duk -S db ph <identifier> --hlc --json --exact` — unadjusted, read by `pt trade check`, never stored |
+| Splits and cash dividends | `mart.v_corporate_action` — fafnir migration 0033 ([rtrimble13/fafnir#175](https://github.com/rtrimble13/fafnir/pull/175)) |
 | Risk-free rate | `duk -S live yc`, for the date asked |
+| Trading calendar | `ref.trading_calendar`: the instrument's venue, else NASDAQ's, as fafnir's own ingestion falls back |
 
-**Unadjusted prices only.** `mart.v_daily_price_adjusted` is not read by the
-valuation path, and the SQL that would read it is not written. `PORT-GIPS-A01`
-requires fair value on the measurement date, and adjusted prices are not fair
-values on the measurement date — using them alongside explicit corporate-action
-transactions would double-count every split.
+**`mart` and `ref` only, never `core`.** Over an SSH tunnel the owner connects
+as a role in `fafnir_app`, which fafnir's ADR 0008 lets read `mart` and `ref`
+and nothing else. A query that named `core` would fail there with
+`permission denied`.
 
-**Symbols resolve as of a date**, through `core.symbol_xref`, because fafnir's
-own data dictionary says the primary symbol is "**not** an identifier". A ticker
-that has been reassigned resolves to whichever security held it on the trade
-date, which is the only answer that does not silently rewrite history.
+**Unadjusted prices only.** `duk` is never passed `--adj`, and the argument
+list that would do it is not written. `PORT-GIPS-A01` requires fair value on
+the measurement date, and adjusted prices are not fair values on the
+measurement date — using them alongside explicit corporate-action transactions
+would double-count every split.
+
+**Exact, end to end.** `duk ph --exact` prints each price as the text of the
+`NUMERIC(20, 6)` fafnir stores (`"189.120000"`), as a JSON string that no
+reader can round, and `portable` reads it straight into a `Decimal`. No price
+passes through a float anywhere on its way into the `.port` file (invariant 1).
+A JSON number, text that is not a plain positive decimal, a record that is not
+`{date, close}` (or `{date, high, low, close}`), and a date out of range or
+order are refused rather than read. `--exact` arrived with
+[rtrimble13/fafnir#177](https://github.com/rtrimble13/fafnir/pull/177): an
+older `duk` rejects the flag, and `portable` stops with that usage error and
+says which `duk` it needs.
+
+**Symbols resolve as of a date**, through `mart.v_symbol_lookup`, because
+fafnir's own data dictionary says the primary symbol is "**not** an
+identifier". A ticker that has been reassigned resolves to whichever security
+held it on the trade date, which is the only answer that does not silently
+rewrite history.
 
 **A range resolves day by day.** A ticker can name one security for part of a
 range and another for the rest -- a rename, a delisting and a reuse -- so prices
 and corporate actions are fetched segment by segment, each from the security the
 ticker named on those days. A day on which it named nothing is refused by name,
-not skipped, and there is no fallback to `core.security.primary_symbol`: fafnir's
+not skipped, and there is no fallback to the security's primary symbol: fafnir's
 own resolver uses that to say who holds a ticker *now*, which is never the
 question here. fafnir's `asset_type` of `other` is refused too, rather than
 assumed to be an equity.
 
+**`duk` is told which security, by identifier.** Given a ticker, `duk` answers
+for whoever holds it now. So each segment's security is named to `duk` by its
+ISIN, else its CUSIP, else its CIK, which `duk` resolves to that one security
+or refuses. A security with none of the three is refused for those dates, with
+`pt price load --file` as the remedy. So is an identifier `duk` finds on
+several securities.
+
 **Lineage travels with every price.** `price.provider_ref` records
-`security_id`, `trade_date`, `ingestion_run_id`, and `source`, so a valuation
-traces back to the warehouse load that produced it. `PORT-GIPS-J03` requires
-supporting data for every reported figure "including records obtained from third
-parties" — which is why the reference names the row, not just the vendor.
+`security_id`, `trade_date`, and the identifier `duk` was given, so a valuation
+traces back to the warehouse security that produced it (`PORT-GIPS-J03`). The
+ingestion run no longer travels: fafnir keeps load lineage out of `mart`, so a
+`fafnir_app` role cannot see it by any route.
 
 #### Two things fafnir cannot supply
 
@@ -82,13 +112,12 @@ This is the most important part of this page, and it is why ADR 0006 exists.
    not index levels. `PORT-GIPS-G01` prohibits price-only benchmarks and
    requires `portable` to *refuse* rather than warn — so `FafnirProvider`
    declares **no benchmark capability at all**. Synthesising a total return by
-   adding `core.corporate_action` dividends to a price series would be a
+   adding fafnir's dividends to a price series would be a
    defensible-looking wrong number of exactly the kind this repository exists to
    prevent. Benchmarks come from `FileProvider` with an explicit `return_type`.
 2. **No treasury curve.** fafnir's own documentation says `duk yc` is live-only
    "until the economic-series fast-follow adds treasury data to the warehouse",
-   so there is no table to query and `duk` **is** the documented interface. It
-   is the one place `portable` shells out, and it does so for nothing else.
+   so there is no table to query, and the rate comes from `duk -S live yc`.
 
 #### Configuration
 
@@ -101,14 +130,18 @@ DSN resolution, highest first:
 
 ADR 0006 also names a `--dsn` flag; it was never built.
 
-Somebody who already has `duk` working needs no new configuration. The
+Somebody who already has `duk` working needs no new configuration. `duk` is
+run with `FAFNIR_DSN` set to the DSN resolved here, so a `PORTABLE_FAFNIR_DSN`
+reaches it too. If `duk` is not on `PATH`, name it with `duk_path` in
+`~/.portablerc`; without it fafnir supplies no prices and no risk-free rate,
+and says so. The
 environment is checked before any file because a DSN carries a password:
 `portable` never reads a secret from its own config when an environment
 variable is available, never logs one, redacts it in `portable config show`,
 and **never includes it in an error message** — there is a test for that last
 one.
 
-Point it at the least-privilege `fafnir_app` role.
+Point it at a role in `fafnir_app`, fafnir's least-privilege reader.
 
 `psycopg` is an optional dependency (`pip install 'portable[fafnir]'`). Its
 absence is felt only by somebody who asked for fafnir, never at CLI start.
@@ -126,7 +159,7 @@ the tool fully.
 | `symbol` | ✓ | |
 | `date` | ✓ | `YYYY-MM-DD` |
 | `price` | ✓ | A plain decimal. Never a float literal. |
-| `source` | | Recorded on the price, and ends up in the audit trail |
+| `source` | | Where the figure came from (a statement, a fund's site). Recorded as the price's `provider_ref` (`PORT-GIPS-J03`) |
 | `valuation_level` | | 1–5, the GIPS hierarchy. Default 1. |
 | `valuation_basis` | | `exchange_close` \| `model` \| `estimate` \| `manual` |
 | `is_estimate` | | Preliminary values are flagged (`PORT-GIPS-A09`) |
@@ -138,7 +171,8 @@ AAPL,2025-06-30,205.17,broker-statement,1
 ```
 
 A missing column fails **on the file, naming the line** — not four commands
-later on a valuation.
+later on a valuation. In JSON, a price may be written as a number: it is read
+from its text as a decimal, never through a float.
 
 **Corporate actions** — CSV or JSON, requiring `symbol`, `action_type`,
 `ex_date`; optionally `pay_date`, `record_date`, `split_numerator`,
@@ -163,6 +197,9 @@ its benchmark by roughly the dividend yield every year, flattering the portfolio
 by 1.5–2% annually, and a defaulted `total_return` is precisely how that happens
 by accident.
 
+The full format, written for the tool that will build the owner's benchmark
+series, is [docs/benchmark-series.md](benchmark-series.md).
+
 ### `NullProvider` — refuses politely
 
 Declares nothing and supplies nothing. Its job is to make a command that needs
@@ -176,7 +213,7 @@ default when no source is configured.
 
 Every price fetched is stored in the `.port` file with:
 
-- **`source`** — `fafnir:core.daily_price`, `file:prices.csv`, `manual`
+- **`source`** — `fafnir:duk ph`, `file:prices.csv`, `manual`
 - **`as_of`** — when the source asserted it
 - **`valuation_level`** — 1–5, the GIPS fair-value hierarchy (`PORT-GIPS-A02`)
 - **`is_estimate`** — preliminary values are flagged (`PORT-GIPS-A09`)
@@ -259,7 +296,157 @@ run goes on. A provider that cannot be reached -- or that cannot do what was
 asked -- is a failure, exit 5, once, rather than a warning per symbol. A run that
 loaded nothing at all is a failure too.
 
+### Filling what fafnir does not hold
+
+Not every price is in the warehouse: a mutual fund outside its universe, a
+security with no identifier `duk` can be asked by (ADR 0029). Those come from
+a price file in the schema above:
+
+```bash
+pt --port p.port price load --file fund-navs.csv
+```
+
+`--file` loads from that file instead of the configured provider, whatever
+`-S` says. It loads **the instruments the file names, over the days they were
+held**, and the range defaults to the file's first and last dates. An
+instrument the file does not name is not reported missing from it. What the
+file holds and was not loaded is reported: a ticker not held under that name in
+the range (a typo, or the name it had before a rename), and rows dated outside
+the days their instrument was held.
+
+**Two sources disagreeing is refused.** The cache keeps one price per source
+per day, and a valuation uses the one written last. So a file price and a
+warehouse price that differ for the same day would be settled by the order the
+commands ran in. Instead, `pt price load`, from a file or a provider, refuses
+an instrument any of whose prices differs from one another source already gave
+for that day. It stores nothing for that instrument, loads the rest, and exits
+4 with `PT-E-PRICE-CONFLICT`, listing every disagreement. A person decides:
+
+- `--on-conflict keep` leaves the stored prices and loads the rest;
+- `--on-conflict replace` stores the new ones, which valuations then use.
+
+The same number from two sources (`189.12` and `189.120000`) is not a
+disagreement. Nor is a source correcting its own earlier price, which replaces
+it as a final price replaces a preliminary one (`PORT-GIPS-A09`).
+
+### Finding the gaps
+
+[ADR 0020](adr/0020-historical-price-import.md) R3 and R9. A valuation
+tolerates a price a few days old, so a missing day hides behind the one before
+it, and a gap it cannot hide surfaces as one incomplete account-day at a time.
+`pt price gaps` asks the stricter question once, across the history:
+
+```bash
+pt --port p.port -S fafnir price gaps                       # from the ledger's first date
+pt --port p.port -S fafnir price gaps --from 2024-01-01 --to 2024-12-31
+```
+
+- **Every day an account held an instrument** is read from the ledger, as
+  `price load` reads it, and checked against **its venue's trading calendar**.
+  A holiday is not a gap, and a session with no price is. A price from any
+  source counts: the question is whether the day can be valued.
+- **The calendar is fafnir's** (`ref.trading_calendar`). A venue with no
+  calendar of its own is judged by NASDAQ's, as fafnir's ingestion judges it,
+  and the report says which instruments were. fafnir stores open days only, so
+  a day outside a calendar's span is unknown rather than closed: it is listed
+  as unchecked, never counted either way. A provider with no calendar is
+  refused, exit 5, because without one a missing price cannot be told from a
+  holiday.
+- **Each gap is a run** of consecutive unpriced sessions per instrument, with
+  its first and last date. Weekends and holidays neither break a run nor count
+  in it.
+- An instrument marked as having no market price is listed, not checked
+  (ADR 0028).
+- **It is a report**, and exits 0 whatever it finds. `pt price load --from D
+  --to D` fetches a gap the provider holds, and `pt price load --file` fills
+  one it does not.
+
 ---
+
+## Accepting price history
+
+[ADR 0031](adr/0031-price-acceptance-against-statements.md). Loading a price
+is one thing; knowing it is the right one is another. The custodian's statement
+says what each position was worth on its date, an anchor independent of every
+provider. A price from the wrong day, the wrong instrument (a reused ticker) or
+the adjusted series disagrees with it.
+
+```bash
+pt --port p.port --as-of 2024-12-31 reconcile --against statement-2024.csv --record
+pt --port p.port price check
+pt --port p.port price accept AAPL -a Brokerage --date 2024-12-31 --reason "…"
+```
+
+**The statement's own date.** `pt reconcile --as-of D` compares holdings and
+cash as they stood at the end of D (ADR 0021), so a year-end statement
+reconciles against that year-end. A position line with a `market_value` also
+checks its price.
+
+**The price, to the cent a unit.** The statement's market value over its
+quantity is the custodian's price. portable's is the one valuation would use on
+that date: the newest on or before it, within the staleness tolerance. They tie
+when
+
+    |portable price × quantity − market value| ≤ $0.01 × quantity + $0.005
+
+which is a cent a unit plus the half cent the statement's rounding of market
+value to the cent accounts for. The statement's quantity is used, so a quantity
+disagreement is not also reported as a price break. The tolerance is fixed:
+`--tolerance` governs quantities and cash, not prices. A percentage of value is
+not used, because on a large position it hides a price from the wrong day.
+
+| Status | Means | Blocks returns |
+|---|---|---|
+| `tied` | agrees to the cent a unit | no |
+| `accepted` | disagrees, and the owner accepted these exact figures with a reason | no |
+| `break` | disagrees | **yes** |
+| `unpriced` | no price on or before the date, or one stale beyond tolerance | **yes** |
+
+**`--record` keeps the lines** (`statement_position`) under the statement's
+date, which must be given explicitly. Whether each one ties is never stored:
+`pt price check` re-decides every recorded line against the prices held now, so
+reloading a price re-checks every anchor it touches. It exits 6 while any line
+is a break or unpriced.
+
+**An acceptance is for one disagreement.** `pt price accept` records the reason
+together with the statement's quantity and market value and portable's price
+and its date. If any of those changes, the line is a break again. An unpriced
+line cannot be accepted: load or set a price first.
+
+**A break blocks returns** for its account from its date until it is fixed or
+accepted. `pert` will refuse returns for any period ending on or after that
+date. Until it exists, `pt value` warns for every account it values from that
+date on. Snapshots are still built and stored: they record what the prices
+were, and the gate decides whether a return may be computed from them.
+
+### Fills against the day's range
+
+The second anchor ADR 0020 R10 names: every recorded trade's price was a real
+traded price on its date. `pt trade check` compares each fill (buys, sells,
+shorts, covers and reinvestments, reversed ones left out) with what the market
+traded that day:
+
+```bash
+pt --port p.port -S fafnir trade check                      # from the ledger's first date
+pt --port p.port -S fafnir trade check --from 2024-01-01 -a Brokerage
+```
+
+| Instrument | Checked against | Verdicts |
+|---|---|---|
+| Stock, ETF, ADR | the day's raw low and high, from the provider (`duk --hlc`), read when checked and never stored | `within`, `outside` |
+| Mutual fund | the NAV portable holds for that day, to the cent (within half a cent) | `at_nav`, `off_nav` |
+| Option, bond, money market; anything marked as having no market price | nothing: listed only | `not_checked` |
+
+A fill with nothing to check against — no range, or no NAV for that day — is
+`no_data`. The range is inclusive at both ends. A fund's check reads the price
+history, so it checks the NAVs too.
+
+**Flags are for review, and the command exits 0.** An `outside` fill is a wrong
+price, a wrong date, a wrong instrument, or a trade outside regular hours, and
+which one is a person's call. Each flag's note says by how much and against
+what. Each ticker is asked for once, from its first fill to its last; when that
+finds nothing, each date is asked alone, so one date the provider cannot answer
+does not hide the rest. A provider that cannot be reached stops the check.
 
 ## What is not here
 

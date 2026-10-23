@@ -18,6 +18,8 @@ from portable_core.domain.models import Instrument, Transaction
 from portable_core.errors import ValidationError
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.persistence.repositories import Repositories
+from portable_core.providers import as_daily_range_provider
+from portable_core.services import trade_check
 from portable_core.services.regrouping import Regroup, record_regroup
 from portable_core.services.replay import ReplayEngine, state_on
 from portable_core.services.trading import TradeIntent, TradePlan, TradingService
@@ -29,7 +31,9 @@ from portable_pt.commands._shared import (
     resolve_date,
 )
 
-app = typer.Typer(help="Trade listing, reversal, and correction.", no_args_is_help=True)
+app = typer.Typer(
+    help="Trade listing, checking, reversal, and correction.", no_args_is_help=True
+)
 
 FeesOpt = Annotated[str, typer.Option("--fees", help="Total fees on this trade.")]
 CommissionOpt = Annotated[str, typer.Option("--commission", help="Broker commission.")]
@@ -451,6 +455,132 @@ def reverse(
                 "Derived state was rebuilt from the ledger, because a reversal "
                 "changes which lots later trades consume.",
             ),
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
+@app.command()
+def check(
+    start: Annotated[
+        str | None, typer.Option("--from", help="Default: the ledger's first date.")
+    ] = None,
+    end: Annotated[str | None, typer.Option("--to", help="Default: --as-of.")] = None,
+    account: Annotated[str | None, typer.Option("--account", "-a")] = None,
+) -> None:
+    """Check each recorded fill against what the market traded that day (ADR 0020 R10).
+
+    A stock, ETF or ADR fill is checked against the day's low and high, read
+    from the provider and never stored; a fund fill against the NAV portable
+    holds for that day, to the cent. Options, bonds and anything else are
+    listed, not checked. A fill outside the range is a wrong price, date or
+    instrument, or a trade outside regular hours: which one is a person's
+    call, so flags are for review. A report: it exits 0 whatever it finds.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        ranges = as_daily_range_provider(ctx.provider())
+        target = repos.accounts.resolve(account) if account else None
+        last = resolve_date(end, ctx, what="--to") if end else ctx.as_of
+        if start:
+            first = resolve_date(start, ctx, what="--from")
+        else:
+            opened = [
+                found
+                for each in repos.accounts.all()
+                if (found := repos.transactions.first_trade_date(each.account_id))
+            ]
+            if not opened:
+                raise ValidationError(
+                    "the ledger is empty, so there is nothing to check",
+                    remedy="Record or import transactions first.",
+                )
+            first = min(opened)
+        if last < first:
+            raise ValidationError(
+                f"--to {last.isoformat()} precedes --from {first.isoformat()}",
+                remedy="Check the order of the dates.",
+            )
+
+        checked = trade_check.check(
+            repos,
+            ranges,
+            first,
+            last,
+            account_id=target.account_id if target is not None else None,
+        )
+        counts = checked.counts()
+        flagged = checked.flagged
+        rows = tuple(
+            {
+                "txn_id": line.txn_id,
+                "trade_date": line.trade_date.isoformat(),
+                "account": line.account,
+                "txn_type": line.txn_type,
+                "symbol": line.symbol,
+                "quantity": line.quantity,
+                "price": line.price,
+                "low": line.low,
+                "high": line.high,
+                "nav": line.nav,
+                "verdict": str(line.verdict),
+                "note": line.note,
+            }
+            for line in checked.lines
+        )
+        return CommandResult(
+            command="trade check",
+            table=Table(
+                columns=(
+                    Column("txn_id", "Id", ColumnKind.INTEGER),
+                    Column("trade_date", "Date", ColumnKind.DATE),
+                    Column("account", "Account"),
+                    Column("txn_type", "Type"),
+                    Column("symbol", "Symbol"),
+                    Column("quantity", "Qty", ColumnKind.QUANTITY),
+                    Column("price", "Price", ColumnKind.PRICE),
+                    Column("low", "Low", ColumnKind.PRICE),
+                    Column("high", "High", ColumnKind.PRICE),
+                    Column("nav", "NAV", ColumnKind.PRICE),
+                    Column("verdict", "Verdict"),
+                ),
+                rows=rows,
+                title=f"Fills, {first.isoformat()} to {last.isoformat()}",
+                footnotes=(
+                    *(
+                        f"{line.txn_id} {line.symbol} {line.trade_date.isoformat()}: "
+                        f"{line.verdict} -- {line.note}"
+                        for line in checked.lines
+                        if line.note and line.flagged
+                    ),
+                    "A stock's fill is checked against the day's raw low and high; a "
+                    "fund's against the NAV held for that day, to the cent. Flags are "
+                    "for review: an extended-hours fill can be right and still outside "
+                    "the day's range.",
+                ),
+            ),
+            data={
+                "from": first.isoformat(),
+                "to": last.isoformat(),
+                "counts": counts,
+                "flagged": len(flagged),
+            },
+            warnings=(
+                (
+                    f"{len(flagged)} fill(s) flagged for review: "
+                    + ", ".join(
+                        f"{line.txn_id} ({line.symbol} {line.trade_date.isoformat()}, "
+                        f"{line.verdict})"
+                        for line in flagged
+                    ),
+                )
+                if flagged
+                else ()
+            ),
+            as_of=ctx.as_of,
             portfolio=ctx.portfolio_name(),
         )
 

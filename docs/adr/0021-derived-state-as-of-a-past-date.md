@@ -106,9 +106,10 @@ on that day.
   ledger there too.** `pt cash-flows` nets every reversal and its original
   out over the whole ledger, as snapshots do, and a test holds the two
   series equal. The netted pair is still visible in `pt activity`.
-- `pt reconcile --as-of` is still refused, but it could now be built on the
-  walk. ADR 0020 R10's anchor, the custodian's 2026-08-27 holdings snapshot,
-  wants exactly that.
+- `pt reconcile --as-of` was refused at first. It is now built on the walk
+  ([ADR 0031](0031-price-acceptance-against-statements.md)): a statement
+  reconciles against holdings and cash as they stood at the end of its date,
+  which is what ADR 0020 R10's anchors need.
 - ADR 0010's partition table said valuation snapshots are "dropped and
   rebuilt". `rebuild()` dropped them and nothing rebuilt them, because they
   depend on prices as well as the ledger. `pt validate` digested them against

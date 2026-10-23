@@ -170,7 +170,10 @@ def show(account: Annotated[str, typer.Argument(help="Account name or id.")]) ->
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
         found = repos.accounts.resolve(account)
-        schedules = repos.accounts.rate_schedules(found.account_id)
+        schedules = repos.accounts.rate_schedules(found.account_id, include_corrected=True)
+        corrected_by = {
+            s.corrects_rate_id: s.rate_id for s in schedules if s.corrects_rate_id is not None
+        }
         cash, margin = repos.valuations.cash(found.account_id, currency=found.currency)
 
         return CommandResult(
@@ -182,6 +185,8 @@ def show(account: Annotated[str, typer.Argument(help="Account name or id.")]) ->
                     Column("long_term_federal", "LT Federal", ColumnKind.RATE),
                     Column("state", "State", ColumnKind.RATE),
                     Column("niit", "NIIT", ColumnKind.RATE),
+                    Column("rate_id", "Id", ColumnKind.INTEGER),
+                    Column("corrected_by", "Corrected By", ColumnKind.INTEGER),
                 ),
                 rows=tuple(
                     {
@@ -190,6 +195,8 @@ def show(account: Annotated[str, typer.Argument(help="Account name or id.")]) ->
                         "long_term_federal": s.long_term_federal,
                         "state": s.state,
                         "niit": s.niit,
+                        "rate_id": s.rate_id,
+                        "corrected_by": corrected_by.get(s.rate_id),
                     }
                     for s in schedules
                 ),
@@ -198,6 +205,15 @@ def show(account: Annotated[str, typer.Argument(help="Account name or id.")]) ->
                     "Rates are effective-dated: a change never restates a past "
                     "disposition. Components are separate so the effective rate is "
                     "explainable rather than a magic number.",
+                    *(
+                        (
+                            "A schedule with a Corrected By id was entered wrongly and is "
+                            "never read; the schedule with that id replaced it on the same "
+                            "date (ADR 0025).",
+                        )
+                        if corrected_by
+                        else ()
+                    ),
                 ),
             ),
             data={
@@ -260,6 +276,13 @@ def set_rates(
             help="Record a schedule that changes tax already estimated, and restate it.",
         ),
     ] = False,
+    corrects: Annotated[
+        bool,
+        typer.Option(
+            "--corrects",
+            help="Replace the schedule entered wrongly on this date; it is kept as history.",
+        ),
+    ] = False,
 ) -> None:
     """Set an effective-dated tax rate schedule.
 
@@ -270,6 +293,10 @@ def set_rates(
     A schedule that changes the tax estimated on a gain already recorded is
     refused with PT-E-RESTATES-HISTORY, saying which gains and by how much;
     `--restate` records it and restates them in one transaction (ADR 0025).
+
+    A schedule is never edited. One entered wrongly is replaced on its own date
+    with `--corrects`; the wrong one is kept, marked as corrected, and no longer
+    read. A correction that changes tax already estimated still needs `--restate`.
     """
 
     def action() -> CommandResult:
@@ -304,11 +331,18 @@ def set_rates(
         }
 
         with ctx.write():
-            recorded = restatement.record_rate_schedule(repos, schedule, restate=restate)
+            recorded = restatement.record_rate_schedule(
+                repos, schedule, restate=restate, corrects=corrects
+            )
 
         return CommandResult(
             command="account tax-rates set",
-            data={**payload, "rate_id": recorded.row_id, "restated": bool(recorded.restated)},
+            data={
+                **payload,
+                "rate_id": recorded.row_id,
+                "corrects": corrects,
+                "restated": bool(recorded.restated),
+            },
             warnings=recorded.restated,
             portfolio=ctx.portfolio_name(),
         )

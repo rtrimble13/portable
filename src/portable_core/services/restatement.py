@@ -18,6 +18,11 @@ the figures restated in the same transaction:
   read (ADR 0024). Each affected snapshot is derived again with its recorded
   prices held fixed, so no valuation history is lost.
 
+A row is never edited, and a date takes one row in force. A row entered wrongly
+is corrected on its own date with ``corrects=True``: the new row names the one
+it replaces, which is kept as history and no longer read. The correction is a
+row like any other, so it is refused or restated exactly as above.
+
 The caller holds the transaction. A refusal raises, and the transaction
 rolling back takes the stored row, and any rebuild, with it.
 """
@@ -25,7 +30,7 @@ rolling back takes the stored row, and any rebuild, with it.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
 
@@ -63,28 +68,44 @@ _GainFigures = tuple[
 
 
 def record_rate_schedule(
-    repos: Repositories, schedule: TaxRateSchedule, *, restate: bool
+    repos: Repositories, schedule: TaxRateSchedule, *, restate: bool, corrects: bool = False
 ) -> Recorded:
     """Store *schedule*, restating the realized gains it changes when told to.
 
+    With *corrects*, *schedule* replaces the one in force on its own date,
+    which is kept as history (ADR 0025).
+
     Raises:
         ValidationError: when the account already has a schedule effective on
-            that date, or (``PT-E-RESTATES-HISTORY``) when the schedule changes
-            the estimated tax on a gain already recorded and *restate* is
-            False.
+            that date and *corrects* is False, or has none and it is True; or
+            (``PT-E-RESTATES-HISTORY``) when the schedule changes the estimated
+            tax on a gain already recorded and *restate* is False.
     """
     account = repos.accounts.get(schedule.account_id)
     name = account.name if account is not None else str(schedule.account_id)
     on = schedule.effective_from.isoformat()
-    if any(
-        existing.effective_from == schedule.effective_from
+    same_day = [
+        existing
         for existing in repos.accounts.rate_schedules(schedule.account_id)
-    ):
+        if existing.effective_from == schedule.effective_from
+    ]
+    if corrects:
+        if not same_day:
+            raise ValidationError(
+                f"{name} has no tax rate schedule effective {on} to correct",
+                remedy="Without --corrects, it is recorded as the schedule from that date.",
+                account=name,
+                effective_from=on,
+            )
+        schedule = replace(schedule, corrects_rate_id=same_day[0].rate_id)
+    elif same_day:
         raise ValidationError(
             f"{name} already has a tax rate schedule effective {on}",
             remedy=(
-                "Schedules are effective-dated and are not edited. A schedule for "
-                "a later date replaces this one from that date on."
+                "Schedules are effective-dated and are not edited. If that one was "
+                "entered wrongly, pass --corrects to record this one in its place on "
+                "the same date; the wrong one is kept as history (ADR 0025). A "
+                "schedule for a later date replaces it from that date on."
             ),
             account=name,
             effective_from=on,
@@ -116,9 +137,10 @@ def record_rate_schedule(
         f"the estimated tax on {count} {noun} in {name} dated {span} "
         f"({to_text(was)} becomes {to_text(now)})"
     )
+    what = "correcting the" if corrects else "a"
     if not restate:
         raise ValidationError(
-            f"a tax rate schedule effective {on} changes {change}",
+            f"{what} tax rate schedule effective {on} changes {change}",
             code=E_RESTATES_HISTORY,
             remedy=(
                 "Rates are effective-dated so that history is not restated by "
@@ -134,26 +156,41 @@ def record_rate_schedule(
     return Recorded(rate_id, (f"restated {change}", *replayed.warnings))
 
 
-def record_policy(repos: Repositories, policy: ReturnPolicy, *, restate: bool) -> Recorded:
+def record_policy(
+    repos: Repositories, policy: ReturnPolicy, *, restate: bool, corrects: bool = False
+) -> Recorded:
     """Store *policy*, restating the snapshots it changes when told to.
 
     A policy governs from its date until the next one, so only snapshots in
     that window can change, and only their large-flow flags: nothing else in
-    a snapshot reads the policy.
+    a snapshot reads the policy. With *corrects*, *policy* replaces the one in
+    force on its own date, which is kept as history (ADR 0025).
 
     Raises:
-        ValidationError: when a policy is already effective on that date, or
+        ValidationError: when a policy is already effective on that date and
+            *corrects* is False, or none is and it is True; or
             (``PT-E-RESTATES-HISTORY``) when the policy changes a stored
             snapshot and *restate* is False.
     """
     on = policy.effective_from.isoformat()
     existing = repos.policies.all()
-    if any(p.effective_from == policy.effective_from for p in existing):
+    same_day = [p for p in existing if p.effective_from == policy.effective_from]
+    if corrects:
+        if not same_day:
+            raise ValidationError(
+                f"no return policy is effective {on} to correct",
+                remedy="Without --corrects, it is recorded as the policy from that date.",
+                effective_from=on,
+            )
+        policy = replace(policy, corrects_policy_id=same_day[0].policy_id)
+    elif same_day:
         raise ValidationError(
             f"a return policy is already effective {on}",
             remedy=(
-                "Policies are effective-dated and are not edited. A policy for a "
-                "later date replaces this one from that date on."
+                "Policies are effective-dated and are not edited. If that one was "
+                "entered wrongly, pass --corrects to record this one in its place on "
+                "the same date; the wrong one is kept as history (ADR 0025). A "
+                "policy for a later date replaces it from that date on."
             ),
             effective_from=on,
         )
@@ -175,7 +212,8 @@ def record_policy(repos: Repositories, policy: ReturnPolicy, *, restate: bool) -
     )
     if not restate:
         raise ValidationError(
-            f"a return policy effective {on} changes {change}",
+            f"{'correcting the' if corrects else 'a'} return policy effective {on} "
+            f"changes {change}",
             code=E_RESTATES_HISTORY,
             remedy=(
                 "Policies are effective-dated so that history is not restated by "

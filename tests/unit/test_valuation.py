@@ -64,7 +64,7 @@ def price(
     on: date = date(2025, 6, 30),
     level: int = 1,
     estimate: bool = False,
-    source: str = "fafnir:core.daily_price",
+    source: str = "fafnir:duk ph",
 ) -> Price:
     return Price(
         instrument_id=1,

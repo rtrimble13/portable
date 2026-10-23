@@ -49,8 +49,10 @@ from portable_core.domain.models import (
     Position,
     PositionLeg,
     Price,
+    PriceAcceptance,
     RealizedGain,
     ReturnPolicy,
+    StatementPosition,
     TaxRateSchedule,
     Transaction,
 )
@@ -147,6 +149,7 @@ def to_tax_rate_schedule(row: sqlite3.Row) -> TaxRateSchedule:
         niit=to_decimal(row["niit"]),
         qualified_dividend=to_optional_decimal(row["qualified_dividend"]),
         note=row["note"],
+        corrects_rate_id=row["corrects_rate_id"],
     )
 
 
@@ -218,6 +221,30 @@ def to_price(row: sqlite3.Row) -> Price:
         currency=str(row["currency"]),
         price_id=int(row["price_id"]),
         provider_ref=row["provider_ref"],
+    )
+
+
+def to_statement_position(row: sqlite3.Row) -> StatementPosition:
+    return StatementPosition(
+        account_id=int(row["account_id"]),
+        statement_date=to_date(row["statement_date"]),
+        instrument_id=int(row["instrument_id"]),
+        quantity=to_decimal(row["quantity"]),
+        market_value=to_decimal(row["market_value"]),
+        source=str(row["source"]),
+        statement_position_id=int(row["statement_position_id"]),
+    )
+
+
+def to_price_acceptance(row: sqlite3.Row) -> PriceAcceptance:
+    return PriceAcceptance(
+        statement_position_id=int(row["statement_position_id"]),
+        quantity=to_decimal(row["quantity"]),
+        market_value=to_decimal(row["market_value"]),
+        price=to_decimal(row["price"]),
+        price_date=to_date(row["price_date"]),
+        reason=str(row["reason"]),
+        price_acceptance_id=int(row["price_acceptance_id"]),
     )
 
 
@@ -408,6 +435,7 @@ def to_return_policy(row: sqlite3.Row) -> ReturnPolicy:
         materiality_value=to_optional_decimal(row["materiality_value"]),
         risk_measure_basis=str(row["risk_measure_basis"]),
         note=row["note"],
+        corrects_policy_id=row["corrects_policy_id"],
     )
 
 

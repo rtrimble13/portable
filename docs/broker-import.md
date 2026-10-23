@@ -629,10 +629,13 @@ Per invariant 9, the import stops and explains rather than guessing, on:
 An import is accepted when it reconciles, not when it parses.
 
 1. **Per period, per account:** ending cash and every position quantity match
-   the custodian. `pt reconcile --against <statement.csv>`; a break exits **6**.
-   The statement needs `quantity` plus one of `symbol`, `cusip` or `isin`, an
-   `account` column once more than one account is in scope, and a `cash` column
-   marking the cash line and any sweep vehicle.
+   the custodian. `pt reconcile --against <statement.csv> --as-of <date>`,
+   compared as the book stood at the end of the statement's date; a break exits
+   **6**. The statement needs `quantity` plus one of `symbol`, `cusip` or
+   `isin`, an `account` column once more than one account is in scope, and a
+   `cash` column marking the cash line and any sweep vehicle. A `market_value`
+   on a position line checks its price too ([ADR 0031](adr/0031-price-acceptance-against-statements.md);
+   `docs/market-data.md`, "Accepting price history").
 2. **Per sale:** realized gains tie to the custodian's own lot-level report.
    `pt reconcile --realized <adapter>` compares proceeds, basis and gain of
    every disposition against the report's lots for the same account,
