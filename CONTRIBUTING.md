@@ -67,7 +67,7 @@ Breaking one is a bug even if every test passes. The full list is in
 |---|---|
 | Business logic | `services/` — never in a CLI module, never in a repository |
 | SQL against the `.port` file | `persistence/` and `schema/` — nowhere else |
-| SQL against fafnir's warehouse | `providers/fafnir.py` — nowhere else |
+| Reading fafnir | `providers/fafnir.py`, through `duk` only — no SQL, no driver (ADR 0032) |
 | Typed domain objects | `domain/` — no I/O, no SQL, no business rules |
 | Anything fafnir-shaped | `providers/fafnir.py` — nowhere else |
 | Output formatting rules | `formatters/`, once, not inline at call sites |

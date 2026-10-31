@@ -1,8 +1,10 @@
 # Market data
 
 The provider interface, the fafnir adapter, the file schemas, and how staleness
-is handled. The design decision behind the fafnir adapter is
-[ADR 0006](adr/0006-fafnir-access-path.md).
+is handled. The design decisions behind the fafnir adapter are
+[ADR 0006](adr/0006-fafnir-access-path.md) (what fafnir cannot supply),
+[ADR 0029](adr/0029-prices-through-duk.md) (prices through `duk`) and
+[ADR 0032](adr/0032-fafnir-through-duk-alone.md) (everything through `duk`).
 
 ---
 
@@ -36,28 +38,27 @@ pt --port p.port instrument sync -S fafnir     # compare the master; mirrors duk
 
 ### `FafnirProvider` — the primary
 
-Reads the owner's [fafnir](https://github.com/rtrimble13/fafnir) warehouse two
-ways ([ADR 0029](adr/0029-prices-through-duk.md)): prices through `duk`, the
-owner's tool for sourcing them, and everything else straight from fafnir's
-`mart` views over `psycopg`. Both use the same DSN, so they read the same
-warehouse. Every view name lives in one `SCHEMA` mapping at the top of
-`providers/fafnir.py`, and every `duk` argument list is built there too, so a
-fafnir change is a one-file change here.
+Reads the owner's [fafnir](https://github.com/rtrimble13/fafnir) warehouse
+**through `duk` and nothing else** ([ADR 0032](adr/0032-fafnir-through-duk-alone.md),
+completing [ADR 0029](adr/0029-prices-through-duk.md)). Every read is a `duk`
+command; `portable` installs no database driver, holds no SQL against fafnir,
+and reads none of fafnir's configuration. Every `duk` argument list is built in
+`providers/fafnir.py`, so a fafnir change is a one-file change here.
 
-| What | From |
+| What | `duk` command |
 |---|---|
-| Security master | `mart.v_security_profile` |
-| Symbol resolution **as of a date** | `mart.v_symbol_lookup` |
-| End-of-day prices | `duk -S db ph <identifier> --close --json --exact` — **unadjusted** |
-| A day's range, to check fills | `duk -S db ph <identifier> --hlc --json --exact` — unadjusted, read by `pt trade check`, never stored |
-| Splits and cash dividends | `mart.v_corporate_action` — fafnir migration 0033 ([rtrimble13/fafnir#175](https://github.com/rtrimble13/fafnir/pull/175)) |
+| Which security a ticker named, day by day, and its master record | `duk -S db th ticker:<T> --json` |
+| End-of-day prices — **unadjusted** | `duk -S db ph sid:<id> --close --json --exact` |
+| A day's range, to check fills | `duk -S db ph sid:<id> --hlc --json --exact` — read by `pt trade check`, never stored |
+| Splits and cash dividends | `duk -S db ca sid:<id> --json --exact` — needs fafnir migration 0033 on the warehouse |
+| Trading calendar | `duk -S db tc --json` (every venue's span), then `duk -S db tc <venue> --json` (its sessions): the instrument's venue, else NASDAQ's, as fafnir's own ingestion falls back |
 | Risk-free rate | `duk -S live yc`, for the date asked |
-| Trading calendar | `ref.trading_calendar`: the instrument's venue, else NASDAQ's, as fafnir's own ingestion falls back |
 
-**`mart` and `ref` only, never `core`.** Over an SSH tunnel the owner connects
-as a role in `fafnir_app`, which fafnir's ADR 0008 lets read `mart` and `ref`
-and nothing else. A query that named `core` would fail there with
-`permission denied`.
+**One tool, one route.** What `portable` asks of fafnir is exactly what the
+owner can ask by hand, with the same commands, through the same SSH tunnel and
+the same `fafnir_app` role. `duk` reads only fafnir's `mart` and `ref`, which
+that role can see (fafnir's ADR 0008), so nothing `portable` does can need
+more.
 
 **Unadjusted prices only.** `duk` is never passed `--adj`, and the argument
 list that would do it is not written. `PORT-GIPS-A01` requires fair value on
@@ -67,17 +68,14 @@ would double-count every split.
 
 **Exact, end to end.** `duk ph --exact` prints each price as the text of the
 `NUMERIC(20, 6)` fafnir stores (`"189.120000"`), as a JSON string that no
-reader can round, and `portable` reads it straight into a `Decimal`. No price
-passes through a float anywhere on its way into the `.port` file (invariant 1).
-A JSON number, text that is not a plain positive decimal, a record that is not
-`{date, close}` (or `{date, high, low, close}`), and a date out of range or
-order are refused rather than read. `--exact` arrived with
-[rtrimble13/fafnir#177](https://github.com/rtrimble13/fafnir/pull/177): an
-older `duk` rejects the flag, and `portable` stops with that usage error and
-says which `duk` it needs.
+reader can round, and `portable` reads it straight into a `Decimal`; `duk ca
+--exact` does the same for split ratios and dividend amounts. No price, ratio
+or dividend passes through a float anywhere on its way into the `.port` file
+(invariant 1). A JSON number, text that is not a plain decimal, a record of the
+wrong shape, and a date out of range or order are refused rather than read.
 
-**Symbols resolve as of a date**, through `mart.v_symbol_lookup`, because
-fafnir's own data dictionary says the primary symbol is "**not** an
+**Symbols resolve as of a date**, from the ticker's history (`duk th`),
+because fafnir's own data dictionary says the primary symbol is "**not** an
 identifier". A ticker that has been reassigned resolves to whichever security
 held it on the trade date, which is the only answer that does not silently
 rewrite history.
@@ -85,24 +83,30 @@ rewrite history.
 **A range resolves day by day.** A ticker can name one security for part of a
 range and another for the rest -- a rename, a delisting and a reuse -- so prices
 and corporate actions are fetched segment by segment, each from the security the
-ticker named on those days. A day on which it named nothing is refused by name,
-not skipped, and there is no fallback to the security's primary symbol: fafnir's
-own resolver uses that to say who holds a ticker *now*, which is never the
-question here. fafnir's `asset_type` of `other` is refused too, rather than
-assumed to be an equity.
+ticker named on those days. Where two periods cover a day, the security whose
+primary ticker it is wins, then the later period. A day on which it named
+nothing is refused by name, not skipped, and there is no fallback to the
+security's primary symbol: fafnir's own resolver uses that to say who holds a
+ticker *now*, which is never the question here. fafnir's `asset_type` of
+`other` is refused too, rather than assumed to be an equity. The rule is
+`portable`'s, applied to the raw periods `duk th` prints; `duk` picks nothing.
 
-**`duk` is told which security, by identifier.** Given a ticker, `duk` answers
-for whoever holds it now. So each segment's security is named to `duk` by its
-ISIN, else its CUSIP, else its CIK, which `duk` resolves to that one security
-or refuses. A security with none of the three is refused for those dates, with
-`pt price load --file` as the remedy. So is an identifier `duk` finds on
-several securities.
+**`duk` is told which security, by its id.** Given a ticker, `duk` answers for
+whoever holds it now. So each segment's security is named to `duk` as
+`sid:<security_id>`, the id its ticker history printed, which `duk` reads as
+exactly that security. A security with no ISIN, CUSIP or CIK is priced like any
+other, and two share classes under one CIK cannot be confused.
 
 **Lineage travels with every price.** `price.provider_ref` records
-`security_id`, `trade_date`, and the identifier `duk` was given, so a valuation
-traces back to the warehouse security that produced it (`PORT-GIPS-J03`). The
-ingestion run no longer travels: fafnir keeps load lineage out of `mart`, so a
-`fafnir_app` role cannot see it by any route.
+`security_id`, `trade_date`, and how `duk` was asked (`via=sid:…`), so a
+valuation traces back to the warehouse security that produced it
+(`PORT-GIPS-J03`). The ingestion run does not travel: fafnir keeps load lineage
+out of `mart`, so a `fafnir_app` role cannot see it by any route.
+
+**What stops a run.** A `duk` that cannot run, lacks a command (exit 2), or
+fails outright (an `Error:` line: the tunnel, the role, the DSN) stops the run
+with `PT-E-PROVIDER-UNAVAILABLE` and `duk`'s own words. Anything else is about
+one security, `PT-E-PRICE-MISSING`, and the run carries on for the others.
 
 #### Two things fafnir cannot supply
 
@@ -115,36 +119,31 @@ This is the most important part of this page, and it is why ADR 0006 exists.
    adding fafnir's dividends to a price series would be a
    defensible-looking wrong number of exactly the kind this repository exists to
    prevent. Benchmarks come from `FileProvider` with an explicit `return_type`.
-2. **No treasury curve.** fafnir's own documentation says `duk yc` is live-only
-   "until the economic-series fast-follow adds treasury data to the warehouse",
-   so there is no table to query, and the rate comes from `duk -S live yc`.
+2. **No treasury curve.** fafnir's own documentation says `duk yc` reads FMP in
+   every mode, the warehouse holding no treasury data, so the rate comes from
+   `duk -S live yc`.
 
 #### Configuration
 
-DSN resolution, highest first:
+A `duk` that works from the owner's shell is the whole of the setup.
 
-1. `PORTABLE_FAFNIR_DSN`
-2. `FAFNIR_DSN` — fafnir's own convention
-3. `[database].dsn` in `~/.dukrc`
-4. `[database].dsn` in `~/.fafnirrc`
+- **`duk` finds the warehouse itself**: `FAFNIR_DSN`, then `[database].dsn` in
+  `~/.dukrc`. `portable` reads neither, nor any other fafnir file.
+- **`duk_path`** in `~/.portablerc` (or `PORTABLE_DUK_PATH`) names `duk` when it
+  is not on `PATH`. Without it, fafnir supplies nothing, and every refusal says
+  `duk` is why.
+- **`fafnir_dsn`** in `~/.portablerc`, or `PORTABLE_FAFNIR_DSN`, points
+  `portable`'s `duk` at a different warehouse from the one `duk` is configured
+  for. It is handed to `duk` as `FAFNIR_DSN` in the child's environment only. A
+  DSN carries a password: `portable` never logs one, redacts it in
+  `portable config show`, and **never includes it in an error message** — there
+  is a test for that last one.
 
-ADR 0006 also names a `--dsn` flag; it was never built.
-
-Somebody who already has `duk` working needs no new configuration. `duk` is
-run with `FAFNIR_DSN` set to the DSN resolved here, so a `PORTABLE_FAFNIR_DSN`
-reaches it too. If `duk` is not on `PATH`, name it with `duk_path` in
-`~/.portablerc`; without it fafnir supplies no prices and no risk-free rate,
-and says so. The
-environment is checked before any file because a DSN carries a password:
-`portable` never reads a secret from its own config when an environment
-variable is available, never logs one, redacts it in `portable config show`,
-and **never includes it in an error message** — there is a test for that last
-one.
-
-Point it at a role in `fafnir_app`, fafnir's least-privilege reader.
-
-`psycopg` is an optional dependency (`pip install 'portable[fafnir]'`). Its
-absence is felt only by somebody who asked for fafnir, never at CLI start.
+Point `duk` at a role in `fafnir_app`, fafnir's least-privilege reader. The
+`duk` needed is one with `th`, `ca` and `tc`, whose `ph` and `ca` take
+`--exact`, and which names a security by `sid:` (`duk --help` lists the
+commands); an older one stops the run with its usage error, and the remedy
+says what is missing.
 
 ### `FileProvider` — a first-class citizen
 
@@ -299,8 +298,7 @@ loaded nothing at all is a failure too.
 ### Filling what fafnir does not hold
 
 Not every price is in the warehouse: a mutual fund outside its universe, a
-security with no identifier `duk` can be asked by (ADR 0029). Those come from
-a price file in the schema above:
+stretch fafnir never loaded. Those come from a price file in the schema above:
 
 ```bash
 pt --port p.port price load --file fund-navs.csv
@@ -345,7 +343,7 @@ pt --port p.port -S fafnir price gaps --from 2024-01-01 --to 2024-12-31
   `price load` reads it, and checked against **its venue's trading calendar**.
   A holiday is not a gap, and a session with no price is. A price from any
   source counts: the question is whether the day can be valued.
-- **The calendar is fafnir's** (`ref.trading_calendar`). A venue with no
+- **The calendar is fafnir's** (`duk tc`). A venue with no
   calendar of its own is judged by NASDAQ's, as fafnir's ingestion judges it,
   and the report says which instruments were. fafnir stores open days only, so
   a day outside a calendar's span is unknown rather than closed: it is listed

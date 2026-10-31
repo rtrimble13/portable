@@ -173,17 +173,21 @@ An import is accepted when it reconciles, not when it parses (§9). Run
 
 A return needs a price for every instrument held, on every day it was held,
 including every position since sold. Prices come from fafnir through `duk`, and
-from price files for what fafnir does not hold (ADR 0029; `docs/market-data.md`
-"Filling what fafnir does not hold"). Price only a ledger that §6 accepted:
+from price files for what fafnir does not hold (ADRs 0029 and 0032;
+`docs/market-data.md` "Filling what fafnir does not hold"). Every fafnir read
+`pt` makes is a `duk` command: prices, the ticker history, the instruments,
+corporate actions and the calendar. Price only a ledger that §6 accepted:
 what was held, and when, comes from the ledger.
 
 **Before anything, check the route** from the owner's shell. The SSH tunnel to
 the warehouse is up, and `duk -S db ph AAPL -n 1` prints a price: that is duk
-reading the warehouse as the owner's role. `pt` needs the same DSN duk uses
-(`FAFNIR_DSN` or `~/.dukrc`) and `psycopg` (`pip install 'portable[fafnir]'`).
-If `duk` is not on `PATH`, set `duk_path` in `~/.portablerc`. `duk ph --help`
-must list `--exact` (fafnir #177 or later): without it, every price load stops
-with duk's usage error until the owner installs a newer fafnir.
+reading the warehouse as the owner's role, and it is all `pt` needs: `pt` runs
+that same `duk`, which finds the warehouse itself (`FAFNIR_DSN` or
+`~/.dukrc`). Nothing else is installed or configured for fafnir. If `duk` is
+not on `PATH`, set `duk_path` in `~/.portablerc`. `duk --help` must list `th`,
+`ca` and `tc`, and `duk th AAPL` must print AAPL's ticker history: an older
+duk stops every fafnir command with its usage error until the owner installs a
+newer fafnir.
 
 1. **Instruments.** `pt -S fafnir instrument sync` compares every instrument
    ever held with fafnir, as of the last day it was held. Go through each
@@ -192,10 +196,9 @@ with duk's usage error until the owner installs a newer fafnir.
 2. **Load.** Run `pt -S fafnir price load --from <cutover> --to <as-of>
    --dry-run`, read every warning, then run it without `--dry-run`. It is
    idempotent; re-run it after any fix. What each warning means:
-   - `no ISIN, CUSIP or CIK`: fafnir cannot name the security to duk. Those
-     dates go on the file list.
-   - `matches N securities`: the identifier is ambiguous in fafnir. That is a
-     fafnir data question for the owner. Use a file meanwhile.
+   - `duk could not price sid:N`: duk found no such security for an id its
+     own ticker history named, which is a fafnir data question for the owner.
+     Use a file meanwhile.
    - `does not name a security ... on every date`: the ticker was not in use
      for the whole stretch. Usually it is a rename the ledger has not recorded.
      Ask the owner, record it with `pt ca symbol-change`, and re-run. Never
@@ -228,9 +231,9 @@ with duk's usage error until the owner installs a newer fafnir.
      `pt instrument market-price SYMBOL --none` (ADR 0028) is the owner's
      decision, offered, never taken for them.
 4. **Corporate actions.** `pt -S fafnir ca sync --from <cutover>` lists what
-   fafnir records against what the ledger does. It needs
-   `mart.v_corporate_action`, fafnir migration 0033. On a warehouse not yet
-   migrated to it, the refusal says so: the operator runs `fafnir db migrate`.
+   fafnir records against what the ledger does. It needs fafnir migration
+   0033 on the warehouse. On one not yet migrated to it, duk's refusal says
+   so: the operator runs `fafnir db migrate`.
    Tell the owner and move on.
 5. **Value, and check.** Run `pt value --from <cutover> --to <as-of>`. An
    incomplete snapshot names what it could not price: back to step 3. Then

@@ -1,6 +1,6 @@
 # ADR 0006 — fafnir access path: direct warehouse SQL, `duk` for the yield curve
 
-- **Status:** Superseded in part by [ADR 0029](0029-prices-through-duk.md) — prices now come through `duk -S db ph`, and every relation is read from fafnir's `mart` and `ref`, never `core`, which the owner's `fafnir_app` role cannot see. The yield curve through `duk`, and the two capabilities fafnir does not have, stand as decided here
+- **Status:** Superseded in part by [ADR 0029](0029-prices-through-duk.md) — prices now come through `duk -S db ph`, and every relation is read from fafnir's `mart` and `ref`, never `core`, which the owner's `fafnir_app` role cannot see. Since [ADR 0032](0032-fafnir-through-duk-alone.md) every read goes through `duk`, with no database driver, and `duk` resolves the DSN. The yield curve through `duk`, and the two capabilities fafnir does not have, stand as decided here
 - **Date:** 2026-08-27
 - **Milestone:** v0.1
 

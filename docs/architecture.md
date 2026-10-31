@@ -29,7 +29,7 @@ flowchart TB
     ERR[errors/]
   end
   PORT[(portfolio.port · SQLite)]
-  FAF[(fafnir warehouse)]
+  FAF[(fafnir warehouse, through duk)]
   FILES[(CSV / JSON price files)]
 
   PT --> CLIPLUMB
@@ -64,11 +64,11 @@ represented, which domain objects are made of. Nothing depends on a CLI.
 `tests/unit/test_layering.py` enforces this by walking the import graph. It also
 enforces the two placement rules that matter most:
 
-- **SQL against the `.port` file appears only in `persistence/` and
-  `schema/`.** (ADR 0002) The one exception is `providers/fafnir.py`, which
-  queries a *foreign* database and which `CLAUDE.md` assigns that job to
-  explicitly; the fafnir-confinement rule below is what keeps that honest.
-- **Nothing fafnir-shaped appears outside `providers/fafnir.py`.** (ADR 0006, ADR 0029)
+- **SQL appears only in `persistence/` and `schema/`.** (ADR 0002) With no
+  exception: `providers/fafnir.py` once queried fafnir's views directly, and
+  since ADR 0032 it reaches fafnir only by running `duk`.
+- **Nothing fafnir-shaped appears outside `providers/fafnir.py`.** (ADR 0006,
+  ADR 0029, ADR 0032)
 
 **No CLI imports another CLI.** If `pert` and `po` would need the same code, that
 code belongs in `portable_core`. This is not a style preference: it is what keeps
@@ -172,8 +172,10 @@ protocols**, so a partial provider is legal and its gaps are visible:
 
 Three implementations ship:
 
-- **`FafnirProvider`** — the primary. Direct SQL against the warehouse's
-  `core.*` and `ref.*`; `duk` for the treasury curve. **Unadjusted prices only**
+- **`FafnirProvider`** — the primary. Every read is a `duk` command: `th` for
+  the ticker history and security master, `ph --exact` for prices, `ca --exact`
+  for corporate actions, `tc` for the calendar, `yc` for the treasury curve; no
+  database driver (ADR 0032). **Unadjusted prices only**
   (`PORT-GIPS-A01`). It deliberately declares **no** `BenchmarkCapability`,
   because fafnir carries no total-return index series and `PORT-GIPS-G01`
   requires refusal rather than approximation. See ADR 0006 — that finding is the

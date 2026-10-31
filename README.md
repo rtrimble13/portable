@@ -154,9 +154,14 @@ references — which is what makes MCP integration a wrapper rather than a rewri
 capabilities, so a partial provider is legal and its gaps are visible:
 
 - **`FafnirProvider`** — the primary, reading the owner's
-  [fafnir](https://github.com/rtrimble13/fafnir) warehouse. **Unadjusted prices
-  only**, with explicit corporate-action transactions; adjusted prices are not
-  fair values on the measurement date and would double-count splits.
+  [fafnir](https://github.com/rtrimble13/fafnir) warehouse **through `duk`
+  alone**: prices, the ticker history, the security master, corporate actions
+  and the trading calendar are all `duk` commands, so `portable` needs no
+  database driver and reads no fafnir configuration — a working `duk` is the
+  whole of the setup ([ADR 0032](docs/adr/0032-fafnir-through-duk-alone.md)).
+  **Unadjusted prices only**, with explicit corporate-action transactions;
+  adjusted prices are not fair values on the measurement date and would
+  double-count splits.
 - **`FileProvider`** — local CSV/JSON with a documented schema. A first-class
   citizen, not a test double: it is how benchmarks get in and how the repo is
   usable offline.
@@ -168,9 +173,10 @@ valuation level, and estimate flag, and every valuation snapshot records the
 exact set of prices it consumed — so a return traces back to the ticks that
 produced it. `--offline` forces cache-only operation (a command that would fetch is refused).
 
-See [`docs/market-data.md`](docs/market-data.md) and
-[ADR 0006](docs/adr/0006-fafnir-access-path.md), which also records the two
-things fafnir cannot supply and what `portable` does instead.
+See [`docs/market-data.md`](docs/market-data.md),
+[ADR 0032](docs/adr/0032-fafnir-through-duk-alone.md) for the route, and
+[ADR 0006](docs/adr/0006-fafnir-access-path.md), which records the two things
+fafnir cannot supply and what `portable` does instead.
 
 ---
 
