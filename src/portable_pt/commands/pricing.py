@@ -241,6 +241,8 @@ def load(
                 f"not loaded, marked as having no market price: {', '.join(unquoted)}"
             )
 
+        # One read of every ticker's history, where the provider can (ADR 0032).
+        provider.prefetch(r.symbol for r in requests)
         loaded: list[dict[str, object]] = []
         missing: list[str] = []
         lead_ins_missing: list[str] = []

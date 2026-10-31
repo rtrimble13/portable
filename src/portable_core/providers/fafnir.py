@@ -54,6 +54,7 @@ import os
 import re
 import shutil
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
@@ -121,8 +122,9 @@ _EXACT_PRICE: Final = re.compile(r"[0-9]+(\.[0-9]+)?")
 _EXACT_DECIMAL: Final = re.compile(r"-?[0-9]+(\.[0-9]+)?")
 _EXACT_INTEGER: Final = re.compile(r"[0-9]+")
 
-#: What a successful `duk` prints instead of JSON when there is nothing to show:
-#: "No data found for X", "No corporate actions for X", "No ticker history for X".
+#: What a `duk` older than fafnir's empty-JSON change printed instead of JSON when
+#: there was nothing to show ("No data found for X", "No ticker history for X").
+#: duk now prints ``[]`` and puts the sentence on stderr; both are read as nothing.
 _NOTHING: Final = "No "
 
 #: portable's own override of the warehouse `duk` reads. `duk` otherwise reads
@@ -286,19 +288,55 @@ class FafnirProvider(MarketDataProvider):
 
         The ticker is passed as ``ticker:<T>`` so `duk` never reads it as
         anything else. Periods run from ``valid_from`` to ``valid_to``
-        inclusive (``None`` = still open).
+        inclusive (``None`` = still open). A run that said which tickers it
+        would ask about (:meth:`prefetch`) has them already.
         """
         key = symbol.strip().upper()
-        if key in self._history:
-            return self._history[key]
-        asking = f"the ticker history of {key}"
-        argv = [self.duk_path, "-S", "db", "th", f"ticker:{key}", "--json"]
-        periods = [
-            _Period.read(record, lambda why: self._unreadable(asking, why))
-            for record in self._duk_records(argv, asking=asking, about_one_security=False)
+        if key not in self._history:
+            self._read_histories([key])
+        return self._history[key]
+
+    def prefetch(self, symbols: Iterable[str]) -> None:
+        """Read the history of every ticker not yet read, in as few `duk th` calls
+        as a command line allows, before a run asks about them one at a time.
+
+        One process answers for a whole portfolio instead of one per ticker.
+        Nothing about the answers changes: each ticker's periods are exactly what
+        :meth:`_ticker_history` would read alone. Without `duk` it does nothing,
+        and the first real question refuses, naming `duk` as why.
+        """
+        wanted = list(dict.fromkeys(s.strip().upper() for s in symbols if s and s.strip()))
+        wanted = [s for s in wanted if s not in self._history]
+        if not wanted or not shutil.which(self.duk_path):
+            return
+        for first in range(0, len(wanted), _TH_BATCH):
+            self._read_histories(wanted[first : first + _TH_BATCH])
+
+    def _read_histories(self, tickers: list[str]) -> None:
+        """One `duk th` for *tickers*; each one's periods, an empty list for none."""
+        asking = (
+            f"the ticker history of {tickers[0]}"
+            if len(tickers) == 1
+            else f"the ticker histories of {', '.join(tickers[:3])}"
+            + (f" and {len(tickers) - 3} more" if len(tickers) > 3 else "")
+        )
+        argv = [
+            self.duk_path,
+            "-S",
+            "db",
+            "th",
+            *(f"ticker:{t}" for t in tickers),
+            "--json",
         ]
-        self._history[key] = periods
-        return periods
+        refuse = partial(self._unreadable, asking)
+        found: dict[str, list[_Period]] = {t: [] for t in tickers}
+        for record in self._duk_records(argv, asking=asking, about_one_security=False):
+            named = record.get("symbol")
+            key = named.strip().upper() if isinstance(named, str) else None
+            if key not in found:
+                raise refuse(f"a period for {named!r}, which was not asked for")
+            found[key].append(_Period.read(record, refuse))
+        self._history.update(found)
 
     def _segments(self, symbol: str, start: date, end: date) -> list[_Segment]:
         """Which security *symbol* named on each day from *start* to *end*.
@@ -919,6 +957,11 @@ _CURVE_WINDOW_DAYS: Final = 14
 #: takes longer than this is stuck, not slow.
 _DUK_TIMEOUT_SECONDS: Final = 300
 
+#: Tickers per `duk th` when a run reads them together (:meth:`prefetch`): a few
+#: thousand characters of arguments, far inside Windows' 32,767-character limit
+#: on a command line.
+_TH_BATCH: Final = 200
+
 _TENOR_UNITS: Final[dict[str, str]] = {"M": "month", "Y": "year"}
 
 
@@ -984,8 +1027,9 @@ def _bar_rows(
     """
     text = stdout.strip()
     if text.startswith("No data found"):
-        # duk's sentence for a range that holds no bars: an empty answer, not
-        # a malformed one. Any other sentence is refused below as not JSON.
+        # An older duk's sentence for a range that holds no bars (duk now prints
+        # `[]`, read below): an empty answer, not a malformed one. Any other
+        # sentence is refused below as not JSON.
         return []
     shape = "{" + ", ".join(("date", *fields)) + "}"
 

@@ -13,6 +13,7 @@ yield every year.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -257,6 +258,16 @@ class MarketDataProvider(ABC):
         offline -- says so here, so the refusal names the real cause.
         """
         return None
+
+    def prefetch(self, symbols: Iterable[str]) -> None:  # noqa: B027 -- a hint, empty by design
+        """A hint that a run is about to ask about each of *symbols* in turn.
+
+        A provider that can read what those questions need in one request may do
+        so now; one that cannot ignores it, which is the default. No answer
+        depends on it -- each later call is answered exactly as without it --
+        so ignoring it is not a stub (invariant 10): it changes only how many
+        reads a run makes.
+        """
 
     def describe(self) -> dict[str, object]:
         """For `pt info` and `pt introspect`."""

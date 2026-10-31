@@ -165,6 +165,16 @@ class _Duk:
         code, out, err = getattr(self, f"_{command}")(argv)
         return subprocess.CompletedProcess(argv, code, stdout=out, stderr=err)
 
+    #: Answer "nothing found" as a duk older than fafnir's empty-JSON change did:
+    #: the sentence on stdout instead of ``[]``.
+    sentences: bool = False
+
+    def _nothing(self, sentence: str) -> tuple[int, str, str]:
+        """duk's "nothing found": ``[]`` with the sentence on stderr, or the old way."""
+        if self.sentences:
+            return 0, sentence + "\n", ""
+        return 0, "[]\n", sentence + "\n"
+
     def ph_calls(self) -> list[list[str]]:
         return [c for c in self.calls if c[3] == "ph"]
 
@@ -177,18 +187,28 @@ class _Duk:
         return found[0][0] if found else None
 
     def _th(self, argv: list[str]) -> tuple[int, str, str]:
-        scheme, _, ticker = argv[4].partition(":")
-        assert scheme == "ticker", "the ticker is passed explicitly as one"
-        rows = self.warehouse.db.execute(
-            "SELECT x.symbol, x.security_id, x.valid_from, x.valid_to, x.is_primary, "
-            "p.symbol, p.company_name, p.asset_type, p.exchange_code, p.currency, "
-            "p.country, p.cik, p.isin, p.cusip, p.is_actively_trading, p.delisted_date "
-            "FROM symbol_lookup x JOIN security p ON p.security_id = x.security_id "
-            "WHERE upper(x.symbol) = upper(?) ORDER BY x.valid_from, x.security_id",
-            (ticker,),
-        ).fetchall()
+        """`duk th ticker:A [ticker:B ...]`: each ticker's periods, in the order asked."""
+        tickers = []
+        for named in argv[4:]:
+            if named.startswith("--"):
+                break
+            scheme, _, ticker = named.partition(":")
+            assert scheme == "ticker", "each ticker is passed explicitly as one"
+            if ticker.upper() not in tickers:
+                tickers.append(ticker.upper())
+        rows = []
+        for ticker in tickers:
+            rows += self.warehouse.db.execute(
+                "SELECT x.symbol, x.security_id, x.valid_from, x.valid_to, x.is_primary, "
+                "p.symbol, p.company_name, p.asset_type, p.exchange_code, p.currency, "
+                "p.country, p.cik, p.isin, p.cusip, p.is_actively_trading, "
+                "p.delisted_date FROM symbol_lookup x "
+                "JOIN security p ON p.security_id = x.security_id "
+                "WHERE upper(x.symbol) = ? ORDER BY x.valid_from, x.security_id",
+                (ticker,),
+            ).fetchall()
         if not rows:
-            return 0, f"No ticker history for {ticker.upper()}\n", ""
+            return self._nothing(f"No ticker history for {', '.join(tickers)}")
         keys = (
             "symbol", "security_id", "valid_from", "valid_to", "is_primary",
             "primary_symbol", "company_name", "asset_type", "exchange_code", "currency",
@@ -213,7 +233,7 @@ class _Duk:
             (security_id, _option(argv, "--start-date"), _option(argv, "--end-date")),
         ).fetchall()
         if not bars:
-            return 0, f"No data found for {named}\n", ""
+            return self._nothing(f"No data found for {named}")
         fields = ("high", "low", "close") if "--hlc" in argv else ("close",)
         assert "--exact" in argv and "--json" in argv and "--adj" not in argv
         records = [
@@ -250,7 +270,7 @@ class _Duk:
             (security_id, _option(argv, "--start-date"), _option(argv, "--end-date")),
         ).fetchall()
         if not rows:
-            return 0, f"No corporate actions for {argv[4]}\n", ""
+            return self._nothing(f"No corporate actions for {argv[4]}")
         keys = (
             "ex_date", "action_type", "split_numerator", "split_denominator",
             "dividend_amount", "currency", "record_date", "payment_date",
@@ -276,7 +296,7 @@ class _Duk:
                 "GROUP BY exchange_code ORDER BY exchange_code"
             ).fetchall()
             if not rows:
-                return 0, "No trading calendars in the warehouse\n", ""
+                return self._nothing("No trading calendars in the warehouse")
             records = [
                 {"exchange_code": code, "exchange_name": None, "first_date": first,
                  "last_date": last, "open_days": opened, "closed_days": closed}
@@ -290,7 +310,7 @@ class _Duk:
             (venue, _option(argv, "--start-date"), _option(argv, "--end-date")),
         ).fetchall()
         if not rows:
-            return 0, f"No trading calendar for {venue.upper()} in that range\n", ""
+            return self._nothing(f"No trading calendar for {venue.upper()} in that range")
         records = [{"date": d, "is_open": bool(o), "session_note": n} for d, o, n in rows]
         return 0, json.dumps(records) + "\n", ""
 
@@ -637,6 +657,32 @@ def test_a_resolvable_range_with_no_bars_is_price_missing(
     assert refused.value.code == "PT-E-PRICE-MISSING"
 
 
+@pytest.mark.parametrize("sentences", [False, True], ids=["empty-json", "older-duk-sentence"])
+def test_nothing_found_reads_as_nothing_whichever_way_duk_says_it(
+    warehouse: _Warehouse, fafnir: FafnirProvider, duk: _Duk, sentences: bool
+) -> None:
+    """duk prints `[]` for an empty answer; an older one printed a sentence. Both mean none.
+
+    Neither is a malformed answer, so neither stops the run: the ticker with no
+    history is refused as uncovered, a range with no bars as no prices, and a
+    range with no actions or sessions is simply empty.
+    """
+    duk.sentences = sentences
+    warehouse.security(1, "ABC")
+    warehouse.ticker("ABC", 1)
+    warehouse.sessions("NYSE", "2025-01-02", "2025-12-31")
+
+    with pytest.raises(DataUnavailableError, match="symbol history") as no_history:
+        fafnir.eod_prices("NOPE", date(2025, 6, 30), date(2025, 6, 30))
+    assert no_history.value.code == "PT-E-PRICE-MISSING"
+    with pytest.raises(DataUnavailableError, match="no fafnir prices for ABC") as no_bars:
+        fafnir.eod_prices("ABC", date(2025, 6, 30), date(2025, 6, 30))
+    assert no_bars.value.code == "PT-E-PRICE-MISSING"
+    assert fafnir.corporate_actions("ABC", date(2025, 1, 1), date(2025, 6, 30)) == []
+    calendar = fafnir.trading_calendar("NYSE", date(2025, 7, 4), date(2025, 7, 4))
+    assert calendar.open_days == frozenset()
+
+
 def test_a_backwards_range_is_refused(fafnir: FafnirProvider) -> None:
     with pytest.raises(ValidationError, match="ends"):
         fafnir.eod_prices("ABC", date(2025, 7, 1), date(2025, 6, 30))
@@ -655,6 +701,81 @@ def test_the_ticker_history_is_read_once_per_provider(
     fafnir.lookup_security("ABC", on=date(2025, 6, 30))
 
     assert [c[3] for c in duk.calls].count("th") == 1
+
+
+def test_a_run_reads_every_tickers_history_in_one_duk_call(
+    warehouse: _Warehouse, fafnir: FafnirProvider, duk: _Duk
+) -> None:
+    """ADR 0032 §2: one process for a portfolio, not one per ticker -- same answers."""
+    for security_id, symbol in ((1, "AAA"), (2, "BBB"), (3, "CCC")):
+        warehouse.security(security_id, symbol)
+        warehouse.ticker(symbol, security_id)
+        warehouse.bar(security_id, "2025-06-30", f"{security_id}.00")
+
+    fafnir.prefetch(["aaa", "BBB", "CCC", "AAA", "NOPE"])
+    prices = {
+        s: fafnir.eod_prices(s, date(2025, 6, 30), date(2025, 6, 30)) for s in ("AAA", "BBB")
+    }
+    with pytest.raises(DataUnavailableError, match="symbol history"):
+        fafnir.eod_prices("NOPE", date(2025, 6, 30), date(2025, 6, 30))
+
+    th = [c for c in duk.calls if c[3] == "th"]
+    assert th == [
+        [
+            "duk",
+            "-S",
+            "db",
+            "th",
+            "ticker:AAA",
+            "ticker:BBB",
+            "ticker:CCC",
+            "ticker:NOPE",
+            "--json",
+        ]
+    ], "a ticker with no history is cached as having none, not asked again"
+    assert [p.price for p in prices["BBB"]] == [D("2.00")]
+
+    fafnir.prefetch(["AAA", "BBB"])
+    assert [c[3] for c in duk.calls].count("th") == 1, "nothing left to read"
+
+
+def test_a_large_run_is_read_in_batches_a_command_line_can_hold(
+    fafnir: FafnirProvider, duk: _Duk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows caps a command line at 32,767 characters."""
+    monkeypatch.setattr("portable_core.providers.fafnir._TH_BATCH", 2)
+
+    fafnir.prefetch(["A1", "A2", "A3", "A4", "A5"])
+
+    assert [len(c) - 5 for c in duk.calls if c[3] == "th"] == [2, 2, 1]
+
+
+def test_a_period_for_a_ticker_not_asked_for_is_refused(
+    fafnir: FafnirProvider, duk: _Duk
+) -> None:
+    record = {
+        "symbol": "ZZZ", "security_id": 9, "valid_from": "1900-01-01", "valid_to": None,
+        "is_primary": True, "primary_symbol": "ZZZ", "company_name": None,
+        "asset_type": "equity", "exchange_code": None, "currency": "USD", "country": None,
+        "cik": None, "isin": None, "cusip": None, "is_actively_trading": True,
+        "delisted_date": None,
+    }  # fmt: skip
+    duk.answers["th"] = (0, json.dumps([record]), "")
+
+    with pytest.raises(DataUnavailableError, match="not asked for"):
+        fafnir.prefetch(["AAA", "BBB"])
+
+
+def test_prefetch_without_duk_does_nothing_and_the_question_still_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("portable_core.providers.fafnir.shutil.which", lambda _: None)
+    provider = FafnirProvider(dsn="host=fake")
+
+    provider.prefetch(["AAA"])
+
+    with pytest.raises(DataUnavailableError, match="`duk` is not on PATH"):
+        provider.eod_prices("AAA", date(2025, 6, 30), date(2025, 6, 30))
 
 
 def test_without_duk_there_is_nothing_and_the_refusal_says_why(

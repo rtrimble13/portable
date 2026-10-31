@@ -286,3 +286,16 @@ def test_importing_the_providers_package_does_not_import_the_fafnir_adapter() ->
         for alias in getattr(node, "names", [])
     }
     assert not any("fafnir" in name for name in top_level_imports)
+
+
+def test_prefetch_is_a_hint_that_changes_no_answer(price_file: Path) -> None:
+    """ADR 0032 §2. A provider that cannot read ahead ignores it; offline never fetches."""
+    from portable_core.providers import OfflineProvider
+
+    provider = FileProvider(price_file=price_file)
+    before = provider.eod_prices("AAPL", date(2025, 6, 27), date(2025, 6, 30))
+    provider.prefetch(["AAPL", "MSFT"])
+    assert provider.eod_prices("AAPL", date(2025, 6, 27), date(2025, 6, 30)) == before
+
+    NullProvider().prefetch(["AAPL"])
+    OfflineProvider("fafnir").prefetch(["AAPL"])  # inherits the no-op: nothing is read

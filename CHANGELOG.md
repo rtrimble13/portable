@@ -343,6 +343,14 @@ Two rules specific to this repository:
   `provider_ref` reads `via=sid:…`. The rule deciding which security a ticker
   named on a day is unchanged. Corporate actions are exact decimal text end
   to end, as prices were.
+- **A run reads every ticker's history in one `duk` call** (ADR 0032 §2).
+  `price load`, `ca sync` and `instrument sync` tell the provider which tickers
+  they will ask about (`MarketDataProvider.prefetch`, a hint the file and null
+  providers ignore), and the fafnir adapter reads them all with one
+  `duk th` -- in batches of 200 -- instead of one process per ticker. The
+  answers are unchanged.
+- **An empty answer from `duk` may be `[]`** as well as its older "No data
+  found" sentence; both are read as nothing found (ADR 0032 §8).
 - **`duk` finds the warehouse; `portable` reads no fafnir configuration**
   (ADR 0032 §6). `duk` reads `FAFNIR_DSN` and `~/.dukrc` itself.
   `fafnir_dsn` / `PORTABLE_FAFNIR_DSN` remain, as an override handed to

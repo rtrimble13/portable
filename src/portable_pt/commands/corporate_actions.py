@@ -704,6 +704,7 @@ def sync(
             )
             warnings.extend(replay_warnings)
 
+        provider.prefetch(r.symbol for r in requests)
         rows: list[dict[str, object]] = []
         unresolved: list[str] = []
         for request in requests:

@@ -47,7 +47,7 @@ and reads none of fafnir's configuration. Every `duk` argument list is built in
 
 | What | `duk` command |
 |---|---|
-| Which security a ticker named, day by day, and its master record | `duk -S db th ticker:<T> --json` |
+| Which security a ticker named, day by day, and its master record | `duk -S db th ticker:<T> --json` — a run's tickers read together, in one call |
 | End-of-day prices — **unadjusted** | `duk -S db ph sid:<id> --close --json --exact` |
 | A day's range, to check fills | `duk -S db ph sid:<id> --hlc --json --exact` — read by `pt trade check`, never stored |
 | Splits and cash dividends | `duk -S db ca sid:<id> --json --exact` — needs fafnir migration 0033 on the warehouse |

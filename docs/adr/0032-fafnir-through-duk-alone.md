@@ -51,7 +51,7 @@ fafnir pins the JSON these print in
 
 | What | `duk` command |
 |---|---|
-| Ticker history and the security master | `duk -S db th ticker:<T> --json` |
+| Ticker history and the security master | `duk -S db th ticker:<T> [ticker:<U> ...] --json` |
 | End-of-day closes | `duk -S db ph sid:<id> --close --json --exact` |
 | A day's range, for `pt trade check` | `duk -S db ph sid:<id> --hlc --json --exact` |
 | Splits and cash dividends | `duk -S db ca sid:<id> --start-date S --end-date E --json --exact` |
@@ -72,6 +72,12 @@ security whose primary ticker it is wins, then the later period; a day no
 period covers is refused by name; there is no fallback to a primary symbol.
 The history is read once per ticker per run and filtered locally, so prices,
 actions and the master record for one ticker cost one `th` call between them.
+A run that knows which tickers it will ask about -- `price load`, `ca sync`,
+`instrument sync` -- says so first (`MarketDataProvider.prefetch`, a hint every
+other provider ignores), and the adapter reads all of their histories in one
+`duk th` (200 tickers a call, far inside Windows' command-line limit). The
+answers are the ones a read per ticker gives; only the number of processes
+changes.
 
 fafnir's own `TICKER@DATE` rule is not used. It orders the latest start first,
 and discounts a `1900-01-01` "first seen" period before the security's first
@@ -136,9 +142,10 @@ As ADR 0029 §3 had it for prices, now for every command: exit 2 (a usage
 error: this `duk` lacks the command or flag) or an `Error:` line (the
 warehouse, the role, the DSN) stops the run with `PT-E-PROVIDER-UNAVAILABLE`.
 Anything else is about the security asked for, `PT-E-PRICE-MISSING`, and the
-run goes on for the others. `duk`'s sentences for an empty answer (`No data
-found…`, `No corporate actions…`, `No ticker history…`) are empty answers, not
-malformed ones.
+run goes on for the others. An empty answer is `[]`, with `duk`'s sentence on
+stderr; an earlier `duk` printed the sentence (`No data found…`, `No corporate
+actions…`, `No ticker history…`) instead, which is read as empty too. Neither is
+a malformed answer.
 
 ## Consequences
 
@@ -147,9 +154,12 @@ malformed ones.
   the owner needs for fafnir is a `duk` new enough to have `th`, `ca` and `tc`.
 - **A warehouse without `mart.v_corporate_action`** (fafnir migration 0033) is
   refused by `duk`, naming the migration; `portable` passes that on and stops.
-- **More `duk` processes, fewer per ticker than it looks.** A price load is one
-  `th` per ticker plus one `ph` per segment; `ca sync` adds one `ca` per
-  segment; `price gaps` one `tc` list per run and one `tc` per venue asked.
+- **More `duk` processes, fewer than it looks, and cheaper.** A price load is
+  one `th` for the run plus one `ph` per segment; `ca sync` one `th` plus one
+  `ca` per segment; `price gaps` one `tc` list per run and one `tc` per venue
+  asked; `trade check` one `th` per ticker, read once. Each costs about 0.23s
+  (fafnir defers pandas and the vendor clients, which `th`, `ca`, `tc` and
+  `ph --exact` do not use), against about 0.7s before.
 - **Source labels change.** Instruments looked up from fafnir record
   `fafnir:duk th` (was `fafnir:mart.v_security_profile`), and calendars
   `fafnir:duk tc` (was `fafnir:ref.trading_calendar`). Price rows keep
