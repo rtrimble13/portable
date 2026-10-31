@@ -1,18 +1,12 @@
-"""The fafnir adapter's queries and `duk` calls, run against a warehouse shaped like fafnir's.
+"""The fafnir adapter, every read through `duk`, answered by a fake `duk`.
 
-The fake here is SQLite with `mart` and `ref` attached as schemas, so the
-adapter's *own* SQL runs unmodified (bar the placeholder style) against views
-laid out as fafnir's migrations define them -- `mart` only, because a
-person's tunnel role cannot see `core` (fafnir ADR 0008). Its cursor hands
-back what psycopg would -- `date`, `Decimal` for NUMERIC, `bool` -- so the type
-handling is exercised too.
-
-Prices come through `duk` (ADR 0029), so the fake `duk` answers from the same
-warehouse: it resolves the identifier it is given, reads the raw bars, and
-prints them the way duk does. With ``--exact`` that is the stored
-``NUMERIC(20, 6)`` as JSON strings (``"189.120000"``); without it, a float at
-ten decimal places, so a stored ``13247980.736555`` arrives as
-``13247980.7365550008`` -- which the adapter refuses.
+ADR 0032: portable has no SQL against fafnir and no database driver; it runs
+`duk th`, `duk ph`, `duk ca`, `duk tc` and `duk yc`. The fake here answers those
+commands the way duk does -- the same JSON keys, the same exact decimal text,
+the same sentences for "nothing" and the same refusals -- from a store laid out
+as fafnir's `mart` views are. fafnir pins the real output in
+`test/duk/test_db_portable_reads_integration.py`; a change there is a change
+here.
 
 ADR 0020 R5 is the reason most of these exist: a ticker can name one security
 for part of a range and another for the rest, and a historical load spans
@@ -35,112 +29,46 @@ import pytest
 from portable_core.domain.enums import InstrumentType
 from portable_core.errors import DataUnavailableError, ValidationError
 from portable_core.providers import Capability, as_eod_provider
-from portable_core.providers.fafnir import FafnirProvider
+from portable_core.providers.fafnir import DUK_COMMANDS, FafnirProvider
 
 pytestmark = pytest.mark.unit
 
 D = Decimal
 
-#: Column types psycopg would hand back, by column name.
-_DATES = {"trade_date", "valid_from", "valid_to", "ex_date", "record_date", "payment_date"}
-_NUMERIC = {"close", "split_numerator", "split_denominator", "dividend_amount"}
-_BOOLEAN = {"is_primary", "is_actively_trading"}
-
-#: fafnir's mart views, as migration 0020 (and ADR 0029's draft) define them.
+#: What the fake duk reads: fafnir's mart views as migrations 0020 and 0033
+#: define them, and ref.trading_calendar.
 _DDL = (
-    """CREATE TABLE mart.v_security_profile (
+    """CREATE TABLE security (
         security_id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, company_name TEXT,
         asset_type TEXT CHECK (asset_type IN ('equity', 'etf', 'fund', 'other')),
         exchange_code TEXT, currency TEXT DEFAULT 'USD', country TEXT, cik TEXT,
-        isin TEXT, cusip TEXT, is_actively_trading INTEGER, delisted_date TEXT,
-        source TEXT DEFAULT 'fmp')""",
-    """CREATE TABLE mart.v_symbol_lookup (
+        isin TEXT, cusip TEXT, is_actively_trading INTEGER, delisted_date TEXT)""",
+    """CREATE TABLE symbol_lookup (
         symbol TEXT, security_id INTEGER, is_primary INTEGER,
         valid_from TEXT DEFAULT '1900-01-01', valid_to TEXT)""",
-    """CREATE TABLE mart.v_daily_price_raw (
-        security_id INTEGER, trade_date TEXT, open TEXT, high TEXT, low TEXT, close TEXT,
-        volume INTEGER, vwap TEXT, PRIMARY KEY (security_id, trade_date))""",
-    """CREATE TABLE mart.v_corporate_action (
+    """CREATE TABLE daily_price_raw (
+        security_id INTEGER, trade_date TEXT, high TEXT, low TEXT, close TEXT,
+        PRIMARY KEY (security_id, trade_date))""",
+    """CREATE TABLE corporate_action (
         corporate_action_id INTEGER PRIMARY KEY, security_id INTEGER, action_type TEXT,
         ex_date TEXT, record_date TEXT, payment_date TEXT, declaration_date TEXT,
         split_numerator TEXT, split_denominator TEXT, dividend_amount TEXT,
-        currency TEXT, source TEXT)""",
-    """CREATE TABLE ref.trading_calendar (
+        currency TEXT DEFAULT 'USD', source TEXT DEFAULT 'sharadar')""",
+    """CREATE TABLE trading_calendar (
         exchange_code TEXT, trade_date TEXT, is_open INTEGER, session_note TEXT)""",
 )
 
 
-class _PgError(Exception):
-    """What psycopg raises: an error carrying its SQLSTATE."""
-
-    def __init__(self, message: str, sqlstate: str) -> None:
-        super().__init__(message)
-        self.sqlstate = sqlstate
-
-
-class _Cursor:
-    def __init__(self, warehouse: _Warehouse) -> None:
-        self._warehouse = warehouse
-        self._rows: list[tuple[Any, ...]] = []
-
-    def __enter__(self) -> _Cursor:
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        return None
-
-    def execute(self, sql: str, params: tuple[Any, ...]) -> None:
-        self._warehouse.queries.append(sql)
-        try:
-            cursor = self._warehouse.db.execute(sql.replace("%s", "?"), params)
-        except sqlite3.OperationalError as exc:
-            if "no such table" in str(exc):
-                raise _PgError(str(exc), "42P01") from exc  # undefined_table
-            raise
-        names = [column[0] for column in cursor.description]
-        self._rows = [
-            tuple(_as_psycopg(name, value) for name, value in zip(names, row, strict=True))
-            for row in cursor.fetchall()
-        ]
-
-    def fetchall(self) -> list[tuple[Any, ...]]:
-        return self._rows
-
-
-def _as_psycopg(name: str, value: Any) -> Any:
-    if value is None:
-        return None
-    if name in _DATES:
-        return date.fromisoformat(value)
-    if name in _NUMERIC:
-        return Decimal(value)
-    if name in _BOOLEAN:
-        return bool(value)
-    return value
-
-
 class _Warehouse:
-    """A psycopg-shaped connection over SQLite, holding fafnir's mart views."""
+    """The rows the fake duk answers from."""
 
     def __init__(self) -> None:
         self.db = sqlite3.connect(":memory:")
-        self.db.execute("ATTACH DATABASE ':memory:' AS mart")
-        self.db.execute("ATTACH DATABASE ':memory:' AS ref")
         for ddl in _DDL:
             self.db.execute(ddl)
-        self.queries: list[str] = []
-        self.rollbacks = 0
-
-    def cursor(self) -> _Cursor:
-        return _Cursor(self)
-
-    def rollback(self) -> None:
-        self.rollbacks += 1
 
     def close(self) -> None:
         self.db.close()
-
-    # ── loading ──────────────────────────────────────────────────────────────
 
     def security(
         self,
@@ -154,8 +82,8 @@ class _Warehouse:
     ) -> None:
         """A security; its CUSIP defaults to one made from its id."""
         self.db.execute(
-            "INSERT INTO mart.v_security_profile (security_id, symbol, company_name, "
-            "asset_type, exchange_code, country, cik, cusip, isin, is_actively_trading) "
+            "INSERT INTO security (security_id, symbol, company_name, asset_type, "
+            "exchange_code, country, cik, cusip, isin, is_actively_trading) "
             "VALUES (?, ?, ?, ?, 'NYSE', 'US', ?, ?, ?, 1)",
             (
                 security_id,
@@ -178,7 +106,7 @@ class _Warehouse:
         primary: bool = True,
     ) -> None:
         self.db.execute(
-            "INSERT INTO mart.v_symbol_lookup VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO symbol_lookup VALUES (?, ?, ?, ?, ?)",
             (symbol, security_id, int(primary), valid_from, valid_to),
         )
 
@@ -186,95 +114,185 @@ class _Warehouse:
         self, security_id: int, on: str, close: str, *, low: str = "", high: str = ""
     ) -> None:
         self.db.execute(
-            "INSERT INTO mart.v_daily_price_raw (security_id, trade_date, open, high, low, "
-            "close, volume) VALUES (?, ?, ?, ?, ?, ?, 100)",
-            (security_id, on, close, high or close, low or close, close),
+            "INSERT INTO daily_price_raw VALUES (?, ?, ?, ?, ?)",
+            (security_id, on, high or close, low or close, close),
         )
 
     def sessions(self, exchange: str, *days: str, is_open: bool = True) -> None:
         self.db.executemany(
-            "INSERT INTO ref.trading_calendar (exchange_code, trade_date, is_open) "
+            "INSERT INTO trading_calendar (exchange_code, trade_date, is_open) "
             "VALUES (?, ?, ?)",
             [(exchange, on, int(is_open)) for on in days],
         )
 
     def dividend(self, security_id: int, ex_date: str, amount: str) -> None:
         self.db.execute(
-            "INSERT INTO mart.v_corporate_action (security_id, action_type, ex_date, "
+            "INSERT INTO corporate_action (security_id, action_type, ex_date, "
             "payment_date, dividend_amount) VALUES (?, 'dividend', ?, ?, ?)",
             (security_id, ex_date, ex_date, amount),
         )
 
 
-def _as_duk_prints(stored: str) -> str:
-    """A NUMERIC through a float and pandas' ``to_json``: ten places, zeros trimmed."""
-    text = f"{float(stored):.10f}".rstrip("0")
-    return text + "0" if text.endswith(".") else text
+def _numeric(stored: str | None) -> str | None:
+    """A NUMERIC(20, 6) as ``--exact`` prints it: ``format(value, "f")``."""
+    return None if stored is None else format(D(stored).quantize(D("0.000001")), "f")
 
 
-def _as_duk_exact(stored: str) -> str:
-    """``duk ph --exact``: the NUMERIC(20, 6) as decimal text, a JSON string."""
-    return '"' + format(D(stored).quantize(D("0.000001")), "f") + '"'
+def _option(argv: list[str], name: str) -> str | None:
+    return argv[argv.index(name) + 1] if name in argv else None
 
 
 @dataclass
 class _Duk:
-    """`duk -S db ph` over the fake warehouse, recording how it was called."""
+    """`duk` over the fake warehouse, recording how it was called."""
 
     warehouse: _Warehouse
     calls: list[list[str]] = field(default_factory=list)
     envs: list[dict[str, str]] = field(default_factory=list)
-    #: Replaces the answer to the next call: (returncode, stdout, stderr).
-    answer: tuple[int, str, str] | None = None
+    #: Replaces the answer to a subcommand: {"ph": (returncode, stdout, stderr)}.
+    answers: dict[str, tuple[int, str, str]] = field(default_factory=dict)
+    #: The warehouse has no mart.v_corporate_action (before fafnir 0033).
+    no_action_view: bool = False
 
     def __call__(self, argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         self.calls.append(argv)
         self.envs.append(dict(kwargs.get("env") or {}))
-        if self.answer is not None:
-            code, out, err = self.answer
+        assert argv[1:3] in (["-S", "db"], ["-S", "live"]), argv
+        command = argv[3]
+        if command in self.answers:
+            code, out, err = self.answers[command]
             return subprocess.CompletedProcess(argv, code, stdout=out, stderr=err)
-        named = argv[argv.index("ph") + 1]
+        code, out, err = getattr(self, f"_{command}")(argv)
+        return subprocess.CompletedProcess(argv, code, stdout=out, stderr=err)
+
+    def ph_calls(self) -> list[list[str]]:
+        return [c for c in self.calls if c[3] == "ph"]
+
+    def _resolve(self, named: str) -> int | None:
         scheme, _, value = named.partition(":")
+        assert scheme == "sid", f"portable names a security by sid:, not {named}"
         found = self.warehouse.db.execute(
-            f"SELECT security_id FROM mart.v_security_profile WHERE {scheme} = ?",
-            (value,),
+            "SELECT security_id FROM security WHERE security_id = ?", (int(value),)
         ).fetchall()
-        if len(found) != 1:
-            said = (
-                f"No security found for {named}."
-                if not found
-                else f"{named} matches {len(found)} securities."
-            )
-            return subprocess.CompletedProcess(argv, 1, stdout="", stderr=said)
+        return found[0][0] if found else None
+
+    def _th(self, argv: list[str]) -> tuple[int, str, str]:
+        scheme, _, ticker = argv[4].partition(":")
+        assert scheme == "ticker", "the ticker is passed explicitly as one"
+        rows = self.warehouse.db.execute(
+            "SELECT x.symbol, x.security_id, x.valid_from, x.valid_to, x.is_primary, "
+            "p.symbol, p.company_name, p.asset_type, p.exchange_code, p.currency, "
+            "p.country, p.cik, p.isin, p.cusip, p.is_actively_trading, p.delisted_date "
+            "FROM symbol_lookup x JOIN security p ON p.security_id = x.security_id "
+            "WHERE upper(x.symbol) = upper(?) ORDER BY x.valid_from, x.security_id",
+            (ticker,),
+        ).fetchall()
+        if not rows:
+            return 0, f"No ticker history for {ticker.upper()}\n", ""
+        keys = (
+            "symbol", "security_id", "valid_from", "valid_to", "is_primary",
+            "primary_symbol", "company_name", "asset_type", "exchange_code", "currency",
+            "country", "cik", "isin", "cusip", "is_actively_trading", "delisted_date",
+        )  # fmt: skip
+        records = []
+        for row in rows:
+            record = dict(zip(keys, row, strict=True))
+            record["is_primary"] = bool(record["is_primary"])
+            record["is_actively_trading"] = bool(record["is_actively_trading"])
+            records.append(record)
+        return 0, json.dumps(records) + "\n", ""
+
+    def _ph(self, argv: list[str]) -> tuple[int, str, str]:
+        named = argv[4]
+        security_id = self._resolve(named)
+        if security_id is None:
+            return 1, "", f"No security found for security_id {named[4:]}."
         bars = self.warehouse.db.execute(
-            "SELECT trade_date, close, high, low FROM mart.v_daily_price_raw "
+            "SELECT trade_date, close, high, low FROM daily_price_raw "
             "WHERE security_id = ? AND trade_date BETWEEN ? AND ? ORDER BY trade_date",
-            (
-                found[0][0],
-                argv[argv.index("--start-date") + 1],
-                argv[argv.index("--end-date") + 1],
-            ),
+            (security_id, _option(argv, "--start-date"), _option(argv, "--end-date")),
         ).fetchall()
         if not bars:
-            return subprocess.CompletedProcess(
-                argv, 0, stdout=f"No data found for {value}\n", stderr=""
-            )
+            return 0, f"No data found for {named}\n", ""
         fields = ("high", "low", "close") if "--hlc" in argv else ("close",)
-        exact = "--exact" in argv
-        printed = ",".join(
-            "{"
-            + ",".join(
-                [f'"date":"{on}"' if exact else f'"date":"{on}T00:00:00.000"']
-                + [
-                    f'"{name}":{_as_duk_exact(value) if exact else _as_duk_prints(value)}'
-                    for name, value in (("high", high), ("low", low), ("close", close))
-                    if name in fields
-                ]
-            )
-            + "}"
+        assert "--exact" in argv and "--json" in argv and "--adj" not in argv
+        records = [
+            {
+                "date": on,
+                **{
+                    f: _numeric(v)
+                    for f, v in (("high", high), ("low", low), ("close", close))
+                    if f in fields
+                },
+            }
             for on, close, high, low in bars
-        )
-        return subprocess.CompletedProcess(argv, 0, stdout=f"[{printed}]\n", stderr="")
+        ]
+        return 0, json.dumps(records) + "\n", ""
+
+    def _ca(self, argv: list[str]) -> tuple[int, str, str]:
+        if self.no_action_view:
+            return (
+                1,
+                "",
+                "Error: this warehouse has no mart.v_corporate_action: it arrives with "
+                "fafnir migration 0033 (`fafnir db migrate` on the host)",
+            )
+        security_id = self._resolve(argv[4])
+        if security_id is None:
+            return 1, "", f"No security found for security_id {argv[4][4:]}."
+        assert "--exact" in argv and "--json" in argv
+        rows = self.warehouse.db.execute(
+            "SELECT ex_date, action_type, split_numerator, split_denominator, "
+            "dividend_amount, currency, record_date, payment_date, declaration_date, "
+            "corporate_action_id, security_id, source FROM corporate_action "
+            "WHERE security_id = ? AND ex_date BETWEEN ? AND ? "
+            "ORDER BY ex_date, action_type, corporate_action_id",
+            (security_id, _option(argv, "--start-date"), _option(argv, "--end-date")),
+        ).fetchall()
+        if not rows:
+            return 0, f"No corporate actions for {argv[4]}\n", ""
+        keys = (
+            "ex_date", "action_type", "split_numerator", "split_denominator",
+            "dividend_amount", "currency", "record_date", "payment_date",
+            "declaration_date", "corporate_action_id", "security_id", "source",
+        )  # fmt: skip
+        numeric = {"split_numerator", "split_denominator", "dividend_amount"}
+        records = []
+        for row in rows:
+            record = dict(zip(keys, row, strict=True))
+            for key in numeric:
+                record[key] = _numeric(record[key])
+            record["corporate_action_id"] = str(record["corporate_action_id"])
+            record["security_id"] = str(record["security_id"])
+            records.append(record)
+        return 0, json.dumps(records) + "\n", ""
+
+    def _tc(self, argv: list[str]) -> tuple[int, str, str]:
+        venue = argv[4] if len(argv) > 4 and not argv[4].startswith("-") else None
+        if venue is None:
+            rows = self.warehouse.db.execute(
+                "SELECT exchange_code, min(trade_date), max(trade_date), "
+                "sum(is_open), sum(1 - is_open) FROM trading_calendar "
+                "GROUP BY exchange_code ORDER BY exchange_code"
+            ).fetchall()
+            if not rows:
+                return 0, "No trading calendars in the warehouse\n", ""
+            records = [
+                {"exchange_code": code, "exchange_name": None, "first_date": first,
+                 "last_date": last, "open_days": opened, "closed_days": closed}
+                for code, first, last, opened, closed in rows
+            ]  # fmt: skip
+            return 0, json.dumps(records) + "\n", ""
+        rows = self.warehouse.db.execute(
+            "SELECT trade_date, is_open, session_note FROM trading_calendar "
+            "WHERE upper(exchange_code) = upper(?) AND trade_date BETWEEN ? AND ? "
+            "ORDER BY trade_date",
+            (venue, _option(argv, "--start-date"), _option(argv, "--end-date")),
+        ).fetchall()
+        if not rows:
+            return 0, f"No trading calendar for {venue.upper()} in that range\n", ""
+        records = [{"date": d, "is_open": bool(o), "session_note": n} for d, o, n in rows]
+        return 0, json.dumps(records) + "\n", ""
 
 
 @pytest.fixture
@@ -293,13 +311,9 @@ def duk(warehouse: _Warehouse, monkeypatch: pytest.MonkeyPatch) -> _Duk:
 
 
 @pytest.fixture
-def fafnir(warehouse: _Warehouse, duk: _Duk) -> FafnirProvider:
+def fafnir(duk: _Duk) -> FafnirProvider:
     del duk  # installed in place of subprocess.run; the tests that inspect it ask for it
-    provider = FafnirProvider(dsn="host=fake")
-    # The adapter connects lazily and caches the connection; handing it the
-    # fake is the whole of the injection.
-    provider._connection = warehouse
-    return provider
+    return FafnirProvider(dsn="host=fake")
 
 
 # ── prices across a ticker's history ────────────────────────────────────────
@@ -314,7 +328,7 @@ def test_a_reused_ticker_is_priced_from_the_security_that_held_it_each_day(
     that as ABC -- from 2024. Resolved as of the range's end, every 2023 date
     was priced from security 2's ABC bars: another issuer's prices, under the
     right ticker, with nothing to say so. `duk` resolving the ticker itself
-    would do the same, so each stretch is named to it by identifier.
+    would do the same, so each stretch is named to it by security id.
     """
     warehouse.security(1, "XYZ")
     warehouse.security(2, "XYZ")
@@ -328,21 +342,17 @@ def test_a_reused_ticker_is_priced_from_the_security_that_held_it_each_day(
     prices = fafnir.eod_prices("XYZ", date(2023, 12, 28), date(2024, 1, 3))
 
     assert [(p.price_date, p.price) for p in prices] == [
-        (date(2023, 12, 29), D("10.00")),
-        (date(2024, 1, 2), D("251.00")),
+        (date(2023, 12, 29), D("10.000000")),
+        (date(2024, 1, 2), D("251.000000")),
     ]
     assert [
-        (c[4], c[c.index("--start-date") + 1], c[c.index("--end-date") + 1]) for c in duk.calls
+        (c[4], _option(c, "--start-date"), _option(c, "--end-date")) for c in duk.ph_calls()
     ] == [
-        ("cusip:C00000001", "2023-12-28", "2023-12-31"),
-        ("cusip:C00000002", "2024-01-01", "2024-01-03"),
+        ("sid:1", "2023-12-28", "2023-12-31"),
+        ("sid:2", "2024-01-01", "2024-01-03"),
     ]
-    assert prices[0].provider_ref is not None and prices[0].provider_ref.startswith(
-        "security_id=1;"
-    )
-    assert prices[1].provider_ref is not None and prices[1].provider_ref.startswith(
-        "security_id=2;"
-    )
+    assert prices[0].provider_ref == "security_id=1;trade_date=2023-12-29;via=sid:1"
+    assert prices[1].provider_ref == "security_id=2;trade_date=2024-01-02;via=sid:2"
 
 
 def test_days_the_ticker_named_nothing_are_refused_by_name(
@@ -367,6 +377,15 @@ def test_days_the_ticker_named_nothing_are_refused_by_name(
 
     under_the_old_ticker = fafnir.eod_prices("FB", date(2022, 6, 1), date(2022, 6, 8))
     assert [p.price for p in under_the_old_ticker] == [D("196.64")]
+
+
+def test_a_ticker_with_no_history_at_all_is_refused_by_name(
+    warehouse: _Warehouse, fafnir: FafnirProvider
+) -> None:
+    """duk's "No ticker history" is an empty answer: every day is uncovered."""
+    with pytest.raises(DataUnavailableError, match="symbol history") as refused:
+        fafnir.eod_prices("NOPE", date(2025, 6, 30), date(2025, 6, 30))
+    assert refused.value.code == "PT-E-PRICE-MISSING"
 
 
 def test_no_fallback_to_the_primary_symbol(
@@ -409,14 +428,13 @@ def test_a_price_is_the_stored_decimal_and_carries_its_lineage(
     warehouse.bar(1, "2025-06-30", "13247980.736555")
     warehouse.bar(1, "2025-07-01", "189.120000")
     warehouse.bar(1, "2025-07-02", "98765432109876.543210")  # past any float's exact range
-    assert _as_duk_prints("13247980.736555") == "13247980.7365550008", "as floats, noise"
 
     first, second, third = fafnir.eod_prices("ABC", date(2025, 6, 30), date(2025, 7, 2))
 
     assert first.price == D("13247980.736555")
     assert str(second.price) == "189.120000", "six places, as the warehouse holds it"
     assert str(third.price) == "98765432109876.543210"
-    assert first.provider_ref == "security_id=1;trade_date=2025-06-30;via=isin:US0000000001"
+    assert first.provider_ref == "security_id=1;trade_date=2025-06-30;via=sid:1"
     assert first.source == "fafnir:duk ph"
     assert first.valuation_level == 1
     assert first.as_of == datetime(2025, 6, 30, tzinfo=UTC), "the price's date, not the clock"
@@ -425,11 +443,9 @@ def test_a_price_is_the_stored_decimal_and_carries_its_lineage(
 def test_duk_is_asked_for_raw_closes_from_the_warehouse_this_adapter_reads(
     warehouse: _Warehouse, fafnir: FafnirProvider, duk: _Duk
 ) -> None:
-    """PORT-GIPS-A01, ADR 0029: `-S db`, never `--adj`, exact text, one DSN.
+    """PORT-GIPS-A01, ADR 0032: the ticker's history, then `-S db`, never `--adj`.
 
-    PORTABLE_FAFNIR_DSN means nothing to duk, so without FAFNIR_DSN in its
-    environment the price read could go to a different warehouse from the
-    identity read.
+    The override portable was given reaches duk as FAFNIR_DSN.
     """
     warehouse.security(1, "ABC")
     warehouse.ticker("ABC", 1)
@@ -438,88 +454,111 @@ def test_duk_is_asked_for_raw_closes_from_the_warehouse_this_adapter_reads(
     fafnir.eod_prices("ABC", date(2025, 6, 30), date(2025, 6, 30))
 
     assert duk.calls == [
+        ["duk", "-S", "db", "th", "ticker:ABC", "--json"],
         [
-            "duk", "-S", "db", "ph", "cusip:C00000001",
+            "duk", "-S", "db", "ph", "sid:1",
             "--start-date", "2025-06-30", "--end-date", "2025-06-30",
             "--close", "--json", "--exact",
-        ]
+        ],
     ]  # fmt: skip
-    assert duk.envs[0]["FAFNIR_DSN"] == "host=fake"
+    assert {env["FAFNIR_DSN"] for env in duk.envs} == {"host=fake"}
+
+
+def test_without_an_override_duk_reads_its_own_configuration(
+    warehouse: _Warehouse, duk: _Duk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0032: portable reads no fafnir config; duk's own FAFNIR_DSN stands."""
+    monkeypatch.delenv("PORTABLE_FAFNIR_DSN", raising=False)
+    monkeypatch.setenv("FAFNIR_DSN", "host=duks-own")
+    warehouse.security(1, "ABC")
+    warehouse.ticker("ABC", 1)
+    warehouse.bar(1, "2025-06-30", "1.00")
+
+    FafnirProvider().eod_prices("ABC", date(2025, 6, 30), date(2025, 6, 30))
+
+    assert {env["FAFNIR_DSN"] for env in duk.envs} == {"host=duks-own"}
 
 
 @pytest.mark.parametrize(
-    ("identifiers", "named"),
+    "identifiers",
     [
-        ({"isin": "US0378331005", "cusip": "037833100", "cik": "320193"}, "isin:US0378331005"),
-        ({"cusip": "037833100", "cik": "320193"}, "cusip:037833100"),
-        ({"cusip": " ", "cik": "320193"}, "cik:320193"),
+        {"isin": "US0378331005", "cusip": "037833100", "cik": "320193"},
+        {"cusip": None, "cik": None},  # none at all: ADR 0029 refused this one
     ],
 )
-def test_the_security_is_named_by_its_strongest_identifier(
+def test_the_security_is_named_by_its_id_whatever_identifiers_it_has(
     warehouse: _Warehouse,
     fafnir: FafnirProvider,
     duk: _Duk,
-    identifiers: dict[str, str],
-    named: str,
+    identifiers: dict[str, Any],
 ) -> None:
+    """A dead issuer minted with no ISIN, CUSIP or CIK is priced all the same."""
     warehouse.security(1, "AAPL", **identifiers)
     warehouse.ticker("AAPL", 1)
     warehouse.bar(1, "2025-06-30", "201.08")
 
-    fafnir.eod_prices("AAPL", date(2025, 6, 30), date(2025, 6, 30))
+    prices = fafnir.eod_prices("AAPL", date(2025, 6, 30), date(2025, 6, 30))
 
-    assert duk.calls[0][4] == named
-
-
-def test_a_security_with_no_identifier_is_refused_not_asked_for_by_ticker(
-    warehouse: _Warehouse, fafnir: FafnirProvider, duk: _Duk
-) -> None:
-    """duk would resolve the ticker to whoever holds it now: R5 again, one layer down."""
-    warehouse.security(1, "ABC", cusip=None)
-    warehouse.ticker("ABC", 1, valid_to="2023-12-31")
-    warehouse.bar(1, "2023-06-30", "1.00")
-
-    with pytest.raises(DataUnavailableError, match="no ISIN, CUSIP or CIK") as refused:
-        fafnir.eod_prices("ABC", date(2023, 6, 30), date(2023, 6, 30))
-    assert refused.value.code == "PT-E-PRICE-MISSING", "about this security; the run goes on"
-    assert "pt price load --file" in (refused.value.remedy or "")
-    assert duk.calls == []
+    assert [p.price for p in prices] == [D("201.08")]
+    assert duk.ph_calls()[0][4] == "sid:1"
 
 
-def test_an_identifier_duk_cannot_pin_to_one_security_is_refused(
+def test_two_classes_sharing_a_cik_are_each_priced_as_themselves(
     warehouse: _Warehouse, fafnir: FafnirProvider
 ) -> None:
-    """duk never picks among several, and neither does the adapter on its behalf."""
+    """By CIK, duk refused these as ambiguous (ADR 0029 §3); by id there is no choice."""
     warehouse.security(1, "GOOGL", cusip=None, cik="1652044")
     warehouse.security(2, "GOOG", cusip=None, cik="1652044")
     warehouse.ticker("GOOGL", 1)
+    warehouse.ticker("GOOG", 2)
     warehouse.bar(1, "2025-06-30", "176.23")
+    warehouse.bar(2, "2025-06-30", "177.39")
 
-    with pytest.raises(DataUnavailableError, match="matches 2 securities") as refused:
-        fafnir.eod_prices("GOOGL", date(2025, 6, 30), date(2025, 6, 30))
-    assert refused.value.code == "PT-E-PRICE-MISSING"
+    assert [
+        p.price for p in fafnir.eod_prices("GOOG", date(2025, 6, 30), date(2025, 6, 30))
+    ] == [D("177.39")]
 
 
 @pytest.mark.parametrize(
-    ("returncode", "stderr"),
+    ("command", "returncode", "stderr"),
     [
-        (1, "Error: Failed to fetch price history: permission denied for schema core"),
-        (2, "Error: No such option: --exact"),
+        ("ph", 1, "Error: Failed to fetch price history: permission denied for schema core"),
+        ("ph", 2, "Error: No such option: --exact"),
+        ("th", 2, "Usage: duk [OPTIONS] COMMAND [ARGS]... Error: No such command 'th'."),
+        ("th", 1, "Error: Failed to read ticker history: connection is bad"),
     ],
 )
 def test_duk_failing_outright_stops_the_run(
-    warehouse: _Warehouse, fafnir: FafnirProvider, duk: _Duk, returncode: int, stderr: str
+    warehouse: _Warehouse,
+    fafnir: FafnirProvider,
+    duk: _Duk,
+    command: str,
+    returncode: int,
+    stderr: str,
 ) -> None:
     """Not a gap in one security's history: no security would go better."""
     warehouse.security(1, "ABC")
     warehouse.ticker("ABC", 1)
-    duk.answer = (returncode, "", stderr)
+    duk.answers[command] = (returncode, "", stderr)
 
     with pytest.raises(DataUnavailableError) as refused:
         fafnir.eod_prices("ABC", date(2025, 6, 30), date(2025, 6, 30))
     assert refused.value.code == "PT-E-PROVIDER-UNAVAILABLE"
     assert stderr in refused.value.message
-    assert "--exact (fafnir #177 or later)" in (refused.value.remedy or "")
+    assert "sid:" in (refused.value.remedy or "")
+
+
+def test_a_security_duk_cannot_find_is_that_securitys_gap(
+    warehouse: _Warehouse, fafnir: FafnirProvider, duk: _Duk
+) -> None:
+    """About one security, so the run carries on for the others."""
+    warehouse.security(1, "ABC")
+    warehouse.ticker("ABC", 1)
+    duk.answers["ph"] = (1, "", "No security found for security_id 1.")
+
+    with pytest.raises(DataUnavailableError, match="No security found") as refused:
+        fafnir.eod_prices("ABC", date(2025, 6, 30), date(2025, 6, 30))
+    assert refused.value.code == "PT-E-PRICE-MISSING"
 
 
 @pytest.mark.parametrize(
@@ -544,9 +583,43 @@ def test_output_that_is_not_exact_decimal_text_is_refused(
     """Refused, never rounded into shape: every price after it would be suspect."""
     warehouse.security(1, "ABC")
     warehouse.ticker("ABC", 1)
-    duk.answer = (0, stdout, "")
+    duk.answers["ph"] = (0, stdout, "")
 
     with pytest.raises(DataUnavailableError, match="cannot be read exactly") as refused:
+        fafnir.eod_prices("ABC", date(2025, 6, 30), date(2025, 6, 30))
+    assert why in refused.value.message
+    assert refused.value.code == "PT-E-PROVIDER-UNAVAILABLE"
+
+
+@pytest.mark.parametrize(
+    ("changed", "why"),
+    [
+        ({"is_primary": None}, "no is_primary"),  # None: the key is dropped
+        ({"security_id": "1"}, "is not a security's id"),
+        ({"security_id": True}, "is not a security's id"),
+        ({"valid_from": "1900-01-01T00:00:00"}, "unexpected date"),
+        ({"is_primary": "yes"}, "is not true or false"),
+    ],
+)
+def test_a_ticker_history_that_cannot_be_read_is_refused(
+    fafnir: FafnirProvider, duk: _Duk, changed: dict[str, Any], why: str
+) -> None:
+    """Which security a day belongs to is the whole question; a guess is not an answer."""
+    record = {
+        "symbol": "ABC", "security_id": 1, "valid_from": "1900-01-01", "valid_to": None,
+        "is_primary": True, "primary_symbol": "ABC", "company_name": "ABC Inc.",
+        "asset_type": "equity", "exchange_code": "NYSE", "currency": "USD", "country": "US",
+        "cik": None, "isin": None, "cusip": None, "is_actively_trading": True,
+        "delisted_date": None,
+    }  # fmt: skip
+    for key, value in changed.items():
+        if value is None:
+            del record[key]
+        else:
+            record[key] = value
+    duk.answers["th"] = (0, json.dumps([record]), "")
+
+    with pytest.raises(DataUnavailableError, match="cannot be read") as refused:
         fafnir.eod_prices("ABC", date(2025, 6, 30), date(2025, 6, 30))
     assert why in refused.value.message
     assert refused.value.code == "PT-E-PROVIDER-UNAVAILABLE"
@@ -569,7 +642,22 @@ def test_a_backwards_range_is_refused(fafnir: FafnirProvider) -> None:
         fafnir.eod_prices("ABC", date(2025, 7, 1), date(2025, 6, 30))
 
 
-def test_without_duk_there_are_no_prices_and_the_refusal_says_why(
+def test_the_ticker_history_is_read_once_per_provider(
+    warehouse: _Warehouse, fafnir: FafnirProvider, duk: _Duk
+) -> None:
+    """Prices, actions and the master ask about the same ticker in turn."""
+    warehouse.security(1, "ABC")
+    warehouse.ticker("ABC", 1)
+    warehouse.bar(1, "2025-06-30", "1.00")
+
+    fafnir.eod_prices("ABC", date(2025, 6, 30), date(2025, 6, 30))
+    fafnir.corporate_actions("abc", date(2025, 1, 1), date(2025, 6, 30))
+    fafnir.lookup_security("ABC", on=date(2025, 6, 30))
+
+    assert [c[3] for c in duk.calls].count("th") == 1
+
+
+def test_without_duk_there_is_nothing_and_the_refusal_says_why(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Not "fafnir cannot supply eod_prices", which would send the owner to the warehouse."""
@@ -579,13 +667,21 @@ def test_without_duk_there_are_no_prices_and_the_refusal_says_why(
     with pytest.raises(DataUnavailableError, match="`duk` is not on PATH") as refused:
         as_eod_provider(provider)
     assert refused.value.code == "PT-E-PROVIDER-UNAVAILABLE"
+    assert provider.capabilities == frozenset()
+    for asked in (
+        lambda: provider.lookup_security("ABC", on=date(2025, 6, 30)),
+        lambda: provider.corporate_actions("ABC", date(2025, 1, 1), date(2025, 6, 30)),
+        lambda: provider.trading_calendar("NYSE", date(2025, 1, 1), date(2025, 6, 30)),
+    ):
+        with pytest.raises(DataUnavailableError, match="`duk` is not on PATH"):
+            asked()
 
 
 # ── corporate actions and the security master ───────────────────────────────
 
 
 def test_corporate_actions_follow_the_ticker_through_its_history(
-    warehouse: _Warehouse, fafnir: FafnirProvider
+    warehouse: _Warehouse, fafnir: FafnirProvider, duk: _Duk
 ) -> None:
     warehouse.security(1, "XYZ")
     warehouse.security(2, "XYZ")
@@ -595,7 +691,7 @@ def test_corporate_actions_follow_the_ticker_through_its_history(
     warehouse.dividend(2, "2023-11-15", "9.99")  # security 2's, before it was XYZ
     warehouse.dividend(2, "2024-02-15", "0.40")
     warehouse.db.execute(
-        "INSERT INTO mart.v_corporate_action (security_id, action_type, ex_date, "
+        "INSERT INTO corporate_action (security_id, action_type, ex_date, "
         "split_numerator, split_denominator) VALUES (2, 'split', '2024-03-01', '4', '1')"
     )
 
@@ -607,21 +703,58 @@ def test_corporate_actions_follow_the_ticker_through_its_history(
         ("split", date(2024, 3, 1), None),
     ]
     assert (actions[2].split_numerator, actions[2].split_denominator) == (D("4"), D("1"))
+    assert str(actions[0].cash_amount) == "0.250000", "the stored decimal, not a float"
+    assert actions[0].pay_date == date(2023, 11, 15)
+    assert actions[0].provider_ref == "corporate_action_id=1"
+    assert [c[4] for c in duk.calls if c[3] == "ca"] == ["sid:1", "sid:2"]
+
+
+@pytest.mark.parametrize(
+    ("field_", "value", "why"),
+    [
+        ("dividend_amount", 0.25, "not exact decimal text"),
+        ("dividend_amount", "2.5E-1", "not exact decimal text"),
+        ("ex_date", "2023-11-15T00:00:00", "unexpected date"),
+        ("ex_date", "2024-11-15", "outside the dates"),
+        ("corporate_action_id", "1.0", "not exact decimal text"),
+    ],
+)
+def test_corporate_actions_that_are_not_exact_are_refused(
+    warehouse: _Warehouse,
+    fafnir: FafnirProvider,
+    duk: _Duk,
+    field_: str,
+    value: Any,
+    why: str,
+) -> None:
+    """A dividend through a float is a basis adjustment off by noise: refused."""
+    warehouse.security(1, "XYZ")
+    warehouse.ticker("XYZ", 1)
+    record = {
+        "ex_date": "2023-11-15", "action_type": "dividend", "split_numerator": None,
+        "split_denominator": None, "dividend_amount": "0.250000", "currency": "USD",
+        "record_date": None, "payment_date": None, "declaration_date": None,
+        "corporate_action_id": "1", "security_id": "1", "source": "sharadar",
+    }  # fmt: skip
+    duk.answers["ca"] = (0, json.dumps([{**record, field_: value}]), "")
+
+    with pytest.raises(DataUnavailableError, match="cannot be read") as refused:
+        fafnir.corporate_actions("XYZ", date(2023, 1, 1), date(2023, 12, 31))
+    assert why in refused.value.message
 
 
 def test_a_warehouse_without_the_corporate_action_view_says_which_migration_adds_it(
-    warehouse: _Warehouse, fafnir: FafnirProvider
+    warehouse: _Warehouse, fafnir: FafnirProvider, duk: _Duk
 ) -> None:
-    """A warehouse not yet migrated to fafnir 0033 has no such view."""
-    warehouse.db.execute("DROP TABLE mart.v_corporate_action")
+    """A warehouse not yet migrated to fafnir 0033 has none; duk says so, and the run stops."""
+    duk.no_action_view = True
     warehouse.security(1, "XYZ")
     warehouse.ticker("XYZ", 1)
 
     with pytest.raises(DataUnavailableError, match=r"mart\.v_corporate_action") as refused:
         fafnir.corporate_actions("XYZ", date(2024, 1, 1), date(2024, 12, 31))
     assert refused.value.code == "PT-E-PROVIDER-UNAVAILABLE"
-    assert "fafnir migration 0033" in (refused.value.remedy or "")
-    assert warehouse.rollbacks == 1, "psycopg leaves the transaction aborted"
+    assert "fafnir migration 0033" in refused.value.message
 
 
 def test_lookup_maps_the_master_row_as_of_the_date(
@@ -635,10 +768,29 @@ def test_lookup_maps_the_master_row_as_of_the_date(
 
     assert found.instrument_type is InstrumentType.MUTUAL_FUND
     assert found.cusip == "C00000009"
+    assert (found.exchange, found.country, found.currency) == ("NYSE", "US", "USD")
+    assert found.name == "FSMVX Inc."
+    assert found.is_active is True
     assert found.provider_ref == "security_id=9"
-    assert found.source == "fafnir:mart.v_security_profile"
+    assert found.source == "fafnir:duk th"
     with pytest.raises(DataUnavailableError, match="symbol history"):
         fafnir.lookup_security("FSMVX", on=date(2024, 5, 1))
+
+
+def test_lookup_answers_with_the_security_the_ticker_named_that_day(
+    warehouse: _Warehouse, fafnir: FafnirProvider
+) -> None:
+    """The master record of whoever held the ticker then, not whoever holds it now."""
+    warehouse.security(1, "XYZ", asset_type="etf")
+    warehouse.security(2, "NEWCO")
+    warehouse.ticker("XYZ", 1, valid_to="2023-12-31")
+    warehouse.ticker("XYZ", 2, valid_from="2024-01-01")
+
+    assert fafnir.lookup_security("XYZ", on=date(2023, 6, 30)).instrument_type is (
+        InstrumentType.ETF
+    )
+    then_now = fafnir.lookup_security("XYZ", on=date(2024, 6, 30))
+    assert (then_now.symbol, then_now.provider_ref) == ("NEWCO", "security_id=2")
 
 
 def test_an_asset_type_portable_has_no_name_for_is_refused(
@@ -652,26 +804,23 @@ def test_an_asset_type_portable_has_no_name_for_is_refused(
         fafnir.lookup_security("WEIRD", on=date(2025, 6, 30))
 
 
-def test_every_query_reads_mart_or_ref_and_never_core(
-    warehouse: _Warehouse, fafnir: FafnirProvider
+def test_every_read_is_a_known_duk_command_against_the_warehouse(
+    warehouse: _Warehouse, fafnir: FafnirProvider, duk: _Duk
 ) -> None:
-    """fafnir ADR 0008: a person's role cannot see `core`, so nothing here may name it."""
+    """ADR 0032: nothing reaches fafnir but `duk`, and `duk` reads the warehouse."""
     warehouse.security(1, "ABC")
     warehouse.ticker("ABC", 1)
     warehouse.bar(1, "2025-06-30", "1.00")
     warehouse.sessions("NYSE", "2025-06-30")
     fafnir.eod_prices("ABC", date(2025, 6, 30), date(2025, 6, 30))
+    fafnir.daily_ranges("ABC", date(2025, 6, 30), date(2025, 6, 30))
     fafnir.corporate_actions("ABC", date(2025, 1, 1), date(2025, 6, 30))
     fafnir.lookup_security("ABC", on=date(2025, 6, 30))
     fafnir.trading_calendar("NYSE", date(2025, 6, 30), date(2025, 6, 30))
 
-    named = {word for query in warehouse.queries for word in query.split() if "." in word}
-    assert named == {
-        "mart.v_security_profile",
-        "mart.v_symbol_lookup",
-        "mart.v_corporate_action",
-        "ref.trading_calendar",
-    }
+    assert {c[3] for c in duk.calls} == {"th", "ph", "ca", "tc"}
+    assert {c[3] for c in duk.calls} <= set(DUK_COMMANDS)
+    assert all(c[1:3] == ["-S", "db"] for c in duk.calls)
 
 
 # ── the day's range, through duk ─────────────────────────────────────────────
@@ -692,7 +841,7 @@ def test_r10_a_days_range_comes_through_duk_hlc_exactly(
         D("13300000.250000"),
         D("13247980.736555"),
     )
-    assert day.source == "fafnir:duk ph;security_id=1;via=isin:US0000000001"
+    assert day.source == "fafnir:duk ph;security_id=1;via=sid:1"
     assert "--hlc" in duk.calls[-1]
     assert "--adj" not in duk.calls[-1]
     assert fafnir.has(Capability.DAILY_RANGE)
@@ -703,7 +852,7 @@ def test_a_bar_whose_low_is_above_its_high_is_refused(
 ) -> None:
     warehouse.security(1, "ABC")
     warehouse.ticker("ABC", 1)
-    duk.answer = (
+    duk.answers["ph"] = (
         0,
         '[{"date":"2025-06-30","high":"1.000000","low":"2.000000","close":"1.500000"}]',
         "",
@@ -719,11 +868,11 @@ def test_without_duk_there_is_no_daily_range(monkeypatch: pytest.MonkeyPatch) ->
     assert not FafnirProvider(dsn="host=x").has(Capability.DAILY_RANGE)
 
 
-# ── the trading calendar, from ref ───────────────────────────────────────────
+# ── the trading calendar, through duk tc ─────────────────────────────────────
 
 
 def test_r9_the_calendar_is_the_venues_sessions_and_its_whole_span(
-    warehouse: _Warehouse, fafnir: FafnirProvider
+    warehouse: _Warehouse, fafnir: FafnirProvider, duk: _Duk
 ) -> None:
     """fafnir seeds open days only, and marks an unforeseen closure ``is_open``
     false (its migration 0022): neither is a session, and the span is all the
@@ -738,8 +887,11 @@ def test_r9_the_calendar_is_the_venues_sessions_and_its_whole_span(
     assert calendar.exchange == "NYSE"
     assert calendar.open_days == {date(2025, 1, 3), date(2025, 1, 6), date(2025, 1, 8)}
     assert (calendar.first, calendar.last) == (date(2025, 1, 2), date(2025, 12, 31))
-    assert calendar.source == "fafnir:ref.trading_calendar"
+    assert calendar.source == "fafnir:duk tc"
     assert fafnir.has(Capability.TRADING_CALENDAR)
+    assert ["duk", "-S", "db", "tc", "--json"] in duk.calls
+    assert ["duk", "-S", "db", "tc", "NYSE", "--start-date", "2025-01-03",
+            "--end-date", "2025-01-09", "--json"] in duk.calls  # fmt: skip
 
 
 @pytest.mark.parametrize("venue", ["OTC", None])
@@ -753,6 +905,18 @@ def test_r9_a_venue_with_no_calendar_is_judged_by_nasdaqs(
 
     assert calendar.exchange == "NASDAQ"
     assert calendar.open_days == {date(2025, 1, 2), date(2025, 1, 3)}
+
+
+def test_a_venue_with_a_calendar_but_no_days_in_the_range_has_no_sessions(
+    warehouse: _Warehouse, fafnir: FafnirProvider
+) -> None:
+    """duk's "No trading calendar ... in that range" is an empty answer inside a span."""
+    warehouse.sessions("NYSE", "2025-01-02", "2025-12-31")
+
+    calendar = fafnir.trading_calendar("NYSE", date(2025, 7, 4), date(2025, 7, 4))
+
+    assert calendar.open_days == frozenset()
+    assert calendar.first == date(2025, 1, 2)
 
 
 def test_no_calendar_at_all_is_refused(fafnir: FafnirProvider) -> None:

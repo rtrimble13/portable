@@ -10,7 +10,6 @@ was accepted and ignored (issue #39).
 from __future__ import annotations
 
 import json
-import sys
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -115,26 +114,35 @@ def test_a_symbol_with_no_prices_is_a_warning_and_nothing_at_all_is_a_failure(
 
 
 def test_an_unreachable_warehouse_fails_rather_than_warning(
-    run_pt: CliRunner, book: str, monkeypatch: pytest.MonkeyPatch
+    run_pt: CliRunner,
+    book: str,
+    monkeypatch: pytest.MonkeyPatch,
+    unreachable_duk: tuple[str, Path],
 ) -> None:
     """It used to be one warning per symbol and exit 0: an outage that 'succeeded'.
 
-    A `duk` is configured, so the refusal is the warehouse's and not duk's
-    absence (ADR 0029): the identity read reaches for the warehouse first.
+    A `duk` is there, so the refusal is the warehouse's, as duk reports it, and
+    not duk's absence (ADR 0032): the ticker's history is the first read. The
+    override reaches duk as FAFNIR_DSN, and appears in no message.
     """
+    duk, seen = unreachable_duk
     monkeypatch.setenv("PORTABLE_FAFNIR_DSN", UNREACHABLE)
-    monkeypatch.setenv("PORTABLE_DUK_PATH", sys.executable)
+    monkeypatch.setenv("PORTABLE_DUK_PATH", duk)
 
     failed = run_pt("--port", book, "-S", "fafnir", "price", "load", "AAPL", expect=5)
 
-    assert failed.json()["error"]["code"] == "PT-E-PROVIDER-UNAVAILABLE"
-    assert "cannot reach the fafnir warehouse" in failed.json()["error"]["message"]
+    error = failed.json()["error"]
+    assert error["code"] == "PT-E-PROVIDER-UNAVAILABLE"
+    assert "duk failed asking for the ticker history of AAPL" in error["message"]
+    assert "Connection refused" in error["message"]
+    assert seen.read_text(encoding="utf-8").splitlines() == [UNREACHABLE]
+    assert UNREACHABLE not in failed.stdout + failed.stderr, "a DSN is a secret"
 
 
 def test_without_duk_fafnir_prices_are_refused_naming_duk(
     run_pt: CliRunner, book: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ADR 0029: prices come through duk, and its absence is the reason given."""
+    """ADR 0032: everything comes through duk, and its absence is the reason given."""
     monkeypatch.setenv("PORTABLE_FAFNIR_DSN", UNREACHABLE)
     monkeypatch.setenv("PORTABLE_DUK_PATH", "no-such-duk")
 
@@ -172,10 +180,14 @@ def test_offline_values_from_the_cache(run_pt: CliRunner, book: str) -> None:
 
 
 def test_every_provider_command_fails_on_an_unreachable_warehouse(
-    run_pt: CliRunner, book: str, monkeypatch: pytest.MonkeyPatch
+    run_pt: CliRunner,
+    book: str,
+    monkeypatch: pytest.MonkeyPatch,
+    unreachable_duk: tuple[str, Path],
 ) -> None:
     """`ca sync` and `instrument sync` turned an outage into warnings and exit 0 too."""
     monkeypatch.setenv("PORTABLE_FAFNIR_DSN", UNREACHABLE)
+    monkeypatch.setenv("PORTABLE_DUK_PATH", unreachable_duk[0])
 
     for command in (("ca", "sync"), ("instrument", "sync")):
         failed = run_pt("--port", book, "-S", "fafnir", *command, expect=5)

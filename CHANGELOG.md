@@ -331,6 +331,31 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **fafnir is read through `duk` alone** (ADR 0032, decided by the owner;
+  completes ADR 0029). The ticker history and security master
+  (`duk th`), corporate actions (`duk ca --exact`) and the trading calendar
+  (`duk tc`) join prices (`duk ph --exact`): `portable` holds no SQL against
+  fafnir and imports no database driver, and `test_layering.py`'s SQL rule no
+  longer exempts the adapter. Each stretch of a ticker's history is named to
+  `duk` by `sid:<security_id>` instead of ISIN, CUSIP or CIK, so a security
+  with none of those -- dead issuers among them -- is now priced rather than
+  refused, and two share classes under one CIK are no longer ambiguous;
+  `provider_ref` reads `via=sid:…`. The rule deciding which security a ticker
+  named on a day is unchanged. Corporate actions are exact decimal text end
+  to end, as prices were.
+- **`duk` finds the warehouse; `portable` reads no fafnir configuration**
+  (ADR 0032 §6). `duk` reads `FAFNIR_DSN` and `~/.dukrc` itself.
+  `fafnir_dsn` / `PORTABLE_FAFNIR_DSN` remain, as an override handed to
+  `duk` as `FAFNIR_DSN`; `~/.fafnirrc`, which `duk` never read, is no longer
+  consulted.
+- **Every fafnir capability needs `duk`**: without it, `instrument sync`,
+  `ca sync` and `price gaps` against fafnir are refused naming `duk`, as
+  prices already were.
+- **Source labels** for what fafnir supplies besides prices: an instrument
+  looked up reads `fafnir:duk th` (was `fafnir:mart.v_security_profile`) and
+  a calendar `fafnir:duk tc` (was `fafnir:ref.trading_calendar`). Prices keep
+  `fafnir:duk ph`.
+
 - **fafnir prices come through `duk`, and nothing reads `core`** (ADR 0029,
   decided by the owner; supersedes ADR 0006's price path). Over the owner's
   SSH tunnel the role is in `fafnir_app`, which cannot see fafnir's `core`
@@ -403,6 +428,12 @@ Two rules specific to this repository:
   refused as a duplicate. References synthesized by the previous extract differ
   from these; no portfolio built from a real export exists yet, and a portfolio
   built from the example fixture should be re-extracted.
+
+### Removed
+
+- **`psycopg`.** The `portable[fafnir]` extra installs nothing now, and is kept
+  so that an existing install command still works. What fafnir needs is a
+  `duk` with `th`, `ca` and `tc` (fafnir's release after 3.0.5).
 
 ### Fixed
 

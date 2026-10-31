@@ -204,15 +204,14 @@ def test_config_loads_with_no_home_directory(monkeypatch: pytest.MonkeyPatch) ->
 def test_the_fafnir_dsn_lookup_survives_no_home_directory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The same import-time bug existed in the fafnir adapter."""
-    from portable_core.providers.fafnir import _dsn_files, resolve_dsn
+    """The same import-time bug existed in the fafnir adapter, which once read
+    fafnir's config files under home. Since ADR 0032 it reads none: duk does."""
+    from portable_core.providers.fafnir import resolve_dsn
 
     def no_home() -> Path:
         raise RuntimeError("Could not determine home directory.")
 
     monkeypatch.setattr(Path, "home", no_home)
     monkeypatch.delenv("PORTABLE_FAFNIR_DSN", raising=False)
-    monkeypatch.delenv("FAFNIR_DSN", raising=False)
 
-    assert _dsn_files() == ()
     assert resolve_dsn() is None

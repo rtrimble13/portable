@@ -130,8 +130,11 @@ scripts/                 # bootstrap, fixture generator, the spreadsheet-to-CSV 
 - SQL appears only in `persistence/` and `schema/`. If you are writing a query elsewhere,
   you are in the wrong file.
 - Domain objects have no I/O. If a domain object needs a price, it is passed one.
-- Anything touching fafnir's schema or `duk` lives in `providers/fafnir.py` and nowhere
-  else. `portable` must never couple to fafnir internals outside that module.
+- Anything touching fafnir or `duk` lives in `providers/fafnir.py` and nowhere else.
+  `portable` must never couple to fafnir internals outside that module, and that
+  module reaches fafnir **only by running `duk`**: no SQL, no database driver, no
+  fafnir config file (ADR 0032). A capability `duk` lacks is added to `duk`, in
+  fafnir, not worked around here.
 - New output formatting rules go in `formatters/`, once, not inline at call sites.
 - **Valuation, cash-flow, and return logic must satisfy `docs/gips-standard.md`.** Cite the
   requirement ID (`PORT-GIPS-B02`, `PORT-GIPS-F01`, …) in the code comment and in the test
@@ -197,10 +200,11 @@ open. Do not treat premium as independent P&L when the option resolves into stoc
 pay-date. Both are recorded. Accruing on the wrong one shifts returns across period
 boundaries. GIPS recommends accruing dividends as of the ex-date (`PORT-GIPS-A06`).
 
-**Adjusted vs. unadjusted prices.** fafnir keeps unadjusted OHLCV in `core.*` and adjusted
-prices in `mart.*`. Portfolio accounting uses **unadjusted** prices with explicit
-corporate-action transactions — never adjusted prices, or you will double-count splits.
-Performance and return series may use adjusted. Know which you are asking for.
+**Adjusted vs. unadjusted prices.** fafnir keeps unadjusted OHLCV (`duk ph`) and serves
+adjusted prices derived from it (`duk ph --adj`). Portfolio accounting uses **unadjusted**
+prices with explicit corporate-action transactions — never adjusted prices, or you will
+double-count splits. Performance and return series may use adjusted. Know which you are
+asking for.
 
 **Accrued interest is part of market value** for bonds. A bond bought between coupons pays
 accrued interest to the seller; that is not basis. Accrual for interest-bearing
@@ -384,9 +388,10 @@ test that fails without your change.
   | 0026 | A dry run is the real write, rolled back |
   | 0027 | A position label is a ledger row |
   | 0028 | An instrument with no market price is valued at zero, at level 5 |
-  | 0029 | Prices through `duk ph`; identity and corporate actions through `mart` |
+  | 0029 | Prices through `duk ph`; identity and corporate actions through `mart` (§3–§5 superseded by 0032) |
   | 0030 | The default benchmark is cash at 0%, labelled as such |
   | 0031 | Price history is accepted against the custodian's stated prices, to the cent |
+  | 0032 | fafnir through `duk` alone: identity, actions and calendar join prices |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager
@@ -397,7 +402,8 @@ test that fails without your change.
 - `docs/tax-methodology.md` — relief methods, holding periods, basis adjustments,
   what is estimated vs. exact
 - `docs/port-format.md`, `docs/schema.md` — the `.port` file
-- `docs/market-data.md` — provider interface, fafnir adapter, cache and staleness
+- `docs/market-data.md` — provider interface, the fafnir adapter (every read a `duk`
+  command), cache and staleness
 - `docs/broker-import.md` — how custodian exports become ledger rows: the two
   documents any import requires, the capabilities anything further unlocks, the
   batch format, the mapping files, the refusals, and the reconciliation that

@@ -164,14 +164,9 @@ def test_no_cli_imports_another_cli() -> None:
 def test_sql_appears_only_in_persistence_and_schema() -> None:
     """ADR 0002. A query anywhere else means the logic is in the wrong file.
 
-    Scoped to the `.port` file's own SQL. `providers/fafnir.py` queries a
-    FOREIGN database, which CLAUDE.md's other placement rule assigns to it
-    explicitly -- "anything touching fafnir's schema or `duk` lives in
-    providers/fafnir.py and nowhere else". Both rules are right; the boundary
-    between them is which database is being talked to.
-
-    `test_fafnir_is_confined_to_its_adapter` is what keeps that exemption
-    honest: the adapter may know fafnir's tables, and nothing else may.
+    No exemption, the fafnir adapter included: it once queried fafnir's `mart`
+    views directly, and since ADR 0032 every read of fafnir goes through `duk`.
+    A query reappearing in `providers/fafnir.py` is that decision being undone.
     """
     import re
 
@@ -184,12 +179,11 @@ def test_sql_appears_only_in_persistence_and_schema() -> None:
         re.IGNORECASE,
     )
     allowed_dirs = {"persistence", "schema"}
-    foreign_database_adapters = {SRC / "portable_core" / "providers" / "fafnir.py"}
     violations: list[str] = []
 
     for path in sorted(SRC.rglob("*.py")):
         parts = set(path.relative_to(SRC).parts)
-        if parts & allowed_dirs or path in foreign_database_adapters:
+        if parts & allowed_dirs:
             continue
         text = path.read_text(encoding="utf-8")
         for i, line in enumerate(text.splitlines(), start=1):
@@ -201,10 +195,10 @@ def test_sql_appears_only_in_persistence_and_schema() -> None:
 
 
 def test_fafnir_is_confined_to_its_adapter() -> None:
-    """ADR 0006, 0029 and CLAUDE.md: `portable` must never couple to fafnir internals.
+    """ADR 0006, 0029, 0032 and CLAUDE.md: `portable` must never couple to fafnir.
 
-    The adapter is allowed to know that `mart.v_symbol_lookup` exists. Nothing
-    else is, so that a fafnir migration is a one-file change here.
+    Only the adapter may name fafnir's relations (in prose: it queries none) or
+    its configuration, so that a fafnir change is a one-file change here.
     """
     import re
 

@@ -1,32 +1,34 @@
 """The fafnir adapter. The only module in `portable` that knows fafnir exists.
 
-ADR 0029 records how `portable` reaches fafnir, superseding ADR 0006's price
-path; `CLAUDE.md` forbids coupling to fafnir internals anywhere else, and
-``tests/unit/test_layering.py`` enforces it. Every relation name is in
-:data:`SCHEMA` at the top of this module and every `duk` argument list is
-built here, so a fafnir change is a one-file change here.
+`portable` reaches fafnir through `duk` and nothing else (ADR 0032, which
+completes ADR 0029). There is no database driver, no SQL and no relation name
+here: every read is a `duk` command, and every `duk` argument list is built in
+this module, so a fafnir change is a one-file change here.
+``tests/unit/test_layering.py`` holds both lines -- fafnir confined to this
+module, and no SQL in it.
 
-**Two routes, one warehouse.**
+* Which security a ticker named on each day, and that security's master
+  record: ``duk -S db th ticker:<T> --json``.
+* End-of-day closes, unadjusted: ``duk -S db ph sid:<id> --close --json --exact``.
+* A day's high, low and close, to check fills: ``... ph sid:<id> --hlc ...``.
+* Splits and cash dividends: ``duk -S db ca sid:<id> --json --exact``.
+* Which venues have a calendar, and their spans: ``duk -S db tc --json``; a
+  venue's sessions: ``duk -S db tc <venue> --json``.
+* The risk-free rate: ``duk -S live yc --json``.
 
-* **Prices come from `duk`**, the owner's tool for sourcing them:
-  ``duk -S db ph <identifier> --close --json --exact``. Raw closes, from the
-  warehouse, never the live vendor and never ``--adj``.
-* **Identity and corporate actions are read from `mart` directly**, over the
-  same DSN. Which security a ticker named on each day is a question only
-  ``mart.v_symbol_lookup`` answers -- `duk` resolves a ticker to whoever holds
-  it *now* -- so the adapter resolves it, and names the security to `duk` by
-  identifier. `portable` reads `mart` and `ref` only, never `core`: a person's
-  tunnel role is a member of ``fafnir_app``, which cannot see `core` (fafnir
-  ADR 0008).
+**The ticker is resolved here, the security named to `duk` by its id.** `duk`
+resolves a bare ticker to whoever holds it *now*, which for a reused ticker is
+another issuer's history under the right-looking name (ADR 0020 R5). So the
+adapter reads the ticker's history (`duk th`), decides day by day which
+security it named -- the rule is :meth:`FafnirProvider._segments` -- and asks
+for each stretch by ``sid:<security_id>``, which `duk` reads as exactly that
+security or refuses.
 
-`duk` is run with ``FAFNIR_DSN`` set to the DSN this adapter resolved, so the
-two routes cannot read two different warehouses.
-
-**Exact, end to end.** ``--exact`` (fafnir #177) has `duk` print the
-warehouse's stored ``NUMERIC`` values as decimal text, JSON strings that no
-reader can round, so no price passes through a float anywhere on its way here
-(`CLAUDE.md` invariant 1). Anything that is not such text is refused, not
-read: a `duk` too old to take ``--exact`` stops the run with its usage error.
+**Exact, end to end.** ``--exact`` has `duk` print the warehouse's stored
+``NUMERIC`` values as decimal text, JSON strings that no reader can round, so
+no price, ratio or dividend passes through a float on its way here
+(`CLAUDE.md` invariant 1). Anything that is not such text is refused, not read.
+A `duk` too old for these commands stops the run with its usage error.
 
 **Two capabilities fafnir does not have**, both load-bearing:
 
@@ -36,9 +38,9 @@ read: a `duk` too old to take ``--exact`` stops the run with its usage error.
    **no benchmark capability at all**. Synthesising a total return by adding
    dividends to a price series would produce a defensible-looking wrong number
    of exactly the kind this repository exists to prevent.
-2. **No treasury curve.** fafnir's own docs say ``duk yc`` is live-only "until
-   the economic-series fast-follow adds treasury data to the warehouse". So the
-   risk-free rate comes from ``duk -S live yc``.
+2. **No treasury curve.** fafnir's own docs say ``duk yc`` reads FMP in every
+   mode, the warehouse holding no treasury data. So the risk-free rate comes
+   from ``duk -S live yc``.
 
 **Unadjusted prices only.** ``PORT-GIPS-A01`` requires fair value on the
 measurement date and adjusted prices double-count splits. The `duk` argument
@@ -52,11 +54,10 @@ import os
 import re
 import shutil
 import subprocess
-import tomllib
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
-from pathlib import Path
+from functools import partial
 from typing import Any, Final
 
 from portable_core.decimals import from_text
@@ -76,28 +77,34 @@ from portable_core.providers.base import (
     TradingCalendar,
 )
 
-__all__ = ["SCHEMA", "FafnirProvider", "resolve_dsn"]
+__all__ = ["DUK_COMMANDS", "FafnirProvider", "resolve_dsn"]
 
-#: fafnir's relations, in one place: `mart` and `ref` only (fafnir ADR 0008).
-#: If fafnir migrates, this mapping is what changes -- and nothing else in
-#: `portable` does. Prices are not here: they come through `duk` (ADR 0029).
-SCHEMA: Final[dict[str, str]] = {
-    # core.security, with primary_symbol exposed as `symbol`.
-    "security": "mart.v_security_profile",
-    # A passthrough of core.symbol_xref: the ticker history, not a resolver.
-    "symbol_xref": "mart.v_symbol_lookup",
-    # fafnir migration 0033: a warehouse not yet migrated to it refuses by name.
-    "corporate_action": "mart.v_corporate_action",
-    "trading_calendar": "ref.trading_calendar",
+#: The `duk` subcommands this adapter runs, and what each answers. A `duk` that
+#: lacks one exits 2 with a usage error, which stops the run naming it.
+DUK_COMMANDS: Final[dict[str, str]] = {
+    "th": "ticker history: which security a ticker named, and when",
+    "ph": "price history: raw daily bars, as stored",
+    "ca": "corporate actions: splits and cash dividends",
+    "tc": "trading calendar: venues, spans and sessions",
+    "yc": "the treasury curve, from FMP",
 }
 
 #: The venue whose calendar judges a security whose own venue has none: fafnir's
 #: ``CALENDAR_FALLBACK_EXCHANGE``, so portable finds the gaps fafnir would.
 _CALENDAR_FALLBACK: Final = "NASDAQ"
 
-#: What fafnir supplies through `duk`, and so only when `duk` can be run.
+#: Everything fafnir supplies, all of it through `duk`, so all of it only when
+#: `duk` can be run.
 _THROUGH_DUK: Final = frozenset(
-    {Capability.EOD_PRICES, Capability.DAILY_RANGE, Capability.RISK_FREE_RATE}
+    {
+        Capability.SECURITY_MASTER,
+        Capability.EOD_PRICES,
+        Capability.DAILY_RANGE,
+        Capability.CORPORATE_ACTIONS,
+        Capability.DIVIDENDS,
+        Capability.TRADING_CALENDAR,
+        Capability.RISK_FREE_RATE,
+    }
 )
 
 #: The `duk ph` flag that prints each set of bar fields.
@@ -109,103 +116,63 @@ _FIELD_FLAGS: Final[dict[tuple[str, ...], str]] = {
 #: How ``duk ph --exact`` prints a stored price: ``format(value, "f")`` of a
 #: ``NUMERIC``, so digits and at most one point, never a sign or an exponent.
 _EXACT_PRICE: Final = re.compile(r"[0-9]+(\.[0-9]+)?")
+#: ``duk ca --exact``'s numbers: the same text, a sign allowed (a stored value is
+#: read as stored; whether it is plausible is the corporate-action engine's call).
+_EXACT_DECIMAL: Final = re.compile(r"-?[0-9]+(\.[0-9]+)?")
+_EXACT_INTEGER: Final = re.compile(r"[0-9]+")
 
-#: SQLSTATEs that mean "this role cannot read that relation": undefined_table,
-#: insufficient_privilege. A warehouse without the drafted view, or a query
-#: that strayed into `core`, says one of these.
-_UNREADABLE: Final = frozenset({"42P01", "42501"})
+#: What a successful `duk` prints instead of JSON when there is nothing to show:
+#: "No data found for X", "No corporate actions for X", "No ticker history for X".
+_NOTHING: Final = "No "
 
-#: DSN resolution order, highest first. `portable`'s own variable wins, then
-#: fafnir's, then fafnir's config files -- so somebody who already has `duk`
-#: working needs no new configuration (ADR 0006).
-_DSN_ENV_ORDER: Final[tuple[str, ...]] = ("PORTABLE_FAFNIR_DSN", "FAFNIR_DSN")
-#: fafnir's own config filenames, resolved against the home directory when
-#: needed. NOT at import: ``Path.home()`` raises on Windows with no
-#: ``USERPROFILE``, and doing this at module scope made the module unimportable
-#: there. See :func:`portable_core.config.user_config_path`.
-_DSN_FILENAMES: Final[tuple[str, ...]] = (".dukrc", ".fafnirrc")
-
-
-def _dsn_files() -> tuple[Path, ...]:
-    """fafnir's config files, or an empty tuple when there is no home."""
-    try:
-        home = Path.home()
-    except (RuntimeError, OSError):
-        return ()
-    return tuple(home / name for name in _DSN_FILENAMES)
+#: portable's own override of the warehouse `duk` reads. `duk` otherwise reads
+#: its own configuration (``FAFNIR_DSN``, then ``~/.dukrc``), and that is the
+#: whole of how the warehouse is found: portable reads no fafnir config file.
+_DSN_ENV: Final = "PORTABLE_FAFNIR_DSN"
 
 
 def resolve_dsn(explicit: str | None = None) -> str | None:
-    """Find a fafnir DSN without ever reading a secret from `portable`'s config.
+    """The warehouse portable's `duk` should read, when it is not duk's own.
 
-    Bootstrap §6.3: never read secrets from a config file when an environment
-    variable is available, and never log them. The environment is checked
-    first for exactly that reason, and the value is never echoed anywhere --
-    `portable config show` redacts it.
+    ``explicit`` (``fafnir_dsn`` in portable's config), else
+    ``PORTABLE_FAFNIR_DSN``, else None: `duk` then reads its own configuration.
+    The value is a secret -- it carries a password -- so it travels in the
+    child's environment only, and is never logged or put in an error
+    (bootstrap §6.3).
     """
     if explicit:
         return explicit
-    for name in _DSN_ENV_ORDER:
-        value = os.environ.get(name)
-        if value:
-            return value
-    for path in _dsn_files():
-        if not path.is_file():
-            continue
-        try:
-            with path.open("rb") as handle:
-                loaded = tomllib.load(handle)
-        except (OSError, tomllib.TOMLDecodeError):
-            continue
-        database = loaded.get("database")
-        if isinstance(database, dict) and database.get("dsn"):
-            return str(database["dsn"])
-    return None
+    return os.environ.get(_DSN_ENV) or None
 
 
 class FafnirProvider(MarketDataProvider):
-    """Reads the owner's fafnir warehouse: prices through `duk`, the rest from `mart`.
+    """Reads the owner's fafnir warehouse, every read through `duk` (ADR 0032).
 
-    ``psycopg`` is an optional dependency (``pip install portable[fafnir]``).
-    Its absence makes this provider unavailable with a clear message rather
-    than an ``ImportError`` at CLI start. So does a `duk` that is not on
-    ``PATH``, for the two things that come through it.
+    A `duk` that is not on ``PATH`` (or at ``duk_path``) makes every capability
+    unavailable, and every refusal says that is why.
     """
 
     name = "fafnir"
 
-    def __init__(
-        self,
-        dsn: str | None = None,
-        *,
-        duk_path: str = "duk",
-        connect_timeout: int = 10,
-    ) -> None:
+    def __init__(self, dsn: str | None = None, *, duk_path: str = "duk") -> None:
         self.dsn = resolve_dsn(dsn)
         self.duk_path = duk_path
-        self.connect_timeout = connect_timeout
-        self._connection: Any = None
+        # Read once per provider, per ticker and for the venue list: a run asks
+        # about the same ticker for prices, actions and the master in turn.
+        self._history: dict[str, list[_Period]] = {}
+        self._venues: dict[str, tuple[date, date]] | None = None
 
     @property
     def capabilities(self) -> frozenset[Capability]:
-        """What fafnir can actually supply.
+        """What fafnir can actually supply: everything here, through `duk`.
 
-        Note the two absences, and see the module docstring: **no BENCHMARKS**
-        (no total-return index series exists in the warehouse, and
+        Note the absences, and see the module docstring: **no BENCHMARKS** (no
+        total-return index series exists in the warehouse, and
         ``PORT-GIPS-G01`` says refuse rather than approximate) and no FX.
-        ``EOD_PRICES``, ``DAILY_RANGE`` and ``RISK_FREE_RATE`` are present only
-        when `duk` is on ``PATH``, because that is where they come from
-        (ADR 0029).
         """
-        found = {
-            Capability.SECURITY_MASTER,
-            Capability.CORPORATE_ACTIONS,
-            Capability.DIVIDENDS,
-            Capability.TRADING_CALENDAR,
-        }
         if shutil.which(self.duk_path):
-            found.update(_THROUGH_DUK)
-        return frozenset(found)
+            return _THROUGH_DUK
+        return frozenset()
 
     def unavailable(self, capability: Capability) -> DataUnavailableError | None:
         """A `duk` that is not on PATH is the reason, and the general answer hides it."""
@@ -224,93 +191,13 @@ class FafnirProvider(MarketDataProvider):
             duk_path=self.duk_path,
         )
 
-    # ── connection ───────────────────────────────────────────────────────────
-
-    def _connect(self) -> Any:
-        if self._connection is not None:
-            return self._connection
-
-        try:
-            import psycopg
-        except ImportError as exc:
-            raise DataUnavailableError(
-                "the fafnir provider needs psycopg, which is not installed",
-                code=E_PROVIDER_UNAVAILABLE,
-                remedy=(
-                    "Install it with `pip install 'portable[fafnir]'`, or use "
-                    "`--source file` with a price file, or `--offline` to work from "
-                    "prices already cached in the .port file."
-                ),
-                provider=self.name,
-            ) from exc
-
-        if not self.dsn:
-            raise DataUnavailableError(
-                "no fafnir DSN found",
-                code=E_PROVIDER_UNAVAILABLE,
-                remedy=(
-                    "Set PORTABLE_FAFNIR_DSN or FAFNIR_DSN, or configure "
-                    "[database].dsn in ~/.dukrc. Point it at a role in fafnir_app "
-                    "(fafnir ADR 0008)."
-                ),
-                provider=self.name,
-                checked=[*_DSN_ENV_ORDER, *(str(p) for p in _dsn_files())],
-            )
-
-        try:
-            self._connection = psycopg.connect(self.dsn, connect_timeout=self.connect_timeout)
-        except Exception as exc:  # psycopg raises a family of these
-            # The DSN is NOT included in the message or the context: it carries
-            # a password (bootstrap §6.3).
-            raise DataUnavailableError(
-                f"cannot reach the fafnir warehouse: {type(exc).__name__}",
-                code=E_PROVIDER_UNAVAILABLE,
-                remedy=(
-                    "Check the warehouse is running, the SSH tunnel to it is up, and "
-                    "the DSN is right. `--offline` works from prices already cached "
-                    "in the .port file."
-                ),
-                provider=self.name,
-            ) from exc
-        return self._connection
-
-    def _query(self, sql: str, params: tuple[Any, ...]) -> list[tuple[Any, ...]]:
-        connection = self._connect()
-        try:
-            with connection.cursor() as cursor:
-                cursor.execute(sql, params)
-                return list(cursor.fetchall())
-        except Exception as exc:
-            if getattr(exc, "sqlstate", None) not in _UNREADABLE:
-                raise
-            # psycopg leaves the transaction aborted after an error.
-            connection.rollback()
-            relation = next((name for name in SCHEMA.values() if name in sql), "a relation")
-            raise DataUnavailableError(
-                f"the fafnir warehouse has no {relation} this role can read",
-                code=E_PROVIDER_UNAVAILABLE,
-                remedy=(
-                    "mart.v_corporate_action arrives with fafnir migration 0033 "
-                    "(ADR 0029): run `fafnir db migrate` on the warehouse host after "
-                    "deploying a fafnir that carries it. Until then, supply actions "
-                    "with `--source file`."
-                    if relation == SCHEMA["corporate_action"]
-                    else "portable reads fafnir's mart and ref schemas only. Check the "
-                    "warehouse is at fafnir migration 0020 or later and the role is a "
-                    "member of fafnir_app."
-                ),
-                provider=self.name,
-                relation=relation,
-            ) from exc
+    # ── running duk ──────────────────────────────────────────────────────────
 
     def _run_duk(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
-        """Run `duk` against the warehouse this adapter reads, or say why not.
+        """Run `duk`, against portable's own warehouse override if there is one.
 
-        ``FAFNIR_DSN`` is what `duk` reads first, so setting it to the DSN
-        resolved here keeps a ``PORTABLE_FAFNIR_DSN`` -- which `duk` has never
-        heard of -- from sending the price read to a different warehouse from
-        the identity read. Output is decoded as UTF-8, not the locale's code
-        page (`CLAUDE.md` invariant 6).
+        Output is decoded as UTF-8, not the locale's code page (`CLAUDE.md`
+        invariant 6; the owner works on Windows).
         """
         env = dict(os.environ)
         if self.dsn:
@@ -333,19 +220,96 @@ class FafnirProvider(MarketDataProvider):
                 provider=self.name,
             ) from exc
 
-    # ── security master ──────────────────────────────────────────────────────
+    def _duk_records(
+        self, argv: list[str], *, asking: str, about_one_security: bool = True
+    ) -> list[dict[str, Any]]:
+        """What a `duk ... --json` call printed, as records, or a refusal.
+
+        Exit 2 is a usage error: this `duk` does not take these arguments, and
+        no security will go better. ``Error: ...`` is `duk` failing outright --
+        the warehouse, the role, the DSN. Both stop the run. Anything else is
+        about the security asked for (``No security found for sid:7.``), and is
+        answered as that security's gap when ``about_one_security``.
+        """
+        completed = self._run_duk(argv)
+        said = " ".join((completed.stderr or completed.stdout or "").split())
+        if completed.returncode != 0:
+            if completed.returncode == 2 or said.startswith("Error:") or not about_one_security:
+                raise DataUnavailableError(
+                    f"duk failed asking for {asking}: {said}",
+                    code=E_PROVIDER_UNAVAILABLE,
+                    remedy=(
+                        f"Run the same command by hand to see why: `{' '.join(argv)}`. "
+                        "portable needs a duk with `th`, `ca` and `tc`, whose `ph` and "
+                        "`ca` take --exact and which names a security by `sid:` "
+                        "(`duk --help` lists the commands), reading as a fafnir_app role."
+                    ),
+                    provider=self.name,
+                    returncode=completed.returncode,
+                )
+            raise DataUnavailableError(
+                f"duk could not answer for {asking}: {said}",
+                code=E_PRICE_MISSING,
+                remedy=(
+                    "Check the security in fafnir (`duk th`), or load those dates from a "
+                    "file with `pt price load --file PATH`."
+                ),
+                provider=self.name,
+            )
+        text = completed.stdout.strip()
+        if text.startswith(_NOTHING):
+            return []  # duk's sentence for an empty answer, not a malformed one
+        try:
+            parsed = json.loads(text, parse_float=Decimal)
+        except json.JSONDecodeError as exc:
+            raise self._unreadable(asking, "not JSON") from exc
+        if not isinstance(parsed, list) or not all(isinstance(r, dict) for r in parsed):
+            raise self._unreadable(asking, "not a list of records")
+        return parsed
+
+    def _unreadable(self, asking: str, why: str) -> DataUnavailableError:
+        return DataUnavailableError(
+            f"duk's answer for {asking} cannot be read: {why}",
+            code=E_PROVIDER_UNAVAILABLE,
+            remedy=(
+                "portable reads the JSON `duk th`, `ca --exact`, `tc` and `ph --exact` "
+                "print; check the duk version, and load these dates from a file "
+                "meanwhile."
+            ),
+            provider=self.name,
+        )
+
+    # ── which security a ticker named ────────────────────────────────────────
+
+    def _ticker_history(self, symbol: str) -> list[_Period]:
+        """Every period of *symbol*'s history, from ``duk th``, read once.
+
+        The ticker is passed as ``ticker:<T>`` so `duk` never reads it as
+        anything else. Periods run from ``valid_from`` to ``valid_to``
+        inclusive (``None`` = still open).
+        """
+        key = symbol.strip().upper()
+        if key in self._history:
+            return self._history[key]
+        asking = f"the ticker history of {key}"
+        argv = [self.duk_path, "-S", "db", "th", f"ticker:{key}", "--json"]
+        periods = [
+            _Period.read(record, lambda why: self._unreadable(asking, why))
+            for record in self._duk_records(argv, asking=asking, about_one_security=False)
+        ]
+        self._history[key] = periods
+        return periods
 
     def _segments(self, symbol: str, start: date, end: date) -> list[_Segment]:
         """Which security *symbol* named on each day from *start* to *end*.
 
-        Through ``mart.v_symbol_lookup``, whose periods run from ``valid_from``
-        to ``valid_to`` inclusive (``NULL`` = still open). A ticker can name one
-        security for part of a range and another for the rest -- a rename, a
-        delisting followed by reuse -- so a range is answered segment by
-        segment, never by resolving the ticker once and applying the answer to
-        every date. Where two periods cover the same day, the security whose
-        primary ticker it is wins, then the later period: the same rule a single
-        date has always used.
+        From the ticker's history (``duk th``). A ticker can name one security
+        for part of a range and another for the rest -- a rename, a delisting
+        followed by reuse -- so a range is answered segment by segment, never by
+        resolving the ticker once and applying the answer to every date. Where
+        two periods cover the same day, the security whose primary ticker it is
+        wins, then the later period: the same rule a single date has always
+        used.
 
         There is no fallback to the security's primary symbol. fafnir's own
         resolver uses it to say who holds a ticker *now*; its data dictionary
@@ -364,31 +328,20 @@ class FafnirProvider(MarketDataProvider):
                 remedy="Check the order of the dates.",
                 symbol=symbol,
             )
-        rows = self._query(
-            "SELECT security_id, valid_from, valid_to, is_primary "  # noqa: S608 -- table names come from the SCHEMA constant; all values are bound
-            f"FROM {SCHEMA['symbol_xref']} "
-            "WHERE upper(symbol) = upper(%s) AND valid_from <= %s "
-            "AND (valid_to IS NULL OR valid_to >= %s) ORDER BY valid_from",
-            (symbol, end.isoformat(), start.isoformat()),
-        )
         periods = [
-            (
-                int(security_id),
-                _as_date(valid_from),
-                _as_date(valid_to) if valid_to is not None else None,
-                bool(is_primary),
-            )
-            for security_id, valid_from, valid_to, is_primary in rows
+            p
+            for p in self._ticker_history(symbol)
+            if p.valid_from <= end and (p.valid_to is None or p.valid_to >= start)
         ]
 
         # Between two consecutive boundaries the set of covering periods cannot
         # change, so each stretch is decided by its first day.
         boundaries = {start}
-        for _, valid_from, valid_to, _ in periods:
-            if start < valid_from <= end:
-                boundaries.add(valid_from)
-            if valid_to is not None and start <= valid_to < end:
-                boundaries.add(valid_to + timedelta(days=1))
+        for period in periods:
+            if start < period.valid_from <= end:
+                boundaries.add(period.valid_from)
+            if period.valid_to is not None and start <= period.valid_to < end:
+                boundaries.add(period.valid_to + timedelta(days=1))
         ordered = sorted(boundaries)
 
         segments: list[_Segment] = []
@@ -399,7 +352,11 @@ class FafnirProvider(MarketDataProvider):
                 if position + 1 < len(ordered)
                 else end
             )
-            covering = [p for p in periods if p[1] <= first and (p[2] is None or p[2] >= first)]
+            covering = [
+                p
+                for p in periods
+                if p.valid_from <= first and (p.valid_to is None or p.valid_to >= first)
+            ]
             if not covering:
                 uncovered.append(
                     first.isoformat()
@@ -407,7 +364,7 @@ class FafnirProvider(MarketDataProvider):
                     else f"{first.isoformat()}..{last.isoformat()}"
                 )
                 continue
-            security_id = max(covering, key=lambda p: (p[3], p[1]))[0]
+            security_id = max(covering, key=lambda p: (p.is_primary, p.valid_from)).security_id
             if segments and segments[-1].security_id == security_id:
                 segments[-1] = _Segment(security_id, segments[-1].start, last)
             else:
@@ -429,25 +386,20 @@ class FafnirProvider(MarketDataProvider):
             )
         return segments
 
-    def _security_id(self, symbol: str, on: date) -> int:
-        """The security *symbol* named on *on* -- the one-day case of the above.
+    def lookup_security(self, symbol: str, *, on: date) -> Instrument:
+        """The security *symbol* named on *on*, as fafnir describes it.
 
         The date is required. Defaulting it to today made every lookup a
         question about the present, asked with no date in sight (`CLAUDE.md`
         invariant 6), and answered for a historical instrument with whoever
         holds its ticker now.
         """
-        return self._segments(symbol, on, on)[0].security_id
-
-    def lookup_security(self, symbol: str, *, on: date) -> Instrument:
-        security_id = self._security_id(symbol, on)
-        rows = self._query(
-            "SELECT symbol, company_name, asset_type, exchange_code, currency, "  # noqa: S608 -- table names come from the SCHEMA constant; all values are bound
-            f"country, cusip, isin, is_actively_trading FROM {SCHEMA['security']} "
-            "WHERE security_id = %s",
-            (security_id,),
+        self.require(Capability.SECURITY_MASTER)
+        security_id = self._segments(symbol, on, on)[0].security_id
+        master = next(
+            p.master for p in self._ticker_history(symbol) if p.security_id == security_id
         )
-        primary, name, asset_type, exchange, currency, country, cusip, isin, active = rows[0]
+        asset_type = master.get("asset_type")
         instrument_type = _INSTRUMENT_TYPES.get(str(asset_type))
         if instrument_type is None:
             # fafnir's asset_type also has 'other'. Calling that an equity would
@@ -463,65 +415,28 @@ class FafnirProvider(MarketDataProvider):
             )
         return Instrument(
             instrument_id=0,
-            symbol=str(primary),
+            symbol=str(master.get("primary_symbol") or symbol.upper()),
             instrument_type=instrument_type,
-            name=name,
-            currency=str(currency or "USD"),
-            exchange=exchange,
-            cusip=cusip,
-            isin=isin,
-            country=country,
-            is_active=bool(active),
-            source=f"{self.name}:{SCHEMA['security']}",
+            name=master.get("company_name"),
+            currency=str(master.get("currency") or "USD"),
+            exchange=master.get("exchange_code"),
+            cusip=master.get("cusip"),
+            isin=master.get("isin"),
+            country=master.get("country"),
+            is_active=bool(master.get("is_actively_trading")),
+            source=f"{self.name}:duk th",
             provider_ref=f"security_id={security_id}",
-        )
-
-    def _identifier(self, segment: _Segment, symbol: str) -> str:
-        """How to name *segment*'s security to `duk`: never by ticker.
-
-        `duk` resolves a ticker to whoever holds it *now* -- the open period
-        first -- which for a reused ticker is somebody else's price history
-        under the right-looking name (ADR 0020 R5). An identifier it resolves
-        to one security and reads by that security's id, or refuses. ISIN,
-        then CUSIP, then CIK: a CIK names an issuer, which may list several
-        securities, and `duk` refuses rather than picks when it does.
-
-        Raises:
-            DataUnavailableError: ``PT-E-PRICE-MISSING`` when fafnir holds none
-                of the three for the security.
-        """
-        rows = self._query(
-            f"SELECT isin, cusip, cik FROM {SCHEMA['security']} WHERE security_id = %s",  # noqa: S608 -- table names come from the SCHEMA constant; all values are bound
-            (segment.security_id,),
-        )
-        isin, cusip, cik = rows[0] if rows else (None, None, None)
-        for scheme, value in (("isin", isin), ("cusip", cusip), ("cik", cik)):
-            text = str(value or "").strip()
-            if text:
-                return f"{scheme}:{text}"
-        raise DataUnavailableError(
-            f"fafnir holds no ISIN, CUSIP or CIK for the security {symbol} named "
-            f"{segment.describe()}, and duk can be asked for it only by ticker -- which "
-            "names whoever holds the ticker now",
-            code=E_PRICE_MISSING,
-            remedy=(
-                "Load those dates from a file with `pt price load --file PATH`, or add "
-                "the identifier to the security in fafnir."
-            ),
-            symbol=symbol,
-            provider=self.name,
-            security_id=segment.security_id,
         )
 
     # ── prices ───────────────────────────────────────────────────────────────
 
     def eod_prices(self, symbol: str, start: date, end: date) -> list[Price]:
-        """Unadjusted end-of-day closes, through ``duk -S db ph`` (ADR 0029).
+        """Unadjusted end-of-day closes, through ``duk -S db ph sid:<id>``.
 
         Each day is priced from the security the ticker named **that day**
-        (:meth:`_segments`), and that security is named to `duk` by identifier
-        (:meth:`_identifier`), so a range across a rename or a reused ticker is
-        not filled with another issuer's prices.
+        (:meth:`_segments`), named to `duk` by its ``security_id``, so a range
+        across a rename or a reused ticker is not filled with another issuer's
+        prices.
 
         There is no ``adjusted=True`` parameter and no ``--adj`` in the
         argument list. ``PORT-GIPS-A01`` requires fair value on the measurement
@@ -529,15 +444,14 @@ class FafnirProvider(MarketDataProvider):
         corporate-action transactions -- so the adjusted path is not a
         discouraged option here, it is unwritten.
 
-        ``security_id`` and the identifier `duk` was given travel into
-        ``provider_ref``, so a valuation traces to the warehouse security that
-        produced it (``PORT-GIPS-J03``). The ingestion run does not: `mart`
-        does not carry it.
+        ``security_id`` travels into ``provider_ref``, so a valuation traces to
+        the warehouse security that produced it (``PORT-GIPS-J03``). The
+        ingestion run does not: `duk` reads `mart`, which does not carry it.
         """
         self.require(Capability.EOD_PRICES)
         prices: list[Price] = []
         for segment in self._segments(symbol, start, end):
-            named = self._identifier(segment, symbol)
+            named = segment.named
             for on, bar in self._bars(named, segment, ("close",)):
                 close = bar["close"]
                 prices.append(
@@ -583,7 +497,7 @@ class FafnirProvider(MarketDataProvider):
         self.require(Capability.DAILY_RANGE)
         ranges: list[DailyRange] = []
         for segment in self._segments(symbol, start, end):
-            named = self._identifier(segment, symbol)
+            named = segment.named
             ranges.extend(
                 DailyRange(
                     price_date=on,
@@ -629,9 +543,8 @@ class FafnirProvider(MarketDataProvider):
             return _bar_rows(completed.stdout, named, segment, self.name, fields)
         # Exit 2 is a usage error: this duk does not take these arguments, and
         # no security will go better. "Error: ..." is duk failing outright --
-        # the warehouse, the role. Anything else is about this security: not
-        # found, or an identifier that matches several. Only that is answered
-        # per security; the rest stops the run.
+        # the warehouse, the role. Anything else is about this security. Only
+        # that is answered per security; the rest stops the run.
         if completed.returncode == 2 or said.startswith("Error:"):
             raise DataUnavailableError(
                 f"duk failed asking for {named}: {said}",
@@ -639,8 +552,8 @@ class FafnirProvider(MarketDataProvider):
                 remedy=(
                     "Run the same command by hand to see why: "
                     f"`{' '.join(argv)}`. portable needs a duk whose `ph` takes "
-                    f"{_FIELD_FLAGS[fields]}, --json and --exact (fafnir #177 or "
-                    "later), reading as a fafnir_app role."
+                    f"{_FIELD_FLAGS[fields]}, --json and --exact, and names a security "
+                    "by `sid:`, reading as a fafnir_app role."
                 ),
                 provider=self.name,
                 returncode=completed.returncode,
@@ -649,8 +562,8 @@ class FafnirProvider(MarketDataProvider):
             f"duk could not price {named} ({segment.describe()}): {said}",
             code=E_PRICE_MISSING,
             remedy=(
-                "Check the identifier in fafnir, or load those dates from a file with "
-                "`pt price load --file PATH`."
+                "Check the security in fafnir (`duk th`), or load those dates from a "
+                "file with `pt price load --file PATH`."
             ),
             provider=self.name,
             security_id=segment.security_id,
@@ -664,40 +577,62 @@ class FafnirProvider(MarketDataProvider):
     ) -> list[CorporateActionRecord]:
         """Splits and cash dividends -- which is what fafnir carries.
 
-        Read from ``mart.v_corporate_action``, fafnir migration 0033; a
-        warehouse not yet migrated to it is refused, naming it (ADR 0029).
-        Spinoffs, mergers, symbol changes, and delistings are **not** fafnir
-        corporate actions. `pt ca sync` says so rather than
+        Through ``duk ca sid:<id> --exact``, segment by segment like prices, the
+        ratios and amounts as the warehouse's decimal text. A warehouse without
+        fafnir migration 0033 has no corporate actions to read, and `duk`'s
+        refusal says so. Spinoffs, mergers, symbol changes, and delistings are
+        **not** fafnir corporate actions. `pt ca sync` says so rather than
         implying the list is complete, because a silent omission here is a
         missing basis adjustment.
         """
-        rows: list[tuple[Any, ...]] = []
+        self.require(Capability.CORPORATE_ACTIONS)
+        found: list[CorporateActionRecord] = []
         for segment in self._segments(symbol, start, end):
-            rows.extend(
-                self._query(
-                    "SELECT action_type, ex_date, record_date, payment_date, "  # noqa: S608 -- table names come from the SCHEMA constant; all values are bound
-                    "split_numerator, split_denominator, dividend_amount, corporate_action_id "
-                    f"FROM {SCHEMA['corporate_action']} "
-                    "WHERE security_id = %s AND ex_date BETWEEN %s AND %s ORDER BY ex_date",
-                    (segment.security_id, segment.start.isoformat(), segment.end.isoformat()),
+            asking = f"the corporate actions of {segment.named} ({segment.describe()})"
+            argv = [
+                self.duk_path,
+                "-S",
+                "db",
+                "ca",
+                segment.named,
+                "--start-date",
+                segment.start.isoformat(),
+                "--end-date",
+                segment.end.isoformat(),
+                "--json",
+                "--exact",
+            ]
+            for record in self._duk_records(argv, asking=asking):
+                found.append(
+                    _action(
+                        record,
+                        symbol.upper(),
+                        segment,
+                        lambda why, asking=asking: self._unreadable(asking, why),
+                    )
                 )
-            )
-        return [
-            CorporateActionRecord(
-                symbol=symbol.upper(),
-                action_type="cash_dividend" if str(kind) == "dividend" else str(kind),
-                ex_date=_as_date(ex_date),
-                record_date=_as_date(record_date) if record_date else None,
-                pay_date=_as_date(pay_date) if pay_date else None,
-                split_numerator=from_text(str(num)) if num is not None else None,
-                split_denominator=from_text(str(den)) if den is not None else None,
-                cash_amount=from_text(str(amount)) if amount is not None else None,
-                provider_ref=f"corporate_action_id={action_id}",
-            )
-            for kind, ex_date, record_date, pay_date, num, den, amount, action_id in rows
-        ]
+        return found
 
     # ── trading calendar ─────────────────────────────────────────────────────
+
+    def _calendars(self) -> dict[str, tuple[date, date]]:
+        """Every venue with a calendar and the span it holds, from ``duk tc``."""
+        if self._venues is not None:
+            return self._venues
+        asking = "the trading calendars"
+        argv = [self.duk_path, "-S", "db", "tc", "--json"]
+        venues: dict[str, tuple[date, date]] = {}
+        for record in self._duk_records(argv, asking=asking, about_one_security=False):
+            code = record.get("exchange_code")
+            first, last = record.get("first_date"), record.get("last_date")
+            if not isinstance(code, str) or not code:
+                raise self._unreadable(asking, f"a venue with no code: {record!r}")
+            venues[code.strip().upper()] = (
+                _iso_date(first, lambda why: self._unreadable(asking, why)),
+                _iso_date(last, lambda why: self._unreadable(asking, why)),
+            )
+        self._venues = venues
+        return venues
 
     def trading_calendar(self, exchange: str | None, start: date, end: date) -> TradingCalendar:
         """*exchange*'s sessions from *start* to *end*, or NASDAQ's when it has none.
@@ -706,34 +641,47 @@ class FafnirProvider(MarketDataProvider):
         row, and a closure no rule predicts is a row with ``is_open`` false
         (fafnir migration 0022). So no row means closed inside the calendar's
         span and unknown outside it, and the span -- everything the venue's
-        calendar holds, not just the range asked for -- is read as well. A
-        venue with no calendar rows is judged by NASDAQ's, as fafnir's own
-        ingestion judges it.
+        calendar holds, not just the range asked for -- comes from ``duk tc``'s
+        venue list. A venue with no calendar is judged by NASDAQ's, as fafnir's
+        own ingestion judges it; `duk` itself never falls back.
 
         Raises:
             DataUnavailableError: neither the venue nor NASDAQ has a calendar.
         """
-        table = SCHEMA["trading_calendar"]
+        self.require(Capability.TRADING_CALENDAR)
+        venues = self._calendars()
         asked = exchange.strip().upper() if exchange else None
         for code in dict.fromkeys(c for c in (asked, _CALENDAR_FALLBACK) if c):
-            bounds = self._query(
-                "SELECT min(trade_date) AS first_day, max(trade_date) AS last_day "  # noqa: S608 -- table names come from the SCHEMA constant; all values are bound
-                f"FROM {table} WHERE exchange_code = %s",
-                (code,),
-            )
-            if not bounds or bounds[0][0] is None:
+            span = venues.get(code)
+            if span is None:
                 continue
-            sessions = self._query(
-                f"SELECT trade_date FROM {table} WHERE exchange_code = %s AND is_open "  # noqa: S608 -- table names come from the SCHEMA constant; all values are bound
-                "AND trade_date BETWEEN %s AND %s ORDER BY trade_date",
-                (code, start.isoformat(), end.isoformat()),
-            )
+            asking = f"{code}'s sessions"
+            argv = [
+                self.duk_path,
+                "-S",
+                "db",
+                "tc",
+                code,
+                "--start-date",
+                start.isoformat(),
+                "--end-date",
+                end.isoformat(),
+                "--json",
+            ]
+            refuse = partial(self._unreadable, asking)
+            open_days: set[date] = set()
+            for record in self._duk_records(argv, asking=asking, about_one_security=False):
+                day = _iso_date(record.get("date"), refuse)
+                if not isinstance(record.get("is_open"), bool):
+                    raise refuse(f"{day.isoformat()} has no is_open")
+                if record["is_open"]:
+                    open_days.add(day)
             return TradingCalendar(
                 exchange=code,
-                open_days=frozenset(_as_date(row[0]) for row in sessions),
-                first=_as_date(bounds[0][0]),
-                last=_as_date(bounds[0][1]),
-                source=f"{self.name}:{table}",
+                open_days=frozenset(open_days),
+                first=span[0],
+                last=span[1],
+                source=f"{self.name}:duk tc",
             )
         named = asked or "a security with no venue"
         also = "" if asked == _CALENDAR_FALLBACK else f", nor for {_CALENDAR_FALLBACK}"
@@ -741,8 +689,9 @@ class FafnirProvider(MarketDataProvider):
             f"the fafnir warehouse has no trading calendar for {named}{also}",
             code=E_PROVIDER_UNAVAILABLE,
             remedy=(
-                f"{table} is filled by `fafnir db seed` on the warehouse host. Without "
-                "a calendar, a missing price cannot be told from a holiday."
+                "`duk tc` lists the venues the warehouse has a calendar for; they are "
+                "filled by `fafnir db seed` on the warehouse host. Without a calendar, "
+                "a missing price cannot be told from a holiday."
             ),
             provider=self.name,
             exchange=asked,
@@ -753,10 +702,9 @@ class FafnirProvider(MarketDataProvider):
     def risk_free_rate(self, on: date, *, tenor: str = "3M") -> RiskFreeRate:
         """The treasury par yield for *tenor*, observed on *on*, through `duk yc`.
 
-        fafnir's own documentation says ``yc`` is live-only "until the
-        economic-series fast-follow adds treasury data to the warehouse", so
-        this, unlike prices, reads FMP through `duk` rather than the warehouse
-        (ADR 0006).
+        fafnir's own documentation says ``yc`` reads FMP in every mode, the
+        warehouse holding no treasury data, so this, unlike prices, reads FMP
+        through `duk` rather than the warehouse (ADR 0006).
 
         The curve is asked for over a window ending on *on*, so `duk` returns
         one dated row per observation, and the row dated *on* is the answer.
@@ -830,11 +778,6 @@ class FafnirProvider(MarketDataProvider):
             source=" ".join(argv),
         )
 
-    def close(self) -> None:
-        if self._connection is not None:
-            self._connection.close()
-            self._connection = None
-
 
 @dataclass(frozen=True, slots=True)
 class _Segment:
@@ -844,10 +787,119 @@ class _Segment:
     start: date
     end: date
 
+    @property
+    def named(self) -> str:
+        """How the security is named to `duk`: by its id, never by ticker."""
+        return f"sid:{self.security_id}"
+
     def describe(self) -> str:
         if self.start == self.end:
             return f"on {self.start.isoformat()}"
         return f"from {self.start.isoformat()} to {self.end.isoformat()}"
+
+
+#: The master-record fields of a `duk th` row, kept with its period.
+_MASTER_FIELDS: Final = (
+    "primary_symbol",
+    "company_name",
+    "asset_type",
+    "exchange_code",
+    "currency",
+    "country",
+    "cik",
+    "isin",
+    "cusip",
+    "is_actively_trading",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _Period:
+    """One period of a ticker's history, and the security it named."""
+
+    security_id: int
+    valid_from: date
+    valid_to: date | None
+    is_primary: bool
+    master: dict[str, Any]
+
+    @classmethod
+    def read(cls, record: dict[str, Any], refuse: Any) -> _Period:
+        """A `duk th --json` record, checked field by field or refused whole."""
+        missing = [
+            k
+            for k in ("security_id", "valid_from", "valid_to", "is_primary")
+            if k not in record
+        ]
+        missing += [k for k in _MASTER_FIELDS if k not in record]
+        if missing:
+            raise refuse(f"a period with no {', '.join(missing)}: {record!r}")
+        security_id = record["security_id"]
+        if (
+            isinstance(security_id, bool)
+            or not isinstance(security_id, int)
+            or security_id <= 0
+        ):
+            raise refuse(f"security_id {security_id!r} is not a security's id")
+        if not isinstance(record["is_primary"], bool):
+            raise refuse(f"is_primary {record['is_primary']!r} is not true or false")
+        valid_to = record["valid_to"]
+        return cls(
+            security_id=security_id,
+            valid_from=_iso_date(record["valid_from"], refuse),
+            valid_to=None if valid_to is None else _iso_date(valid_to, refuse),
+            is_primary=record["is_primary"],
+            master={k: record[k] for k in _MASTER_FIELDS},
+        )
+
+
+def _iso_date(value: Any, refuse: Any) -> date:
+    """``YYYY-MM-DD`` text as a date, or a refusal: `duk` prints no other form."""
+    try:
+        parsed = date.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        parsed = None
+    if parsed is None or parsed.isoformat() != value:
+        raise refuse(f"unexpected date {value!r}")
+    return parsed
+
+
+def _exact(
+    value: Any, field: str, refuse: Any, *, pattern: re.Pattern[str] = _EXACT_DECIMAL
+) -> Decimal | None:
+    """An ``--exact`` number: None, or decimal text read straight into a Decimal."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not pattern.fullmatch(value):
+        raise refuse(f"{field} {value!r} is not exact decimal text")
+    return from_text(value)
+
+
+def _action(
+    record: dict[str, Any], symbol: str, segment: _Segment, refuse: Any
+) -> CorporateActionRecord:
+    """A `duk ca --json --exact` record as a corporate action, or a refusal."""
+    kind = record.get("action_type")
+    if not isinstance(kind, str) or not kind:
+        raise refuse(f"an action with no type: {record!r}")
+    ex_date = _iso_date(record.get("ex_date"), refuse)
+    if not segment.start <= ex_date <= segment.end:
+        raise refuse(f"{ex_date.isoformat()} is outside the dates asked for")
+    action_id = _exact(
+        record.get("corporate_action_id"), "corporate_action_id", refuse, pattern=_EXACT_INTEGER
+    )
+    record_date, pay_date = record.get("record_date"), record.get("payment_date")
+    return CorporateActionRecord(
+        symbol=symbol,
+        action_type="cash_dividend" if kind == "dividend" else kind,
+        ex_date=ex_date,
+        record_date=_iso_date(record_date, refuse) if record_date is not None else None,
+        pay_date=_iso_date(pay_date, refuse) if pay_date is not None else None,
+        split_numerator=_exact(record.get("split_numerator"), "split_numerator", refuse),
+        split_denominator=_exact(record.get("split_denominator"), "split_denominator", refuse),
+        cash_amount=_exact(record.get("dividend_amount"), "dividend_amount", refuse),
+        provider_ref=f"corporate_action_id={action_id}",
+    )
 
 
 #: fafnir's `asset_type` values, mapped to `portable`'s instrument types.
@@ -857,20 +909,6 @@ _INSTRUMENT_TYPES: Final[dict[str, InstrumentType]] = {
     "etf": InstrumentType.ETF,
     "fund": InstrumentType.MUTUAL_FUND,
 }
-
-
-def _as_date(value: Any) -> date:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    return date.fromisoformat(str(value)[:10])
-
-
-def _as_datetime(value: Any) -> datetime:
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=UTC)
-    return datetime.combine(_as_date(value), datetime.min.time(), tzinfo=UTC)
 
 
 #: How far back the curve is requested, so that `duk` returns dated rows. Two
