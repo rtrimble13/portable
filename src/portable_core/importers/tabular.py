@@ -580,6 +580,7 @@ class TabularAdapter:
                 None if "settlement_date" in guarded else row.get("settlement_date")
             ),
             note=row.get("note"),
+            account_column=self.spec.document(TRANSACTIONS).columns.get("account"),
         )
 
     def _account(self, row: dict[str, Any], index: int) -> str:

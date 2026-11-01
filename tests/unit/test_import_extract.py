@@ -9,6 +9,7 @@ its market value belongs is the conflation ADR 0015 exists to prevent.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from datetime import date
 from decimal import Decimal
@@ -500,6 +501,60 @@ def test_a_row_the_ledger_already_carries_is_a_skip_naming_the_reference() -> No
     assert skipped.external_ref and skipped.external_ref.startswith("row:")
     assert skipped.external_ref in (skipped.note or "")
     assert extract.appended == 0
+
+
+def _spelled(cell: str) -> TransactionRecord:
+    """One dividend whose account cell reads ``cell`` and resolves to Main."""
+    day = date(2025, 6, 1)
+    return TransactionRecord(
+        trade_date=day,
+        account="Main",
+        activity="Dividend",
+        identifier="AAPL",
+        quantity=None,
+        amount=Decimal("10.00"),
+        source_row={
+            "Date": day.isoformat(),
+            "Account": cell,
+            "Activity": "Dividend",
+            "Amount": "10.00",
+        },
+        account_column="Account",
+    )
+
+
+def _update(record: TransactionRecord, recorded: frozenset[str] = frozenset()) -> ExtractResult:
+    return build_incremental_batch(
+        broker="acme",
+        mapped=[_mapped(record, TransactionType.DIVIDEND)],
+        inception={"Main": CUTOVER},
+        in_ledger=lambda _account, ref: ref in recorded,
+    )
+
+
+def test_an_account_re_cased_between_exports_is_still_the_same_row() -> None:
+    """ADR 0033. The custodian wrote `Main` in the export the ledger came from
+    and `MAIN` in the next one; `[account_aliases]` resolves both to Main.
+    Hashed verbatim, the re-cased cell gave every overlapping row a new
+    reference and the whole overlap was appended a second time -- nothing at
+    commit refuses a reference it has never seen."""
+    first = _update(_spelled("Main")).batch.rows[0].external_ref
+    assert first is not None
+    again = _update(_spelled("MAIN"), frozenset({first})).batch.rows[0]
+    assert again.action == "skip"
+    assert again.rule == "ledger:already-recorded"
+    assert again.external_ref == first
+    assert again.source_row["Account"] == "MAIN"
+
+
+def test_a_row_already_spelled_as_the_portfolio_keeps_the_reference_it_had() -> None:
+    """ADR 0033 changes no reference already committed from a cell that read
+    as the portfolio's name: the material is ADR 0012's, byte for byte."""
+    material = (
+        "Main|2025-06-01|Dividend|Account=Main|Activity=Dividend|Amount=10.00|Date=2025-06-01|0"
+    )
+    expected = "row:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+    assert _update(_spelled("Main")).batch.rows[0].external_ref == expected
 
 
 def test_a_transfer_carries_its_counter_account_into_the_batch() -> None:

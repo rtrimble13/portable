@@ -288,7 +288,14 @@ pt --port p.port -S fafnir instrument sync
   and the provider resolves that ticker as of that day.
 - **`instrument sync` compares; it writes nothing.** Each instrument is looked up
   as of the last day it was held, and every field the provider states
-  differently is listed for a person to resolve.
+  differently is listed for a person to resolve. A symbol the master recorded
+  in error -- the provider names another share class, or another fund -- is
+  settled against the custodian's statements and corrected with `pt instrument
+  correct-symbol` *before* the history is priced, because a price found under
+  the wrong ticker is another security's and the correction refuses once any
+  is stored ([ADR 0034](adr/0034-a-wrong-symbol-is-corrected-not-renamed.md)).
+  A rename the master never recorded is a correction followed by `pt ca
+  symbol-change`.
 
 What fails, and how: a symbol the provider has no data for is a warning, and the
 run goes on. A provider that cannot be reached -- or that cannot do what was

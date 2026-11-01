@@ -101,6 +101,8 @@ where `ordinal` is the row's index among otherwise-identical rows in the same
 export, so that two identical dividends on one day do not collide. The
 components are the source row's raw text, not the mapped values, so a change to
 the activity map does not change the identity of a row already committed.
+The account cell is the one exception: it is hashed as the portfolio spells the
+account, after `[account_aliases]` ([ADR 0033](0033-identity-spells-the-account-as-the-portfolio-does.md)).
 
 `UNIQUE (account_id, external_ref)` enforces this at the schema — added in
 migration 0002, scoped per account so that one corporate action recorded across

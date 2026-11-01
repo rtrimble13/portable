@@ -125,6 +125,12 @@ class TransactionRecord:
     #: recognition -- `portable` is trade-date accounting (invariant 7).
     settlement_date: date | None = None
     note: str | None = None
+    #: The ``source_row`` key the account was read from. A synthesized
+    #: reference spells that cell as ``account`` does -- the portfolio's own
+    #: name, after ``[account_aliases]`` -- so a custodian re-casing an account
+    #: between exports does not re-identify every row it already sent
+    #: (ADR 0033). ``None`` where the record did not come from a column.
+    account_column: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

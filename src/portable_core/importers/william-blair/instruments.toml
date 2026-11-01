@@ -2,6 +2,8 @@
 # security, and the symbol it means. Resolved from the holdings export where
 # the security is still held, from the custodian's own notes where they name
 # a ticker, and otherwise proposed and marked `note = "symbol to verify"`.
+# A proposal is settled against the custodian's monthly statements before the
+# history is priced; the 2026-11-01 check corrected four (ADR 0034).
 # A name that is not here stops the import (docs/broker-import.md §6).
 
 [[instrument]]
@@ -38,8 +40,8 @@ symbol = "AME"
 
 [[instrument]]
 name = "AMG RIVER ROAD SMALL MID CAP VALUE I"
-symbol = "ARSMX"
-note = "symbol to verify"
+symbol = "ARIMX"
+note = "Class I. Corrected 2026-11-01: the custodian's statements name ARIMX; ARSMX is Class N (ADR 0034)"
 
 [[instrument]]
 name = "AON PLC"
@@ -187,8 +189,8 @@ symbol = "FAST"
 
 [[instrument]]
 name = "FIDELITY ADVISOR MID CAP VALUE Z"
-symbol = "FZAMX"
-note = "Class Z, converted from FSMVX in 2022; symbol to verify"
+symbol = "FIDFX"
+note = "Class Z, converted from FSMVX in 2022. Corrected 2026-11-01: the custodian's statements name FIDFX; FZAMX is another fund (ADR 0034)"
 
 [[instrument]]
 name = "FIDELITY DIVERSIFIED INTERNATIONAL"
@@ -493,12 +495,12 @@ symbol = "SYK"
 [[instrument]]
 name = "T. ROWE PRICE SPECTRUM MOD GR ALLC"
 symbol = "TRSGX"
-note = "symbol to verify"
+note = "verified 2026-11-01 against the custodian's monthly statements"
 
 [[instrument]]
 name = "T. ROWE PRICE SPECTRUM MOD GR ALLC I"
-symbol = "TRPUX"
-note = "Class I, converted from TRSGX in 2022; symbol to verify"
+symbol = "TGIPX"
+note = "Class I, converted from TRSGX in 2022. Corrected 2026-11-01: the custodian's statements name TGIPX (ADR 0034)"
 
 [[instrument]]
 name = "TAIWAN SEMICONDUCTOR MANUFACTURING CO LTD"
@@ -575,7 +577,7 @@ symbol = "WAB"
 [[instrument]]
 name = "WILLIAM BLAIR LARGE CAP GROWTH I"
 symbol = "LCGFX"
-note = "Class I of the fund now held as LCGJX; symbol to verify"
+note = "Class I of the fund now held as LCGJX; verified 2026-11-01 against the custodian's monthly statements"
 
 [[instrument]]
 name = "WILLIAM BLAIR LARGE CAP GROWTH R6"
@@ -583,13 +585,13 @@ symbol = "LCGJX"
 
 [[instrument]]
 name = "WILLIAM BLAIR SMALL MID CAP CORE R6"
-symbol = "WSMRX"
-note = "symbol to verify"
+symbol = "WBCRX"
+note = "Corrected 2026-11-01: the custodian's statements name WBCRX (ADR 0034)"
 
 [[instrument]]
 name = "WILLIAM BLAIR SML MD CP CR CL I MF"
 symbol = "WSMDX"
-note = "Class I, converted to R6 in 2023; symbol to verify"
+note = "Class I, converted to R6 in 2023; verified 2026-11-01 against the custodian's monthly statements. fafnir names WSMDX the Small-Mid Cap Growth Fund: its prices are checked against the statements before use"
 
 [[instrument]]
 name = "WORKDAY INC"

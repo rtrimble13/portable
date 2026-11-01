@@ -13,7 +13,7 @@ from portable_core.errors import DataUnavailableError, ValidationError
 from portable_core.errors.kinds import E_PRICE_MISSING
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.providers import as_security_master
-from portable_core.services import price_history, restatement
+from portable_core.services import price_history, restatement, security_master
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, resolve_date
 
@@ -300,6 +300,70 @@ def market_price(
                 "restated": bool(recorded.restated),
             },
             warnings=recorded.restated,
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
+@app.command(name="correct-symbol")
+def correct_symbol(
+    symbol: Annotated[str, typer.Argument(help="The symbol recorded in error.")],
+    to: Annotated[str, typer.Option("--to", help="The symbol the instrument carried.")],
+    reason: Annotated[
+        str,
+        typer.Option(
+            "--reason",
+            help="What shows it -- e.g. the custodian's statements naming the other ticker.",
+        ),
+    ],
+) -> None:
+    """Correct a symbol recorded in error, over every period that carried it.
+
+    ADR 0034. For a security the master named wrongly -- a crosswalk that
+    mapped a fund's description to another share class's ticker -- not for a
+    rename. A rename happened to the security on a date, and `pt ca
+    symbol-change` records it as such; a correction says the old symbol was
+    never the security's at all, so no period is opened or closed and no
+    ledger row is written. The change is logged with its reason instead.
+
+    Refused when another instrument carries the new symbol over an
+    overlapping period, and when the instrument has any stored price: each
+    was found under the wrong symbol and may be another security's. Correct,
+    then price. Ledger notes written before keep the text they were written
+    with.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        old = symbol.strip().upper()
+        instrument = repos.instruments.resolve(old, on=ctx.as_of)
+
+        with ctx.write():
+            corrected = security_master.correct_symbol(
+                repos, instrument, to, old_symbol=old, reason=reason
+            )
+
+        return CommandResult(
+            command="instrument correct-symbol",
+            data={
+                "instrument_id": corrected.instrument_id,
+                "from": corrected.old,
+                "to": corrected.new,
+                "periods": [
+                    {
+                        "valid_from": valid_from.isoformat(),
+                        "valid_to": valid_to.isoformat() if valid_to else None,
+                    }
+                    for valid_from, valid_to in corrected.periods
+                ],
+                "reason": reason.strip(),
+            },
+            warnings=(
+                f"Re-run `pt instrument sync {corrected.new}` to compare the corrected "
+                "instrument with the provider.",
+            ),
             portfolio=ctx.portfolio_name(),
         )
 

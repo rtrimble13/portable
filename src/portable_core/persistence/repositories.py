@@ -528,6 +528,43 @@ class InstrumentRepository(_Repository):
             (new_symbol, _now(), instrument_id),
         )
 
+    def periods_named(self, symbol: str) -> list[tuple[int, date, date | None]]:
+        """``(instrument_id, valid_from, valid_to)`` for every period that carried *symbol*.
+
+        ``valid_to`` is inclusive and ``None`` while the symbol is current.
+        """
+        return [
+            (
+                int(r["instrument_id"]),
+                date.fromisoformat(r["valid_from"]),
+                date.fromisoformat(r["valid_to"]) if r["valid_to"] else None,
+            )
+            for r in self.con.execute(
+                "SELECT instrument_id, valid_from, valid_to FROM instrument_symbol_history "
+                "WHERE symbol = ? ORDER BY instrument_id, valid_from",
+                (symbol,),
+            )
+        ]
+
+    def correct_symbol(self, instrument_id: int, old_symbol: str, new_symbol: str) -> None:
+        """Replace a symbol recorded in error, in every period that carried it.
+
+        ADR 0034. Not :meth:`rename`: no period is opened or closed, because
+        nothing happened to the security -- the master named it wrongly, and
+        the periods it named it wrongly over now name it rightly. The
+        instrument row follows where the corrected symbol is the current one.
+        """
+        self.con.execute(
+            "UPDATE instrument_symbol_history SET symbol = ? "
+            "WHERE instrument_id = ? AND symbol = ?",
+            (new_symbol, instrument_id, old_symbol),
+        )
+        self.con.execute(
+            "UPDATE instrument SET symbol = ?, updated_at = ? "
+            "WHERE instrument_id = ? AND symbol = ?",
+            (new_symbol, _now(), instrument_id, old_symbol),
+        )
+
 
 # ── prices ───────────────────────────────────────────────────────────────────
 

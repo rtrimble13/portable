@@ -392,6 +392,8 @@ test that fails without your change.
   | 0030 | The default benchmark is cash at 0%, labelled as such |
   | 0031 | Price history is accepted against the custodian's stated prices, to the cent |
   | 0032 | fafnir through `duk` alone: identity, actions and calendar join prices |
+  | 0033 | A row's identity spells its account as the portfolio does |
+  | 0034 | A wrong symbol is corrected, not renamed |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

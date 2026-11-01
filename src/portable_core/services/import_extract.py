@@ -686,18 +686,30 @@ def _history_ref(record: TransactionRecord, ordinals: _Ordinals) -> str:
     map must not change the identity of a row already committed, or a re-import
     after a mapping fix would duplicate everything it touched.
 
+    One cell is the exception: the account's, which enters spelled as the
+    portfolio spells it (ADR 0033). `[account_aliases]` exists because a
+    custodian writes one account as `Brokerage` in one export and `BROKERAGE`
+    in the next; hashed verbatim, that re-casing gives every row it already
+    sent a new reference, the overlap is no longer recognised, and the whole
+    window is appended a second time with nothing to refuse it. Where the cell
+    already reads as the portfolio's name the reference is the one it always
+    had; ADR 0033 says what that does and does not cover.
+
     Where the custodian supplies its own identifier (`TRANSACTION_ID`), that is
     used instead — it is a better key than any hash, and it survives the
     custodian re-exporting the same period in a different row order.
     """
     if record.external_id:
         return record.external_id
+    cells = dict(record.source_row)
+    if record.account_column is not None and record.account_column in cells:
+        cells[record.account_column] = record.account
     material = "|".join(
         [
             record.account,
             record.trade_date.isoformat(),
             record.activity,
-            *(f"{k}={v}" for k, v in sorted(record.source_row.items())),
+            *(f"{k}={v}" for k, v in sorted(cells.items())),
         ]
     )
     material = f"{material}|{ordinals.next(material)}"

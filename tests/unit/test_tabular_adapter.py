@@ -680,6 +680,26 @@ def test_the_source_row_is_kept_verbatim(tmp_path: Path) -> None:
     assert report.transactions[1].source_row["Activity"] == "Bought"
 
 
+def test_a_record_names_the_column_its_account_came_from(tmp_path: Path) -> None:
+    """ADR 0033: identity spells that one cell as the portfolio does, so the
+    record has to say which cell it is. The source row itself stays
+    verbatim -- the reviewer sees what the custodian wrote."""
+    upper = TRANSACTIONS.replace(",Main,", ",MAIN,")
+    source = SOURCE.replace(
+        "[cash_equivalents]", '[account_aliases]\n"MAIN" = "Main"\n\n[cash_equivalents]'
+    )
+    report = _read(
+        tmp_path,
+        source=source,
+        holdings=HOLDINGS,
+        transactions=upper,
+    )
+    record = report.transactions[1]
+    assert record.account == "Main"
+    assert record.account_column == "Account"
+    assert record.source_row["Account"] == "MAIN"
+
+
 def test_a_missing_mapping_file_is_a_portable_error(tmp_path: Path) -> None:
     root = _adapter(tmp_path)
     (root / "activity_map.toml").unlink()

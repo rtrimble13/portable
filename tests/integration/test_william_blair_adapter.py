@@ -100,9 +100,9 @@ def test_the_pipeline_runs_on_the_fixture(run_pt: CliRunner, tmp_path: Path) -> 
         "P",
         "LCGJX",
         "FDRXX",
-        "FZAMX",
+        "FIDFX",
         "WSMDX",
-        "WSMRX",
+        "WBCRX",
         "ASML",
         "003CVR016",
     ):
@@ -152,7 +152,7 @@ def test_the_history_commits_in_segments_and_the_gains_tie(
     the action with its typed command, extract `--incremental`, commit, then
     tie every realized gain to the custodian's own lot report.
 
-    The FZAMX shares arrive by a share-class conversion the batch cannot
+    The FIDFX shares arrive by a share-class conversion the batch cannot
     carry. Committed in one go, the sale's designated lot would not exist and
     the commit would refuse -- which is the right answer, and why the loop
     runs in segments."""
@@ -168,8 +168,8 @@ def test_the_history_commits_in_segments_and_the_gains_tie(
             *pt, "account", "add", "--name", account, "--type", kind,
             "--opened", "2022-05-18", "--allows-fractional",
         ).ok()  # fmt: skip
-    for symbol in ("PIMIX", "GSIYX", "GOOGL", "P", "LCGJX", "FDRXX", "FZAMX", "WSMDX",
-                   "WSMRX", "ASML", "003CVR016"):  # fmt: skip
+    for symbol in ("PIMIX", "GSIYX", "GOOGL", "P", "LCGJX", "FDRXX", "FIDFX", "WSMDX",
+                   "WBCRX", "ASML", "003CVR016"):  # fmt: skip
         run_pt(*pt, "instrument", "add", symbol, "--type", "equity").ok()
 
     first = tmp_path / "segment-1.json"
@@ -181,7 +181,7 @@ def test_the_history_commits_in_segments_and_the_gains_tie(
 
     # The conversion in, recorded on its day with the typed command.
     run_pt(
-        *pt, "--as-of", "2022-10-17", "transfer", "in", "FZAMX", "-a", "IRA",
+        *pt, "--as-of", "2022-10-17", "transfer", "in", "FIDFX", "-a", "IRA",
         "--qty", "60", "--value", "600", "--basis", "600",
         "--basis-source", "custodian_asserted", "--acquired", "2022-10-17",
         "--note", "share-class conversion in",
@@ -201,4 +201,4 @@ def test_the_history_commits_in_segments_and_the_gains_tie(
     assert tie["tied"] == 1
     assert tie["break"] == 0
     (line,) = tie["lines"]
-    assert (line["identifier"], line["status"], line["difference"]) == ("FZAMX", "tied", "0.00")
+    assert (line["identifier"], line["status"], line["difference"]) == ("FIDFX", "tied", "0.00")

@@ -290,7 +290,11 @@ same export. Components are the *source* text, not mapped values, so revising th
 activity map never changes the identity of a row already committed; and the
 ordinal counts identical rows, not batch positions, so the same source row gets
 the same reference in the initial extract and in every incremental one after it
-— which is what lets an overlap be recognised as one.
+— which is what lets an overlap be recognised as one. One cell is hashed as
+mapped rather than as written: the account's, spelled as the portfolio spells
+it after `[account_aliases]`, so a custodian that re-cases an account between
+exports does not re-identify every row it already sent
+([ADR 0033](adr/0033-identity-spells-the-account-as-the-portfolio-does.md)).
 `UNIQUE (account_id, external_ref)` enforces it; a collision is a refusal, never
 a silent skip.
 
@@ -322,7 +326,11 @@ is absent. Declared per document (`crosswalk = "instruments.toml"` under
 `[documents.transactions]`); every identifier in that document then resolves
 through it and a name it does not carry is a refusal naming the row. No fuzzy
 matching: a name resolved to a *plausible* wrong symbol — one share class for
-another — reconciles at the quantity level and is wrong at every other. The
+another — reconciles at the quantity level and is wrong at every other. A
+proposed symbol is therefore settled against the custodian's own statements
+before the history is priced, and one found wrong is corrected with `pt
+instrument correct-symbol`, never renamed
+([ADR 0034](adr/0034-a-wrong-symbol-is-corrected-not-renamed.md)). The
 cash-equivalent set is checked against the *resolved* identifier, so a sweep
 vehicle is declared once, by symbol, whatever the custodian calls it.
 

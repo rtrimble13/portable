@@ -191,8 +191,16 @@ newer fafnir.
 
 1. **Instruments.** `pt -S fafnir instrument sync` compares every instrument
    ever held with fafnir, as of the last day it was held. Go through each
-   difference with the owner, and settle the §3 "symbol to verify" list here.
-   An instrument fafnir does not know goes on the file list (step 3).
+   difference with the owner, and settle the §3 "symbol to verify" list here
+   against the custodian's statements, not against fafnir: reconcile each
+   month-end statement and look for one position under two names, the book's
+   and the statement's. A wrong symbol is corrected with `pt instrument
+   correct-symbol OLD --to NEW --reason "..."` and in `instruments.toml`,
+   **before anything is priced**: a price found under the wrong ticker is
+   another security's, and the correction refuses once one is stored. A
+   rename the master never recorded is a correction to the old ticker, then
+   `pt ca symbol-change` on the rename date (ADR 0034). An instrument fafnir
+   does not know goes on the file list (step 3).
 2. **Load.** Run `pt -S fafnir price load --from <cutover> --to <as-of>
    --dry-run`, read every warning, then run it without `--dry-run`. It is
    idempotent; re-run it after any fix. What each warning means:

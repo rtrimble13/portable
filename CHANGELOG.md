@@ -16,6 +16,19 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`pt instrument correct-symbol`: a symbol recorded in error is corrected,
+  not renamed** (ADR 0034). Every period of the instrument's symbol history
+  that carried the wrong ticker carries the right one, with no period opened
+  or closed and no ledger row written, because nothing happened to the
+  security. The change is logged with its required reason. Refused when
+  another instrument carries the new ticker over the same days, and when the
+  instrument has any stored price, since each was found under the wrong
+  ticker. A rename the master never recorded is a correction followed by
+  `pt ca symbol-change`. The William Blair crosswalk's four wrong symbols
+  were corrected against the custodian's statements (ARSMX→ARIMX,
+  FZAMX→FIDFX, TRPUX→TGIPX, WSMRX→WBCRX), and the three the statements
+  confirmed are marked verified.
+
 - **`pt trade check`: each recorded fill against the day's trading** (ADR
   0020 R10, the trade-price check). A stock's fill is checked within the
   day's raw low and high, read through `duk ph --hlc` (a new `daily_range`
@@ -445,6 +458,14 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **An account re-cased between exports re-identified every overlapping row**
+  (ADR 0033). A synthesized `external_ref` hashed the account cell verbatim,
+  so an export that wrote `BROKERAGE` where the last one wrote `Brokerage` --
+  the case `[account_aliases]` exists for -- gave every row already in the
+  ledger a new reference, and `--incremental` appended the whole overlap a
+  second time with nothing at commit to refuse it. The account cell now enters
+  the identity spelled as the portfolio spells it. A row whose cell already
+  read as the portfolio's name keeps the reference it had.
 - **A JSON price, action or benchmark file lost digits past a float's
   precision.** `FileProvider` parsed JSON numbers as floats and then took
   their text: `150.12345678901234567` was stored as `150.12345678901235`.
