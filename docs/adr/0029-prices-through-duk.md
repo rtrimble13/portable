@@ -1,6 +1,6 @@
 # ADR 0029 — Prices through `duk ph`; identity and corporate actions through `mart`
 
-- **Status:** Accepted — implemented in `providers/fafnir.py`. The fafnir view it reads for corporate actions is fafnir migration 0033 ([rtrimble13/fafnir#175](https://github.com/rtrimble13/fafnir/pull/175)), which a warehouse has once it is migrated. Amended 2026-10-21: prices are read through `duk ph --exact` ([rtrimble13/fafnir#177](https://github.com/rtrimble13/fafnir/pull/177)), which retires §2's exception to invariant 1
+- **Status:** Accepted — implemented in `providers/fafnir.py`. The fafnir view it reads for corporate actions is fafnir migration 0033 ([rtrimble13/fafnir#175](https://github.com/rtrimble13/fafnir/pull/175)), which a warehouse has once it is migrated. Amended 2026-10-21: prices are read through `duk ph --exact` ([rtrimble13/fafnir#177](https://github.com/rtrimble13/fafnir/pull/177)), which retires §2's exception to invariant 1. Superseded in part 2026-10-31 by [ADR 0032](0032-fafnir-through-duk-alone.md): identity, corporate actions and the calendar come through `duk` too (§4), each security is named by `sid:` (§3), and `duk` finds the warehouse itself (§5). §1, §2 and §6 stand
 - **Date:** 2026-10-20
 - **Milestone:** v0.2
 - **Governs:** `CLAUDE.md` invariants 1, 6, 9; `PORT-GIPS-A01`, `PORT-GIPS-J03`

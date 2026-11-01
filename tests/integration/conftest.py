@@ -142,3 +142,42 @@ def portfolio(run_pt: CliRunner, tmp_path: Path) -> Path:
         "2024-01-02",
     )
     return path
+
+
+#: What `duk` prints when the warehouse it was pointed at does not answer: the
+#: shape of its own refusal, an ``Error:`` line on stderr and exit 1.
+DUK_UNREACHABLE = (
+    "Error: Failed to read ticker history: connection is bad: connection to server "
+    'at "127.0.0.1", port 1 failed: Connection refused'
+)
+
+
+@pytest.fixture
+def unreachable_duk(tmp_path: Path) -> tuple[str, Path]:
+    """A `duk` on disk that answers every call as duk does when the warehouse is down.
+
+    Returns ``(path, seen)``: name it with ``PORTABLE_DUK_PATH``; ``seen`` is a
+    file each call appends the ``FAFNIR_DSN`` it was given to, so a test can
+    check which warehouse portable sent it to. An executable script on POSIX, a
+    ``.cmd`` shim on Windows -- CI runs both, and ``shutil.which`` must find it.
+    """
+    folder = tmp_path / "fake-duk"
+    folder.mkdir()
+    seen = folder / "seen-dsn.txt"
+    body = (
+        "import os, sys\n"
+        f"with open({str(seen)!r}, 'a', encoding='utf-8') as fh:\n"
+        "    fh.write((os.environ.get('FAFNIR_DSN') or '') + '\\n')\n"
+        f"sys.stderr.write({DUK_UNREACHABLE!r} + '\\n')\n"
+        "sys.exit(1)\n"
+    )
+    script = folder / "duk_impl.py"
+    script.write_text(body, encoding="utf-8")
+    if os.name == "nt":
+        shim = folder / "duk.cmd"
+        shim.write_text(f'@"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
+    else:
+        shim = folder / "duk"
+        shim.write_text(f"#!{sys.executable}\n" + body, encoding="utf-8")
+        shim.chmod(0o755)
+    return str(shim), seen

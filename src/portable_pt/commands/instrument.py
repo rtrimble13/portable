@@ -350,6 +350,7 @@ def sync(
             )
             warnings.extend(replay_warnings)
 
+        provider.prefetch(ticker for _, ticker, _ in targets)
         rows: list[dict[str, object]] = []
         unresolved: list[str] = []
         for instrument, ticker, on in targets:

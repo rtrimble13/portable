@@ -19,7 +19,7 @@ from portable_core.providers import (
     NullProvider,
     build_provider,
 )
-from portable_core.providers.fafnir import SCHEMA, FafnirProvider, resolve_dsn
+from portable_core.providers.fafnir import DUK_COMMANDS, FafnirProvider, resolve_dsn
 
 pytestmark = pytest.mark.unit
 
@@ -182,80 +182,84 @@ def test_fafnir_asks_for_raw_prices_and_never_adjusted_ones() -> None:
 
     Adjusted prices are not fair values on the measurement date and would
     double-count splits. Asserted against the source text, because the point is
-    that neither the query nor the `duk` argument that would do it exists.
+    that the `duk` argument that would do it does not exist.
     """
-    source = Path(FafnirProvider.__module__.replace(".", "/") + ".py")
-    text = (Path("src") / source).read_text(encoding="utf-8")
-
-    assert "v_daily_price_adjusted" not in _sql_only(text), (
-        "the adjusted mart view must not appear in any query"
-    )
+    text = _adapter_source()
     assert '"--adj"' not in text, "duk must never be passed --adj"
 
 
-def _sql_only(text: str) -> str:
-    """The parts of the module that are executable, not prose.
+def test_fafnir_is_read_through_duk_alone() -> None:
+    """ADR 0032: no database driver, no SQL, no relation name to query.
 
-    The docstring explains at length why the adjusted view is not used, so a
-    naive substring search over the whole file would find it there.
+    Every read is a `duk` command, so a fafnir change reaches portable only
+    through duk's own contract, which fafnir tests
+    (test/duk/test_db_portable_reads_integration.py there).
     """
-    lines = [
-        line
-        for line in text.splitlines()
-        if "SELECT" in line or "FROM" in line or "SCHEMA[" in line
-    ]
-    return "\n".join(lines)
+    import ast
 
-
-def test_the_fafnir_schema_names_live_in_one_mapping() -> None:
-    """So a fafnir migration is a one-file change here, and none of it is `core` (ADR 0029)."""
-    assert SCHEMA == {
-        "security": "mart.v_security_profile",
-        "symbol_xref": "mart.v_symbol_lookup",
-        "corporate_action": "mart.v_corporate_action",
-        "trading_calendar": "ref.trading_calendar",
+    tree = ast.parse(_adapter_source())
+    imported = {
+        alias.name.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import | ast.ImportFrom)
+        for alias in (
+            node.names if isinstance(node, ast.Import) else [ast.alias(node.module or "")]
+        )
     }
+    assert not imported & {"psycopg", "psycopg2", "sqlite3", "sqlalchemy"}, imported
+    assert set(DUK_COMMANDS) == {"th", "ph", "ca", "tc", "yc"}
 
 
-def test_the_dsn_comes_from_the_environment_before_any_config_file(
-    monkeypatch: pytest.MonkeyPatch,
+def _adapter_source() -> str:
+    source = Path(FafnirProvider.__module__.replace(".", "/") + ".py")
+    return (Path("src") / source).read_text(encoding="utf-8")
+
+
+def test_the_warehouse_override_is_portables_own_and_nothing_else(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Bootstrap §6.3: never read a secret from a file when an env var exists."""
+    """Bootstrap §6.3, ADR 0032. portable reads no fafnir configuration: duk does.
+
+    An explicit DSN (``fafnir_dsn`` in portable's config) or PORTABLE_FAFNIR_DSN
+    is handed to duk as FAFNIR_DSN; without either, duk's own FAFNIR_DSN and
+    ~/.dukrc are duk's business, and portable does not open a file under home.
+    """
     monkeypatch.setenv("PORTABLE_FAFNIR_DSN", "host=portable")
     monkeypatch.setenv("FAFNIR_DSN", "host=fafnir")
     assert resolve_dsn() == "host=portable"
-
-    monkeypatch.delenv("PORTABLE_FAFNIR_DSN")
-    assert resolve_dsn() == "host=fafnir"
-
     assert resolve_dsn("host=explicit") == "host=explicit"
 
+    monkeypatch.delenv("PORTABLE_FAFNIR_DSN")
+    assert resolve_dsn() is None, "FAFNIR_DSN is read by duk, not by portable"
 
-def test_a_missing_dsn_is_a_clear_error_not_a_traceback(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    def no_home() -> Path:
+        raise AssertionError("portable must not read a fafnir config file")
+
+    monkeypatch.setattr(Path, "home", no_home)
+    assert resolve_dsn() is None
+
+
+def test_a_missing_dsn_is_duks_clear_error_not_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """With no warehouse configured anywhere, duk says so, and the run stops."""
+    import subprocess
+
+    said = (
+        "Error: no fafnir DSN configured. Set FAFNIR_DSN or [database].dsn in "
+        "~/.dukrc, or read a vendor directly with -S fmp / -S sharadar."
+    )
     monkeypatch.delenv("PORTABLE_FAFNIR_DSN", raising=False)
-    monkeypatch.delenv("FAFNIR_DSN", raising=False)
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr("portable_core.providers.fafnir.shutil.which", lambda _: "/bin/duk")
+    monkeypatch.setattr(
+        "portable_core.providers.fafnir.subprocess.run",
+        lambda argv, **_: subprocess.CompletedProcess(argv, 1, stdout="", stderr=said),
+    )
 
     with pytest.raises(DataUnavailableError) as exc:
         FafnirProvider().lookup_security("AAPL", on=date(2025, 6, 30))
     assert exc.value.code == "PT-E-PROVIDER-UNAVAILABLE"
-    assert "~/.dukrc" in (exc.value.remedy or "")
-
-
-def test_a_connection_failure_never_echoes_the_dsn() -> None:
-    """A DSN carries a password. It must not reach a log or an error message."""
-    provider = FafnirProvider(dsn="host=nowhere.invalid password=hunter2")
-    with pytest.raises(DataUnavailableError) as exc:
-        provider.lookup_security("AAPL", on=date(2025, 6, 30))
-
-    rendered = json.dumps(exc.value.to_dict())
-    assert "hunter2" not in rendered
-    assert "nowhere.invalid" not in rendered
-
-
-# ── selection ────────────────────────────────────────────────────────────────
+    assert "~/.dukrc" in exc.value.message
 
 
 def test_build_provider_mirrors_duks_source_ergonomics(price_file: Path) -> None:
@@ -269,8 +273,8 @@ def test_build_provider_mirrors_duks_source_ergonomics(price_file: Path) -> None
     assert "file, fafnir, null" in (exc.value.remedy or "")
 
 
-def test_importing_the_providers_package_does_not_require_psycopg() -> None:
-    """psycopg's absence must be felt only by somebody who asked for fafnir."""
+def test_importing_the_providers_package_does_not_import_the_fafnir_adapter() -> None:
+    """The adapter is imported only by somebody who asked for fafnir."""
     import ast
 
     text = (Path("src/portable_core/providers/__init__.py")).read_text(encoding="utf-8")
@@ -282,3 +286,16 @@ def test_importing_the_providers_package_does_not_require_psycopg() -> None:
         for alias in getattr(node, "names", [])
     }
     assert not any("fafnir" in name for name in top_level_imports)
+
+
+def test_prefetch_is_a_hint_that_changes_no_answer(price_file: Path) -> None:
+    """ADR 0032 §2. A provider that cannot read ahead ignores it; offline never fetches."""
+    from portable_core.providers import OfflineProvider
+
+    provider = FileProvider(price_file=price_file)
+    before = provider.eod_prices("AAPL", date(2025, 6, 27), date(2025, 6, 30))
+    provider.prefetch(["AAPL", "MSFT"])
+    assert provider.eod_prices("AAPL", date(2025, 6, 27), date(2025, 6, 30)) == before
+
+    NullProvider().prefetch(["AAPL"])
+    OfflineProvider("fafnir").prefetch(["AAPL"])  # inherits the no-op: nothing is read

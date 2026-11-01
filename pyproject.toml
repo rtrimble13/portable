@@ -26,10 +26,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# psycopg is optional on purpose: its absence must make FafnirProvider
-# unavailable with a clear message, never an ImportError at CLI start.
-# ADR 0006.
-fafnir = ["psycopg[binary]>=3.1"]
+# Empty since ADR 0032: portable reaches fafnir through `duk` alone, which comes
+# with fafnir itself, and installs no database driver. Kept so that an existing
+# `pip install 'portable[fafnir]'` still works rather than warning.
+fafnir = []
 
 [project.scripts]
 pt = "portable_pt.__main__:main"
@@ -130,7 +130,6 @@ check_untyped_defs = true
 module = [
   "portable_native.*",
   "hypothesis.*",
-  "psycopg.*",
   "jsonschema.*",
   "referencing.*",
 ]
