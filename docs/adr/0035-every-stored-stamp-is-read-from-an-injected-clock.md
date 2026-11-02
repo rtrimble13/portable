@@ -1,6 +1,6 @@
 # ADR 0035 — Every stored stamp is read from an injected clock
 
-- **Status:** Accepted — implemented in `portable_core/clock.py`, `Repositories(clock=)`, `migrations.initialise(clock=)` and `migrate(clock=)`, and `scripts/build_sample_portfolio.py`
+- **Status:** Accepted — implemented in `portable_core/clock.py`, `Repositories(clock=)`, `migrations.initialise(clock=)` and `migrate(clock=)`, and `scripts/build_sample_portfolio.py`. Decision 6 was corrected after the first CI run (see there)
 - **Date:** 2026-11-02
 - **Milestone:** v0.2
 - **Governs:** `CLAUDE.md` invariant 6; `PORT-GIPS-J06`
@@ -53,33 +53,41 @@ determinism as the evidence `PORT-GIPS-J01`'s content hash depends on.
    `generated_at` is output, and is already injectable. A migration backup's
    file name must differ from the previous backup's, and a fixed clock would
    overwrite it.
-6. **"Identical bytes" holds on one SQLite library.** Writing the test showed
-   this. The same generator run through SQLite 3.45.1 and through 3.53.1 gives
-   the same schema text and the same rows in every table, but 24 of 106 pages
-   differ, as do header bytes 96–99 (the library's version). `VACUUM INTO` does
-   not make the layouts agree: 9,628 bytes still differ. CI runs Ubuntu (the
-   system SQLite) and Windows (each Python's bundled SQLite), and the owner
-   regenerates on Windows. So `tests/integration/test_sample_fixture.py` checks
-   four things:
+6. **The generator zeroes freed space, and only the library's version field
+   may differ.** With the stamps pinned, a build through Ubuntu's SQLite 3.45.1
+   and one through a SQLite 3.53.1 held the same schema and the same rows, but
+   24 of 106 pages differed. This decision first put that down to the library
+   version, and skipped the byte comparison on any other version. The first CI
+   run showed otherwise. On Windows the library reported 3.45.1, so the
+   comparison ran, and the same 24 pages differed. The cause is
+   `SQLITE_SECURE_DELETE`. Ubuntu compiles SQLite to zero what a delete frees,
+   other builds leave the old bytes in place, and the migrations that rebuild
+   a table free pages. With `PRAGMA secure_delete = ON` set by the generator,
+   the 3.45.1 and 3.53.1 builds differ only in header bytes 96–99. That field
+   holds the version of the library that last wrote the file. The committed
+   file was already written with freed space zeroed, so its bytes do not
+   change. `tests/integration/test_sample_fixture.py` checks four things:
    - every stamp in a fresh build is the generator's. This check fails on the
      wall clock however fast the machine is. Two builds take about 0.4 s and
      can land in the same second;
    - two builds, each in its own process, are byte-identical;
-   - the committed file holds the same schema and rows as a fresh build, on
-     every library;
-   - the committed file equals a fresh build byte for byte, when the library
-     running is the one its header records. Otherwise the test is skipped,
-     with both versions named.
+   - the committed file holds the same schema and rows as a fresh build. A
+     failure here names the rows that drifted;
+   - the committed file equals a fresh build byte for byte, with bytes 96–99
+     set aside, on every library.
 
 ## Consequences
 
 - `make fixtures` twice gives the same bytes. A diff in `examples/sample.port`
-  now means the code changed, or the SQLite library did. The row-for-row test
-  tells the two apart. Regenerating with the library the header records (the
-  skip message names it) leaves the file unchanged.
-- `PORT-GIPS-J01` hashes the report envelope, not the `.port` file, so page
-  layout never reaches it. Stamps could: `pt trade show` prints `created_at`.
-  A fixture can now pin them.
+  now means the code changed. The one exception is a regeneration on another
+  SQLite library, which rewrites the four bytes that name it and nothing else.
+  The tests pass either way.
+- `PORT-GIPS-J01` hashes the report envelope, not the `.port` file, so the
+  file's bytes never reach it. Stamps could: `pt trade show` prints
+  `created_at`. A fixture can now pin them.
+- Only the generator zeroes freed space. A real portfolio keeps whatever its
+  SQLite was compiled with: nothing compares its bytes, and secure delete
+  adds I/O to every delete.
 - A test, or a `pert` fixture, pins every stamp by building the bundle with a
   `FixedClock`. Nothing has to be monkeypatched.
 - Nothing orders, replays or values by a stamp (ADR 0010), the derived and
@@ -99,9 +107,15 @@ determinism as the evidence `PORT-GIPS-J01`'s content hash depends on.
   would leak between tests. Rejected.
 - **Stop storing stamps outside the ledger.** This needs a schema change, and
   it drops the record of when a row was entered. Rejected.
-- **Make the file byte-identical across SQLite versions.** This was measured:
-  `VACUUM` does not do it, and rewriting the header by hand edits a database
-  behind SQLite's back. Rejected.
+- **Skip the byte comparison on another library version.** This decision's
+  first text did that, on the belief that page layout belongs to the library.
+  CI then ran Ubuntu with SQLite 3.46.1 and Windows with bundled libraries,
+  and only the Windows 3.45.1 job compared bytes at all. That is how the real
+  cause was found. Rejected: on most platforms nothing would have held the
+  bytes.
+- **Zero the version field in the committed file.** Rewriting the header by
+  hand edits a database behind SQLite's back, and SQLite restores the field on
+  the next write anyway. The test sets those four bytes aside instead.
 - **Commit a text dump instead of the binary.** That would change what every
   test and `examples/walkthrough.md` open, which is a larger change than this
-  fix. It can be revisited if regenerations on other libraries cause churn.
+  fix. Rejected.

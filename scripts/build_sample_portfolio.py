@@ -23,9 +23,10 @@ every path that is easy to get wrong:
 
 Everything is dated deterministically. There is no randomness, and the clock
 every row is stamped with is a fixed one handed to the repositories and to the
-migration runner (ADR 0035). So two runs on the same SQLite library produce
-byte-identical files, which is what lets the fixture be committed and diffed.
-Another library stores the same rows in a different page layout.
+migration runner (ADR 0035). Freed space is zeroed whatever the SQLite library
+was compiled with. So two runs produce byte-identical files, which is what lets
+the fixture be committed and diffed. The one exception is the header field in
+which SQLite records its own version.
 `tests/integration/test_sample_fixture.py` holds two builds to one another, and
 the committed file to a fresh build.
 """
@@ -212,6 +213,11 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
                 extra.unlink()
 
     con = open_portfolio(path, must_exist=False)
+    # Zero what a delete frees, whatever this SQLite was compiled with. The
+    # migrations that rebuild a table free pages. Ubuntu's SQLite is compiled
+    # to zero them and other builds are not, and the old bytes those builds
+    # leave behind were the whole difference between their files (ADR 0035).
+    con.execute("PRAGMA secure_delete = ON")
     M.initialise(con, clock=CLOCK)
     repos = Repositories(con, clock=CLOCK)
 
@@ -806,8 +812,8 @@ def main() -> int:
     print(f"wrote {args.out}")
     for key in sorted(counts):
         print(f"  {key}: {counts[key]}")
-    # The page layout is the library's (ADR 0035): the same rows written by
-    # another SQLite give different bytes, so say which one wrote these.
+    # Recorded in the file's header too, the one field a build on another
+    # library is expected to change (ADR 0035).
     print(f"  written by SQLite {sqlite3.sqlite_version}")
     return 0
 

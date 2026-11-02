@@ -327,11 +327,10 @@ Also available: `make install`, `make format`, `make coverage`, `make clean`.
 
 `examples/sample.port` is **generated, not hand-crafted** — a hand-made fixture
 drifts from what the code produces and quietly stops testing anything. Rebuild it
-with `make fixtures`. It is deterministic: every row is stamped from a fixed clock, so
-two runs on the same SQLite library produce identical bytes. A different library lays
-the same rows out on different pages, so the bytes then differ and the contents do not
-(ADR 0035). `tests/integration/test_sample_fixture.py` holds the committed file to a
-fresh build.
+with `make fixtures`. It is deterministic: every row is stamped from a fixed clock and
+freed space is zeroed, so two runs produce identical bytes. On another SQLite library
+only the header field recording that library's version differs (ADR 0035).
+`tests/integration/test_sample_fixture.py` holds the committed file to a fresh build.
 
 The owner works on **Windows**. CI runs Linux and Windows. Do not introduce
 POSIX-only assumptions — paths, shell invocations, or line endings.

@@ -464,14 +464,16 @@ Two rules specific to this repository:
   tax-rate, corporate-action and price rows, and each migration's
   `applied_at`. Stamps are now read from a clock handed to `Repositories` and
   to the migration runner, defaulting to the wall clock. The generator hands
-  over a fixed one, so two runs on the same SQLite library produce the same
-  bytes. The services and `pt` commands that stamped ledger rows themselves now
-  read the same clock. `examples/sample.port` is regenerated; only its stamps
-  changed. New tests hold every stamp to the generator's, two builds to one
-  another byte for byte, and the committed file to a fresh build: row for row
-  on every SQLite library, and byte for byte on the library that wrote it.
-  SQLite lays the same rows out differently from one version to another, so
-  the bytes are compared only there.
+  over a fixed one, so two runs produce the same bytes. The services and `pt`
+  commands that stamped ledger rows themselves now read the same clock.
+  `examples/sample.port` is regenerated, and only its stamps changed. The
+  generator also zeroes freed space (`PRAGMA secure_delete`). Ubuntu's SQLite
+  does that by default and other builds do not, and the stale bytes left
+  behind made the same rows differ in 24 pages between them. New tests hold
+  every stamp to the generator's, two builds to one another byte for byte,
+  and the committed file to a fresh build, row for row and byte for byte.
+  Only the header field naming the SQLite library that wrote the file is set
+  aside, so the comparison runs on every platform.
 
 - **An account re-cased between exports re-identified every overlapping row**
   (ADR 0033). A synthesized `external_ref` hashed the account cell verbatim,

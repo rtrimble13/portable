@@ -9,17 +9,17 @@ Each build runs in its own process, as `make fixtures` does. Two builds in one
 interpreter share its string-hash seed, so iterating over a set would give the
 same order both times and hide the nondeterminism a second run would expose.
 
-The layout of a SQLite file depends on the library as well as on the rows. The
-same writes through SQLite 3.45.1 and 3.53.1 store the same rows in different
-pages (ADR 0035). So the committed file is compared row for row everywhere, and
-byte for byte where the library that wrote it is the library running the test.
+A build on another SQLite library is byte-identical too, except for bytes
+96-99 of the header, where SQLite records the version of the library that last
+wrote the file (ADR 0035). The committed file is compared with those four bytes
+set aside and every other byte held. It is also compared row for row, so that a
+drift names the rows that changed.
 """
 
 from __future__ import annotations
 
 import os
 import shutil
-import sqlite3
 import struct
 import subprocess
 import sys
@@ -94,10 +94,14 @@ def _first_difference(a: bytes, b: bytes) -> str:
     )
 
 
-def _written_by(data: bytes) -> tuple[int, int, int]:
-    """The SQLite library version recorded in a file's header (bytes 96-99)."""
-    number = struct.unpack(">I", data[96:100])[0]
-    return number // 1_000_000, number // 1_000 % 1_000, number % 1_000
+def _without_library_version(data: bytes) -> bytes:
+    """*data* with header bytes 96-99 zeroed.
+
+    That field holds the version of the SQLite library that last wrote the
+    file (the file format's "SQLITE_VERSION_NUMBER"), so it is the one field a
+    build on another library is expected to change. No other byte is excused.
+    """
+    return data[:96] + bytes(4) + data[100:]
 
 
 def _contents(path: Path, scratch: Path) -> list[str]:
@@ -173,7 +177,8 @@ def test_two_builds_are_byte_identical(fresh: Path, tmp_path: Path) -> None:
 def test_committed_fixture_holds_what_a_fresh_build_holds(fresh: Path, tmp_path: Path) -> None:
     """The committed file has drifted from its generator when a row differs.
 
-    Compared by content, so it holds on every SQLite library CI runs.
+    The byte comparison below catches the same drift. This one says which rows
+    changed.
     """
     committed, built = _contents(COMMITTED, tmp_path), _contents(fresh, tmp_path)
     in_committed, in_built = set(committed), set(built)
@@ -187,22 +192,15 @@ def test_committed_fixture_holds_what_a_fresh_build_holds(fresh: Path, tmp_path:
 
 
 def test_committed_fixture_is_byte_identical_to_a_fresh_build(fresh: Path) -> None:
-    """Byte for byte, where the library that wrote the committed file is running.
+    """Byte for byte, on whichever SQLite library runs the test.
 
-    SQLite places the same rows on different pages from one library version to
-    another, so on any other library this is skipped and the row-for-row
-    comparison above is what holds the file to its generator.
+    Only the header field naming the library that wrote each file is set
+    aside. A failure here with no row difference above means the generator
+    wrote different bytes for the same rows, which ADR 0035 found was freed
+    space and fixed by zeroing it.
     """
-    committed = COMMITTED.read_bytes()
-    written_by = _written_by(committed)
-    if written_by != sqlite3.sqlite_version_info:
-        pytest.skip(
-            "examples/sample.port was written by SQLite "
-            f"{'.'.join(map(str, written_by))} and this interpreter links "
-            f"{sqlite3.sqlite_version}; page layout is the library's, so only the "
-            "contents are compared (ADR 0035)"
-        )
-    built = fresh.read_bytes()
+    committed = _without_library_version(COMMITTED.read_bytes())
+    built = _without_library_version(fresh.read_bytes())
     if committed != built:  # not `assert`: pytest would print both files
         pytest.fail(
             f"examples/sample.port differs from a fresh build: "
