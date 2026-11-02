@@ -13,7 +13,7 @@ import typer
 
 from portable_core.decimals import from_text, money_context, quantize_money
 from portable_core.disclaimer import TAX_DISCLAIMER
-from portable_core.domain.enums import BasisSource, FlowLevel, TransactionType
+from portable_core.domain.enums import BasisSource, FlowLevel
 from portable_core.domain.import_records import ClosedLotRecord
 from portable_core.domain.models import RealizedGain, ReturnPolicy
 from portable_core.errors import GipsRefusalError, ReconciliationBreakError, ValidationError
@@ -732,13 +732,11 @@ def cash_flows(
                 # At account level a transfer is two flows, one per side
                 # (ADR 0007). At portfolio level it is none, so one row stating
                 # that is enough.
-                sides = [txn.account_id]
-                if (
-                    flow_level is FlowLevel.ACCOUNT
-                    and txn.txn_type is TransactionType.TRANSFER
-                    and txn.counter_account_id is not None
-                ):
-                    sides.append(txn.counter_account_id)
+                sides = (
+                    cash_flow.accounts_touched(txn)
+                    if flow_level is FlowLevel.ACCOUNT
+                    else (txn.account_id,)
+                )
 
                 for side in sides:
                     classified = cash_flow.classify_for_account(txn, side, flow_level)

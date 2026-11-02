@@ -16,6 +16,14 @@ Two rules specific to this repository:
 
 ### Added
 
+- **A test that nothing re-derives flow classification** (ADR 0007,
+  `PORT-GIPS-B02`). It reads the source tree: no classification named and no
+  result built outside `services/cash_flow.py`, and wherever flows are
+  consumed -- any module importing the classifier, and all of `pert` -- no
+  test of a transaction type the classifier can call external, a set asked of
+  the classifier itself. Which accounts a row is a flow for is now
+  `cash_flow.accounts_touched`, which `pt cash-flows` and snapshot assembly
+  call instead of each testing for a transfer.
 - **`pt instrument correct-symbol`: a symbol recorded in error is corrected,
   not renamed** (ADR 0034). Every period of the instrument's symbol history
   that carried the wrong ticker carries the right one, with no period opened

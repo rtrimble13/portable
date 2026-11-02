@@ -23,7 +23,7 @@ from decimal import Decimal
 from typing import Any
 
 from portable_core.decimals import from_text
-from portable_core.domain.enums import TransactionType, ValuationBasis
+from portable_core.domain.enums import ValuationBasis
 from portable_core.domain.models import (
     Account,
     Price,
@@ -33,6 +33,7 @@ from portable_core.domain.models import (
 )
 from portable_core.errors import DataUnavailableError
 from portable_core.persistence.repositories import RemovedSnapshots, Repositories
+from portable_core.services import cash_flow
 from portable_core.services.replay import effective_ledger, over_dates
 from portable_core.services.valuation import NO_MARKET_PRICE, Holding, ValuationEngine
 
@@ -414,9 +415,6 @@ def _rows_on(repos: Repositories, days: set[date]) -> dict[tuple[int, date], lis
     for txn in effective_ledger(repos.transactions.in_ledger_order()):
         if txn.trade_date not in days:
             continue
-        sides = [txn.account_id]
-        if txn.txn_type is TransactionType.TRANSFER and txn.counter_account_id is not None:
-            sides.append(txn.counter_account_id)
-        for side in sides:
+        for side in cash_flow.accounts_touched(txn):
             rows.setdefault((side, txn.trade_date), []).append(txn)
     return rows

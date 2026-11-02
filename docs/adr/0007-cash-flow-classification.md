@@ -1,6 +1,6 @@
 # ADR 0007 — Cash-flow classification is one level-aware service function
 
-- **Status:** Accepted — one level-aware `classify`, tested against the `PORT-GIPS-B02` matrix; the destination's half of a transfer comes from `classify_for_account`. Not done: the test that greps the tree for re-derived classification, and the `pt validate` check for a same-day withdrawal/deposit pair
+- **Status:** Accepted — one level-aware `classify`, tested against the `PORT-GIPS-B02` matrix; the destination's half of a transfer comes from `classify_for_account`, and which accounts a row is a flow for from `accounts_touched`; `tests/unit/test_flow_classification_is_not_rederived.py` reads the tree for re-derived classification (2026-11-02). Not done: the `pt validate` check for a same-day withdrawal/deposit pair
 - **Date:** 2026-08-27
 - **Milestone:** v0.1
 - **Governs:** `PORT-GIPS-B02`
@@ -40,9 +40,16 @@ def classify(txn: Transaction, level: FlowLevel) -> FlowClassification: ...
   --strict`'s exhaustiveness check *and* raises at runtime.
 
 **No call site re-derives it.** `pt cash-flows`, `ValuationEngine`, and
-(in v0.2) every `pert` return path call this function and nothing else. There is
-a test that greps the tree for the transaction types this function switches on,
-appearing in a comparison anywhere outside it.
+(in v0.2) every `pert` return path call this function and nothing else. A test
+reads the source tree for the alternative
+(`tests/unit/test_flow_classification_is_not_rederived.py`): no
+`FlowClassification` member named and no `FlowResult` built outside this module,
+and — in any module that imports it, and anywhere in `pert` — no test of a
+transaction type `classify` can call external. That set is asked of `classify`
+itself, so it grows with the function. The rule binds flow *consumers*, not the
+whole tree: the code that records a deposit has to name one. Which accounts a
+row is a flow for (a transfer's two) is `accounts_touched`, here, so no
+consumer has to test for a transfer to find out.
 
 The `PORT-GIPS-B02` matrix is transcribed **verbatim** into
 `tests/unit/test_cash_flow_classification.py` as a parametrised table, including

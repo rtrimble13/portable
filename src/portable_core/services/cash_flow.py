@@ -20,7 +20,9 @@ own accounts silently rewrites the track record.
 
 Nothing outside this module classifies a transaction. `pt cash-flows`,
 `ValuationEngine`, and every future `pert` return path call :func:`classify`
-and nothing else. There is a test that greps for the alternative.
+and nothing else. `tests/unit/test_flow_classification_is_not_rederived.py`
+reads the tree for the alternative: a classification named, a result built, or
+a flow-bearing transaction type tested, anywhere a flow is consumed.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ from portable_core.domain.models import Transaction
 
 __all__ = [
     "FlowResult",
+    "accounts_touched",
     "classify",
     "classify_for_account",
     "flow_amount",
@@ -287,6 +290,19 @@ def classify_for_account(
     if txn.txn_type is TransactionType.TRANSFER and txn.counter_account_id == account_id:
         return FlowResult(own.classification, -own.amount, own.flow_date, own.is_in_kind)
     raise ValueError(f"transaction {txn.txn_id} does not touch account {account_id}")
+
+
+def accounts_touched(txn: Transaction) -> tuple[int, ...]:
+    """The accounts *txn* is a flow for: its own, and a transfer's destination.
+
+    A caller collecting one account's rows needs this before it can call
+    :func:`classify_for_account`. It lives here so that knowing which row has
+    two sides is the classifier's knowledge, not something a call site works
+    out by testing for a transfer itself (ADR 0007).
+    """
+    if txn.txn_type is TransactionType.TRANSFER and txn.counter_account_id is not None:
+        return (txn.account_id, txn.counter_account_id)
+    return (txn.account_id,)
 
 
 def is_external(txn: Transaction, level: FlowLevel) -> bool:
