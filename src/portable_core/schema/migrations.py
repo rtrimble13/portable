@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Final
 
 from portable_core import __version__
+from portable_core.clock import SYSTEM_CLOCK, Clock
 from portable_core.errors import PortfolioFileError
 from portable_core.errors.kinds import (
     E_MIGRATION_BLOCKED,
@@ -149,10 +150,6 @@ def schema_version(con: sqlite3.Connection) -> int:
     """The file's schema version: the highest applied migration, or 0."""
     applied = applied_versions(con)
     return applied[-1] if applied else 0
-
-
-def _now() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def split_statements(script: str) -> list[str]:
@@ -307,8 +304,8 @@ def _check_foreign_keys(con: sqlite3.Connection, migration: Migration) -> None:
     )
 
 
-def _apply(con: sqlite3.Connection, migration: Migration) -> None:
-    """Apply one migration and record it. All or nothing."""
+def _apply(con: sqlite3.Connection, migration: Migration, clock: Clock = SYSTEM_CLOCK) -> None:
+    """Apply one migration and record it, stamped from *clock*. All or nothing."""
     # Before the transaction, so a refusal costs nothing and reads as a refusal
     # rather than as a failed write.
     check_preconditions(con, migration)
@@ -320,7 +317,7 @@ def _apply(con: sqlite3.Connection, migration: Migration) -> None:
     triggers_before = _triggers(con) if migration.rebuilds else set()
     indexes_before = _indexes(con) if migration.rebuilds else set()
     try:
-        _run(con, migration, triggers_before, indexes_before)
+        _run(con, migration, triggers_before, indexes_before, clock)
     finally:
         if migration.rebuilds:
             # `foreign_keys` is connection state, not file state. Leaving it OFF
@@ -335,6 +332,7 @@ def _run(
     migration: Migration,
     triggers_before: set[str],
     indexes_before: set[str],
+    clock: Clock,
 ) -> None:
     con.execute("BEGIN IMMEDIATE")
     try:
@@ -379,7 +377,7 @@ def _run(
                 migration.version,
                 migration.name,
                 migration.checksum,
-                _now(),
+                clock.stamp(),
                 f"portable {__version__}",
             ),
         )
@@ -400,10 +398,14 @@ def _run(
     con.execute("COMMIT")
 
 
-def initialise(con: sqlite3.Connection) -> int:
-    """Apply every migration to a fresh file. Returns the resulting version."""
+def initialise(con: sqlite3.Connection, *, clock: Clock = SYSTEM_CLOCK) -> int:
+    """Apply every migration to a fresh file. Returns the resulting version.
+
+    Each ``schema_migration.applied_at`` is read from *clock* (ADR 0035), so a
+    generator that pins it writes the same bytes on every run.
+    """
     for migration in available_migrations():
-        _apply(con, migration)
+        _apply(con, migration, clock)
     return schema_version(con)
 
 
@@ -508,11 +510,15 @@ def migrate(
     *,
     backup: bool = True,
     dry_run: bool = False,
+    clock: Clock = SYSTEM_CLOCK,
 ) -> tuple[int, int, list[Migration], Path | None]:
     """Bring *path* up to :data:`CURRENT_SCHEMA_VERSION`.
 
     Returns ``(from_version, to_version, applied, backup_file)``. Under
     ``dry_run`` nothing is written and ``applied`` is what *would* be applied.
+    Each migration's ``applied_at`` is read from *clock* (ADR 0035). The backup's
+    file name is not: it reads the wall clock, because its job is to differ from
+    the name of the backup taken before it.
     """
     check_openable(con, path, allow_older=True)
     before = schema_version(con)
@@ -530,6 +536,6 @@ def migrate(
         shutil.copy2(path, backup_file)
 
     for migration in pending:
-        _apply(con, migration)
+        _apply(con, migration, clock)
 
     return before, schema_version(con), pending, backup_file

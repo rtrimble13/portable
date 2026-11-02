@@ -52,6 +52,11 @@ depends on nothing but the standard library, the error hierarchy, and
 `decimals` -- the stdlib-only leaf that defines how a `Decimal` is
 represented, which domain objects are made of. Nothing depends on a CLI.
 
+`clock` is the other stdlib-only leaf. It is where every stamp written to a
+`.port` file is read from (ADR 0035), so `schema/`, `persistence/` and
+`services/` may import it. `Repositories` and the migration runner take one,
+and default to the wall clock.
+
 | Layer | May import | May **not** import |
 |---|---|---|
 | `domain/` | stdlib, `errors/`, `decimals` | anything else in core |

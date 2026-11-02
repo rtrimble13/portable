@@ -16,7 +16,6 @@ The traps these exist to get right change a tax *rate*, not a presentation:
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated
 
@@ -51,10 +50,6 @@ app = typer.Typer(help="Corporate actions.", no_args_is_help=True)
 
 ENGINE = CorporateActionEngine()
 ZERO = Decimal("0.00")
-
-
-def _now() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _held_lots(repos, account_id: int, instrument_id: int, on):  # type: ignore[no-untyped-def]
@@ -150,7 +145,7 @@ def split(
                     note=f"{ratio} split",
                     external_ref=ref,
                     source=TransactionSource.DERIVED,
-                    created_at=_now(),
+                    created_at=repos.clock.stamp(),
                 )
                 txn_id = repos.transactions.append(txn)
                 # The ledger says a split happened; the corporate_action
@@ -349,7 +344,7 @@ def spinoff(
                         ),
                         external_ref=ref,
                         source=TransactionSource.DERIVED,
-                        created_at=_now(),
+                        created_at=repos.clock.stamp(),
                     )
                 )
                 repos.corporate_actions.add(
@@ -556,7 +551,7 @@ def convert(
                     note=f"converted into {received} {target.symbol}",
                     external_ref=ref,
                     source=TransactionSource.DERIVED,
-                    created_at=_now(),
+                    created_at=repos.clock.stamp(),
                 )
             )
             repos.corporate_actions.add(
@@ -639,7 +634,7 @@ def symbol_change(
                     note=f"{instrument.symbol} -> {to.upper()}",
                     external_ref=ref,
                     source=TransactionSource.DERIVED,
-                    created_at=_now(),
+                    created_at=repos.clock.stamp(),
                 )
             )
 

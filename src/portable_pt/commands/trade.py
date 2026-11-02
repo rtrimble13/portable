@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import Annotated
 
 import typer
@@ -431,7 +431,7 @@ def reverse(
             note=note or f"reverses txn {txn_id}",
             external_ref=ref,
             source=TransactionSource.DERIVED,
-            created_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            created_at=repos.clock.stamp(),
         )
 
         payload = {

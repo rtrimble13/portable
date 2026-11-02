@@ -34,9 +34,14 @@ ALLOWED: dict[str, frozenset[str]] = {
     "portable_core.errors": frozenset({"portable_core.errors"}),
     # `portable_core` itself is the root package: a version string and a
     # schema-version constant, with no dependencies of its own. Importing it
-    # does not create a cycle or a layer violation.
+    # does not create a cycle or a layer violation. It grants the root module
+    # alone, not every package under it (see `_permitted`).
+    #
+    # `portable_core.clock` is the other stdlib-only leaf: what every row's
+    # `created_at` is read from (ADR 0035). Each layer that writes a row, or
+    # builds one to be written, may depend on it.
     "portable_core.schema": frozenset(
-        {"portable_core.schema", "portable_core.errors", "portable_core"}
+        {"portable_core.schema", "portable_core.errors", "portable_core.clock", "portable_core"}
     ),
     "portable_core.persistence": frozenset(
         {
@@ -45,6 +50,7 @@ ALLOWED: dict[str, frozenset[str]] = {
             "portable_core.schema",
             "portable_core.errors",
             "portable_core.decimals",
+            "portable_core.clock",
         }
     ),
     "portable_core.providers": frozenset(
@@ -79,6 +85,7 @@ ALLOWED: dict[str, frozenset[str]] = {
             "portable_core.decimals",
             "portable_core.disclaimer",
             "portable_core.native",
+            "portable_core.clock",
         }
     ),
     "portable_core.formatters": frozenset(
@@ -118,6 +125,19 @@ def _first_party(module: str) -> bool:
     return module.split(".")[0] in {"portable_core", *CLI_PACKAGES}
 
 
+def _permitted(module: str, allowed: frozenset[str]) -> bool:
+    """Whether *module* is one of *allowed*, or inside one.
+
+    The root package is the exception: it grants ``portable_core`` and nothing
+    under it. Matched as a prefix it would grant every module in the core, and
+    `schema/` and `formatters/`, which list it, would be held to nothing.
+    """
+    return any(
+        module == ok or (ok != "portable_core" and module.startswith(ok + "."))
+        for ok in allowed
+    )
+
+
 @pytest.mark.parametrize("package", sorted(ALLOWED))
 def test_package_only_imports_what_its_layer_permits(package: str) -> None:
     """Arrows point inward and down. docs/architecture.md §1."""
@@ -132,7 +152,7 @@ def test_package_only_imports_what_its_layer_permits(package: str) -> None:
         for module, lineno in _imported_modules(path):
             if not _first_party(module):
                 continue
-            if any(module == ok or module.startswith(ok + ".") for ok in allowed):
+            if _permitted(module, allowed):
                 continue
             rel = path.relative_to(ROOT).as_posix()
             violations.append(f"{rel}:{lineno}: {package} may not import {module}")

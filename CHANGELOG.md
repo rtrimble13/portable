@@ -458,6 +458,21 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **`make fixtures` gave a different `examples/sample.port` on every run**
+  (ADR 0035). The generator pinned `created_at` on ledger rows only. Every
+  other write stamped the wall clock: the policy, account, instrument,
+  tax-rate, corporate-action and price rows, and each migration's
+  `applied_at`. Stamps are now read from a clock handed to `Repositories` and
+  to the migration runner, defaulting to the wall clock. The generator hands
+  over a fixed one, so two runs on the same SQLite library produce the same
+  bytes. The services and `pt` commands that stamped ledger rows themselves now
+  read the same clock. `examples/sample.port` is regenerated; only its stamps
+  changed. New tests hold every stamp to the generator's, two builds to one
+  another byte for byte, and the committed file to a fresh build: row for row
+  on every SQLite library, and byte for byte on the library that wrote it.
+  SQLite lays the same rows out differently from one version to another, so
+  the bytes are compared only there.
+
 - **An account re-cased between exports re-identified every overlapping row**
   (ADR 0033). A synthesized `external_ref` hashed the account cell verbatim,
   so an export that wrote `BROKERAGE` where the last one wrote `Brokerage` --
