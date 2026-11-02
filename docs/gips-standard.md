@@ -424,7 +424,7 @@ where `V_B` and `V_E` are the beginning and ending values, `CF_i` is the value o
 **What GIPS says** — "Returns for periods of less than one year must not be annualized." Unconditional, and it applies to portfolio-level as well as composite-level returns.
 **What `portable` must do** — `CLAUDE.md` already lists this as a domain trap. It is now a cited requirement with a provision number. Enforce it in the **formatter layer** so that no call site can bypass it: a return object carries its period length, and any attempt to render an annualised figure for a period under one year raises.
 **Interaction** — this governs the MWR too: the since-inception MWR is annualised only once the since-inception period exceeds one year (see `PORT-GIPS-C03`).
-**Test** — `test_subyear_return_never_annualized`: parametrised over 1 day, 1 month, 364 days, 365 days, 366 days; assert the 364-day case is not annualised and the 366-day case is.
+**Test** — `test_subyear_return_never_annualized`: parametrised over 1 day, 1 month, 364 days, 365 days, 366 days; assert the 364-day case is not annualised and the 366-day case is. "One year" is the calendar anniversary, not a day count — a 365-day period crossing 29 February is a day short of a year: `test_port_gips_b07_one_year_is_the_calendar_anniversary_not_365_days`.
 
 ---
 

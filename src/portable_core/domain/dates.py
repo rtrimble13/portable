@@ -24,6 +24,8 @@ __all__ = [
     "holding_period",
     "is_long_term",
     "month_end",
+    "one_year_after",
+    "spans_a_year",
     "year_fraction",
 ]
 
@@ -60,19 +62,40 @@ def is_long_term(acquired: date, disposed: date) -> bool:
     short-term regardless of holding period, and that rule belongs to the
     caller which knows whether the lot is short -- see :func:`holding_period`.
     """
-    anniversary = _add_one_year(acquired)
+    anniversary = one_year_after(acquired)
     return disposed > anniversary
 
 
-def _add_one_year(day: date) -> date:
+def one_year_after(day: date) -> date:
     """The same calendar day one year later, clamped to a real date.
 
     Only 29 February needs clamping, and it clamps to 28 February -- the last
     day of the same month -- rather than to 1 March.
+
+    This is the one definition of "a year later" in `portable`. The holding
+    period (:func:`is_long_term`) and the annualization rule
+    (:func:`spans_a_year`) both read it, so a tax year and a performance year
+    cannot disagree about where a year ends.
     """
     year = day.year + 1
     last_day = calendar.monthrange(year, day.month)[1]
     return date(year, day.month, min(day.day, last_day))
+
+
+def spans_a_year(start: date, end: date) -> bool:
+    """Whether a period from *start* to *end* is at least one calendar year.
+
+    ``PORT-GIPS-B07``: "Returns for periods of less than one year must not be
+    annualized." The test is the calendar anniversary, not a count of days.
+    365 days is a year from 2025-01-01 and is not one from 2024-02-01, because
+    that span crosses 29 February and ends on 2025-01-31, a day short. Counting
+    days would let the second be annualized.
+
+    The period runs from the valuation at the close of *start* to the one at
+    the close of *end*, so a calendar year is 31 December to 31 December, and
+    a period ending on the anniversary is exactly one year.
+    """
+    return end >= one_year_after(start)
 
 
 def holding_period(

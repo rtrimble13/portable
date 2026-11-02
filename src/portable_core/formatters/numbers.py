@@ -27,6 +27,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from portable_core.decimals import money_context, quantize_money, to_text
+from portable_core.domain.dates import spans_a_year
 from portable_core.errors import GipsRefusalError
 from portable_core.formatters.model import ColumnKind, ReturnValue
 
@@ -51,9 +52,6 @@ NULL_TEXT = "—"
 #: because "0.03%" and "3 bps" are the same number and only one of them is
 #: readable in a column of them.
 _BPS_THRESHOLD = Decimal("0.01")
-
-#: Below one year, annualizing is prohibited outright (PORT-GIPS-B07).
-_DAYS_IN_YEAR = 365
 
 
 def money(value: Decimal | None, *, null: str = NULL_TEXT) -> str:
@@ -190,8 +188,11 @@ def require_not_annualized(value: ReturnValue) -> None:
 
     The check lives in the formatter deliberately. Anywhere else, a call site
     would eventually be added that does not call it.
+
+    "One year" is the calendar anniversary (:func:`spans_a_year`), not 365
+    days: a 365-day period that crosses 29 February is a day short of a year.
     """
-    if value.is_annualized and value.period_days < _DAYS_IN_YEAR:
+    if value.is_annualized and not spans_a_year(value.period_start, value.period_end):
         raise GipsRefusalError(
             f"cannot present an annualized return for a {value.period_days}-day "
             f"period ({value.period_start.isoformat()} to "

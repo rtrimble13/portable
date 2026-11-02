@@ -314,6 +314,49 @@ def test_subyear_return_never_annualized(days: int, annualized: bool, allowed: b
         assert exc.value.exit_code == 4
 
 
+@pytest.mark.gips
+@pytest.mark.parametrize(
+    ("start", "end", "allowed"),
+    [
+        # 365 days, crossing 29 February 2024: a day short of a year.
+        (date(2024, 2, 1), date(2025, 1, 31), False),
+        (date(2024, 2, 1), date(2025, 2, 1), True),
+        # 365 days ending on 29 February 2024: a day short of a year.
+        (date(2023, 3, 1), date(2024, 2, 29), False),
+        (date(2023, 3, 1), date(2024, 3, 1), True),
+        # 29 February has its anniversary on 28 February, as for a holding
+        # period (domain/dates.py), so the two rules agree on where a year ends.
+        (date(2024, 2, 29), date(2025, 2, 27), False),
+        (date(2024, 2, 29), date(2025, 2, 28), True),
+        # A calendar year, close of 31 December to close of 31 December.
+        (date(2023, 12, 31), date(2024, 12, 31), True),
+    ],
+)
+def test_port_gips_b07_one_year_is_the_calendar_anniversary_not_365_days(
+    start: date, end: date, allowed: bool
+) -> None:
+    """PORT-GIPS-B07 -- "less than one year" is measured by the calendar.
+
+    Counting 365 days lets a period that crosses 29 February be annualized a
+    day before it is a year long.
+    """
+    value = ReturnValue(
+        value=D("0.05"),
+        method="mwr",
+        basis="net_of_fees",
+        period_start=start,
+        period_end=end,
+        is_annualized=True,
+    )
+
+    if allowed:
+        assert "annualized" in render_return_safe(value)
+    else:
+        with pytest.raises(GipsRefusalError) as exc:
+            render_return_safe(value)
+        assert exc.value.code == "PT-E-GIPS-ANNUALIZE-SUB-YEAR"
+
+
 def render_return_safe(value: ReturnValue) -> str:
     from portable_core.formatters import render_return
 

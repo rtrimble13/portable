@@ -458,6 +458,12 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **A 365-day return crossing 29 February could be annualized a day early**
+  (`PORT-GIPS-B07`). The formatter's guard counted 365 days as a year, so a
+  period from 2024-02-01 to 2025-01-31, a day short of one, passed. "Less than
+  one year" is now the calendar anniversary, read from the same
+  `one_year_after` the holding period uses, so a tax year and a performance
+  year end on the same day, 29 February included.
 - **An account re-cased between exports re-identified every overlapping row**
   (ADR 0033). A synthesized `external_ref` hashed the account cell verbatim,
   so an export that wrote `BROKERAGE` where the last one wrote `Brokerage` --
