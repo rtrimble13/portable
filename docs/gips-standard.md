@@ -194,18 +194,18 @@ Where the Asset Owner standards are silent and the Firms standards are not — m
 |---|---|---|
 | Fair value, valuation frequency, price source and staleness | `portable_core/providers/`, `services/ValuationEngine` | v0.1 (built) |
 | `valuation_snapshot` substrate: BMV, EMV, accrued income, external flows and timing | `portable_core/schema/`, `services/ValuationEngine`, `pt value` | v0.1 (built) |
-| External vs. internal cash-flow classification | `portable_core/domain/`, `pt cash-flows --external-only` | **v0.1 — audit required, see `PORT-GIPS-B02`** |
-| Large-cash-flow policy and revaluation | `portable_core/config/`, `services/ValuationEngine` | **v0.2** |
+| External vs. internal cash-flow classification | `portable_core/services/cash_flow.py`, `pt cash-flows --external-only` | v0.1 (built; ADR 0007) |
+| Large-cash-flow policy and revaluation | `return_policy`, `services/ValuationEngine` | v0.1 (built; daily valuation subsumes revaluation, ADR 0037) |
 | TWR: sub-period returns, geometric linking, Modified Dietz fallback | `portable_pert` | v0.2 |
 | MWR / XIRR | `portable_pert` | v0.2 |
-| Return bases (gross / net-of-external-costs-only / net) and fee classification | `portable_core/domain/`, `services/` | **v0.2 — schema change, see `PORT-GIPS-D01`** |
+| Return bases (gross / net-of-external-costs-only / net) and fee classification | `portable_core/domain/`, `services/` | `fee_class` built (v0.1); bases v0.2; the bundled class is ADR 0036 |
 | Risk measures, 3-year ex-post σ | `portable_pert` | v0.2 |
 | Benchmarks, blends, rebalancing | `portable_core/schema/benchmark`, `portable_pert` | v0.2 |
 | Report contents and disclosure block | `portable_core/formatters/`, `portable_pert` tearsheet | v0.2 |
-| Compliance-language lint | `portable_core/` lint rule + CI | **v0.1 — add now, see `PORT-GIPS-J05`** |
+| Compliance-language lint | `portable_core/` lint rule + CI | v0.1 (built) |
 | Composites | new | v1.0 |
 
-Three items above are marked as needing attention **before** `pert` starts: external-flow classification, the fee-classification schema, and the compliance-language lint. Each is cheap now and expensive later — the first two are schema changes, and the third is the guard that stops a wrong claim shipping.
+Three items above were marked as needing attention **before** `pert` started — external-flow classification, the fee-classification schema, and the compliance-language lint — because each is cheap before returns exist and expensive after. All three landed in v0.1 (§8).
 
 ---
 
@@ -539,12 +539,12 @@ For a self-managed portfolio with no external manager, gross-of-fees and net-of-
 
 ---
 
-**`PORT-GIPS-D03` — Bundled fees · EXT**
+**`PORT-GIPS-D03` — Bundled fees · CORE** *(EXT until 2026-11-02; [ADR 0036](adr/0036-a-wrap-fee-is-a-bundled-fee.md))*
 
 **Source** — Firms **2.A.14 (A)**; Asset Owners **22.A.11 (A)**; *Guidance Statement on Wrap Fee Portfolios* (2021).
 **What GIPS says** — where transaction costs cannot be estimated or segregated from a bundled fee, gross-of-fees returns must be reduced by the entire bundled fee or by the portion containing the transaction costs; net-of-fees returns by the entire bundled fee or the portion containing transaction costs plus the investment management fee. The glossary defines a bundled fee as one that "combines multiple fees into one total or 'bundled' fee… any combination of investment management fees, transaction costs, custody fees, and/or administrative fees."
-**What `portable` must do** — Not applicable to a self-directed brokerage portfolio. **Refuse rather than approximate**: if a fee is entered without a classification and cannot be decomposed, error out. Revisit if the owner ever holds a wrap or bundled-fee account.
-**Test** — n/a until the feature exists; the `NULL` classification failure in `PORT-GIPS-D01` covers the refusal.
+**What `portable` must do** — **Applicable.** This requirement was written as "not applicable to a self-directed brokerage portfolio", and the owner holds a wrap account: the reference custodian's advisory fee is a true wrap, one fee covering management and trading, and not decomposable (confirmed by the owner, 2026-11-02). It is therefore deducted **in full at every basis, gross-of-fees included**, and gross-of-fees, net-of-external-costs-only and net-of-fees are equal for the accounts that pay it. The return engine reports that figure once and names all three bases it stands for. A bundled fee is its own `fee_class` value, `bundled_fee`, not an `external_mgmt_fee`; one recorded as the latter would be added back for gross-of-fees, which is a pure gross return (`PORT-GIPS-D02`). ADR 0036 proposes the class and the correction of the rows already in the ledger. Until it lands, `pert` computes net-of-fees only. **Refuse rather than approximate** still holds: a fee entered without a classification, or a bundled fee claimed to be decomposable without a schedule that decomposes it, is an error.
+**Test** — the `NULL` classification failure in `PORT-GIPS-D01` covers the refusal. `test_port_gips_d03_a_bundled_fee_reduces_every_basis` lands with ADR 0036.
 
 ---
 
@@ -900,28 +900,24 @@ Entirely outside GIPS. The domain traps listed in `CLAUDE.md` — holding-period
 
 ## 8. Conformance summary
 
-What `pert` v0.2 must satisfy before it emits a return:
+What `pert` v0.2 must satisfy before it emits a return, as it stood on 2026-11-02. Issue #1's gate is that every CORE item is satisfied or recorded as an accepted gap in an ADR.
 
 | Area | CORE items | Status |
 |---|---|---|
-| Valuation | A01–A09 | A01, A04, A05, A09 largely satisfied by v0.1; **A02 (valuation level), A06 (dividend accrual into snapshots), A07 (`cash_treatment`) need work** |
-| TWR | B01–B07 | **All new in v0.2. B02 (flow classification) is the highest-risk item in the whole document.** |
-| MWR | C01–C05 | All new in v0.2 |
-| Fees | D01–D05 | **D01 requires a schema change before `pert` starts** |
-| Risk | F01–F05 | All new in v0.2 |
-| Benchmarks | G01–G05 | All new in v0.2; **G01 (price-only refusal) should land with the benchmark schema** |
-| Reporting | H01–H08 | All new in v0.2 |
-| Disclosure | I01–I17 | `DisclosureEngine`, new in v0.2 |
-| Integrity | J01–J06 | **J05 (compliance-language lint) should land now, in v0.1** |
+| Valuation | A01–A09 | In place: A01 (unadjusted prices), A02 (`valuation_level` on every price and every snapshot price), A04 (`meta.fiscal_year_end`), A05, A07 (`account.cash_treatment`), A09 (the snapshot's price set; `pt validate` names a price since replaced). **A06:** dividends accrue from a recorded ex-date ([ADR 0035](adr/0035-accrued-income-in-valuation-snapshots.md)); imported distributions carry none and are recognised when paid, which `pert` must disclose; **bond interest accrual is an accepted gap** — a snapshot holding a coupon bond is incomplete. A03 is daily valuation; its refusal on a missing day is `pert`'s ([ADR 0037](adr/0037-return-engine-conventions.md)). A08 is `pert`'s |
+| TWR | B01–B07 | **B02 done**: one level-aware classifier, the matrix test, and a test that nothing re-derives it (ADR 0007). **B07 done** in the formatter, by calendar anniversary. B03's policy table and refusal code exist. The rest is the engine, to the conventions of ADR 0037 (proposed) |
+| MWR | C01–C05 | `pert` |
+| Fees | D01–D05 | **D01 done** (`fee_class`, `NULL` refused). **D03 applies** — the owner's wrap fee is a bundled fee ([ADR 0036](adr/0036-a-wrap-fee-is-a-bundled-fee.md), proposed); until it lands, `pert` computes net-of-fees only. D04: the margin loan is a modelled liability. D05 needs nothing |
+| Risk | F01–F05 | `pert` |
+| Benchmarks | G01–G05 | **G01 done**: a price-only series is refused. **G02 done**: unassigned means `Cash (0%)`, labelled ([ADR 0030](adr/0030-default-benchmark-is-cash-at-zero.md)). G03/G04's tables exist. A real benchmark series waits on the owner's benchmark tool |
+| Reporting | H01–H08 | `ReturnValue` carries method, basis and period (H04). The rest is `pert`'s |
+| Disclosure | I01–I17 | `DisclosureEngine` not built |
+| Integrity | J01–J06 | **J05 done** (the lint). J03: the ledger, price provenance and replay. J01/J02: the `report_issue` table exists and nothing writes it |
 | Composites | E01–E10 | EXT — v1.0 |
 
-**Three things to do before `pert` work begins**, in priority order:
+**Done before `pert` work began:** `PORT-GIPS-J05` (the compliance-language lint), `PORT-GIPS-D01` (the `fee_class` schema change) and `PORT-GIPS-B02` (classification in one service function) — the three this section once listed as prerequisites, each because retrofitting it after returns exist would restate every published number. Then, on 2026-11-02: snapshots that accrue what they claim to (ADR 0035), the B07 boundary, the re-derivation test, and the decisions in ADRs 0036 and 0037.
 
-1. **`PORT-GIPS-J05`** — the compliance-language lint, plus correcting "GIPS-consistent" in `portable_bootstrap_prompt.md`, `CLAUDE.md`, and the `pert` backlog issues. Cheapest item here, and the one that prevents a claim shipping.
-2. **`PORT-GIPS-D01`** — the `fee_class` schema change and migration. Retrofitting a fee taxonomy after returns exist means restating every published number.
-3. **`PORT-GIPS-B02`** — audit `pt cash-flows --external-only` against the classification matrix and move the classification into a single service function. Everything in §6.B and §6.C consumes it; if it is wrong, every return is wrong in a way that looks entirely plausible.
-
-Each warrants an ADR. `PORT-GIPS-E07` (composite aggregation method) and `PORT-GIPS-B06` (Modified Dietz as the documented fallback) will each need one when their features land.
+`PORT-GIPS-E07` (composite aggregation method) will need its own ADR when composites land.
 
 ---
 

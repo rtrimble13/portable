@@ -395,6 +395,8 @@ test that fails without your change.
   | 0033 | A row's identity spells its account as the portfolio does |
   | 0034 | A wrong symbol is corrected, not renamed |
   | 0035 | What a valuation snapshot accrues, and the bond it cannot yet value |
+  | 0036 | A wrap fee is a bundled fee, deducted at every return basis (proposed) |
+  | 0037 | The return engine's conventions: daily sub-periods, flows at the close, refusals (proposed) |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

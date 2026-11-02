@@ -58,3 +58,17 @@ ADR (that document's §13), and `PORT-GIPS-xxx` identifiers are never reused.
 | [0021](0021-derived-state-as-of-a-past-date.md) | Derived state as of a past date |
 | [0022](0022-amending-a-shipped-migration.md) | Amending a shipped migration, and the one it was needed for |
 | [0023](0023-position-regroup-is-a-ledger-row.md) | A change of grouping is a ledger row |
+| [0024](0024-valuation-snapshots-are-valued-state.md) | Valuation snapshots are valued state: kept by rebuild, removed when stale, checked by validate |
+| [0025](0025-config-rows-dated-into-history.md) | A config row dated into history is refused, or restated on request |
+| [0026](0026-dry-run-rehearses-the-write.md) | A dry run is the real write, rolled back |
+| [0027](0027-position-label-is-a-ledger-row.md) | A position label is a ledger row |
+| [0028](0028-instrument-with-no-market-price.md) | An instrument with no market price is valued at zero, at level 5 |
+| [0029](0029-prices-through-duk.md) | Prices through `duk ph`; identity and corporate actions through `mart` |
+| [0030](0030-default-benchmark-is-cash-at-zero.md) | The default benchmark is cash at 0%, labelled as such |
+| [0031](0031-price-acceptance-against-statements.md) | Price history is accepted against the custodian's stated prices, to the cent |
+| [0032](0032-fafnir-through-duk-alone.md) | fafnir through `duk` alone: identity, actions and calendar join prices |
+| [0033](0033-identity-spells-the-account-as-the-portfolio-does.md) | A row's identity spells its account as the portfolio does |
+| [0034](0034-a-wrong-symbol-is-corrected-not-renamed.md) | A wrong symbol is corrected, not renamed |
+| [0035](0035-accrued-income-in-valuation-snapshots.md) | What a valuation snapshot accrues, and the bond it cannot yet value |
+| [0036](0036-a-wrap-fee-is-a-bundled-fee.md) | A wrap fee is a bundled fee, deducted at every return basis |
+| [0037](0037-return-engine-conventions.md) | The return engine's conventions: daily sub-periods, flows at the close, and what it refuses |

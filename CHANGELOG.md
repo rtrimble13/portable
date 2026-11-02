@@ -352,6 +352,22 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **`PORT-GIPS-D03` applies: the owner's wrap fee is a bundled fee** (ADR 0036,
+  proposed). The requirement read "not applicable to a self-directed
+  brokerage portfolio"; the owner confirmed the reference custodian's fee is a
+  true wrap, one fee for management and trading, not decomposable. It is
+  deducted in full at every return basis, gross-of-fees included. ADR 0014
+  had classed it `external_mgmt_fee`, which gross-of-fees adds back, and is
+  corrected. ADR 0036 proposes a `bundled_fee` class (a schema change) and
+  correcting the rows already in the ledger by reversal and re-entry; until
+  it is accepted, `pert` computes net-of-fees only, which this does not
+  affect.
+- **The return engine's conventions are decided before the engine** (ADR 0037,
+  proposed): daily sub-periods, flows counted at the close, no return for a
+  day that begins at zero (which is ADR 0015's opening-date rule, re-checked
+  as it asked), no link across a track-record break, Modified Dietz never
+  across a missing day, and what is refused. `docs/gips-standard.md` §5 and
+  §8 now say what is built, and the ADR index in ADR 0001 runs to 0037.
 - **fafnir is read through `duk` alone** (ADR 0032, decided by the owner;
   completes ADR 0029). The ticker history and security master
   (`duk th`), corporate actions (`duk ca --exact`) and the trading calendar

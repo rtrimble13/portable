@@ -4,6 +4,7 @@
 - **Date:** 2026-09-08
 - **Milestone:** v0.2
 - **Governs:** `PORT-GIPS-B02`, `PORT-GIPS-D01`; ADR 0007
+- **Corrected by:** [ADR 0036](0036-a-wrap-fee-is-a-bundled-fee.md) — the fee class: the owner's fee is a true wrap, a bundled fee
 - **Scope:** a **custodian-specific** arrangement. [ADR 0018](0018-minimum-broker-dataset.md)
   places it in an optional per-custodian post-pass, expressed as a declarative pairing
   rule; most custodians will not need it. The fee *classification* below is general.
@@ -110,6 +111,15 @@ empty on every row of the sample export, so **no** imported row carries
 net-of-external-costs-only numerically identical for these accounts, which
 `ReturnBasis` anticipates; `pert` must report the figure once and label it,
 rather than printing two identical columns.
+
+> **Corrected by [ADR 0036](0036-a-wrap-fee-is-a-bundled-fee.md) (2026-11-02).**
+> The last two sentences do not follow. Gross-of-fees adds an
+> `external_mgmt_fee` back, so with these rows the two bases differ by every
+> quarter's fee. The owner has since confirmed that the fee is a true wrap: a
+> bundled fee that includes the trading costs (`PORT-GIPS-D03`), deducted in
+> full at every basis. That makes the bases equal, and it means the class
+> above is wrong for these rows. ADR 0036 proposes the class and the
+> correction.
 
 ## Consequences
 
