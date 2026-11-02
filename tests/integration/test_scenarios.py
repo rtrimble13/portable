@@ -247,7 +247,14 @@ def test_3_covered_call_written_and_assigned(run_pt: CliRunner, portfolio: Path)
 
 
 def test_5_bond_bought_between_coupons(run_pt: CliRunner, portfolio: Path) -> None:
-    """Accrued interest is part of market value, not a memo (PORT-GIPS-A06)."""
+    """Accrued interest is part of market value, not a memo (PORT-GIPS-A06).
+
+    `portable` cannot yet put it there honestly: the ledger does not record the
+    accrued interest paid to the seller, so an accrual in market value would be
+    booked as a gain on the day of purchase (ADR 0035). Until it can, the
+    snapshot says it is unfit for a return and names the bond, instead of
+    valuing it clean and calling itself complete.
+    """
     port = str(portfolio)
     run_pt(
         "--port",
@@ -318,6 +325,14 @@ def test_5_bond_bought_between_coupons(run_pt: CliRunner, portfolio: Path) -> No
     # The accrued interest paid to the seller is NOT basis: basis is price
     # times quantity plus fees.
     assert D(bond["cost_basis"]) == D("10124.00")
+
+    valued = run_pt("--port", port, "value", "--date", "2024-06-30", "-a", "B")
+    [row] = valued.data["rows"]
+    assert row["complete"] is False
+    assert any(
+        "T-4.25-2030: accrued interest on a coupon bond is not modelled yet" in warning
+        for warning in valued.json()["warnings"]
+    ), valued.json()["warnings"]
 
 
 # ── 6 ────────────────────────────────────────────────────────────────────────

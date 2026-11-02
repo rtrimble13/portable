@@ -1017,6 +1017,10 @@ class TransactionRepository(_Repository):
         A regroup or a label is exempt, and so is its reversal: it changes no
         quantity and no cash (ADR 0023, ADR 0027), and a snapshot records
         neither positions nor their names.
+
+        A row whose ex-date precedes its date -- a distribution, dated on the
+        day it is paid -- changes snapshots from its ex-date, because each one
+        between the two accrues it (ADR 0035).
         """
         affected = [txn]
         if txn.txn_type is TransactionType.REVERSAL and txn.reverses_txn_id is not None:
@@ -1026,7 +1030,10 @@ class TransactionRepository(_Repository):
         if any(row.txn_type in _NAMES_ONLY for row in affected):
             return
 
-        since = min(row.trade_date for row in affected)
+        since = min(
+            min(row.trade_date, row.ex_date) if row.ex_date is not None else row.trade_date
+            for row in affected
+        )
         accounts = sorted(
             {
                 side

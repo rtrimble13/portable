@@ -182,12 +182,22 @@ class ValuationEngine:
         Accrual for interest-bearing instruments is *required* under
         Firms 2.A.10 / AO 22.A.7 -- not merely recommended, which is the
         asymmetry with dividends worth keeping straight.
+
+        Snapshots do not call this yet: see :meth:`unaccrued_interest` and
+        ADR 0035 for what is missing before they can.
+
+        Raises:
+            ValueError: a coupon bond without its coupon dates. Zero would be a
+                plausible accrual and a wrong one (`CLAUDE.md` invariant 10).
         """
         bond = holding.instrument.bond
         if bond is None or bond.is_zero_coupon:
             return ZERO
         if holding.last_coupon_date is None or holding.next_coupon_date is None:
-            return ZERO
+            raise ValueError(
+                f"accrued interest on {holding.instrument.symbol} needs its last and "
+                "next coupon dates"
+            )
 
         fraction = accrual_fraction(
             holding.last_coupon_date, as_of, holding.next_coupon_date, bond.day_count
@@ -214,16 +224,24 @@ class ValuationEngine:
         Note this is a **recommendation** (Firms 2.B.3), not a requirement, and
         must not be described as one. `portable` adopts it because the
         alternative moves return between periods for no reason.
+
+        The amount accrued is what the pay-date will deliver -- the gross less
+        the tax withheld from it (ADR 0035) -- so that on the pay-date the
+        receivable becomes cash, or units, of the same value and the day shows
+        no change. Accruing the gross would put the withholding into the
+        pay-date's return instead of the ex-date's.
         """
         with money_context():
             return quantize_money(
                 sum(
                     (
-                        t.gross_amount or ZERO
+                        _delivered(t)
                         for t in declared
                         if t.ex_date is not None
                         and t.ex_date <= as_of
-                        and (t.pay_date is None or t.pay_date > as_of)
+                        # A row with no pay-date delivers on its own date;
+                        # without one it would be owed for ever.
+                        and (t.pay_date if t.pay_date is not None else t.trade_date) > as_of
                     ),
                     ZERO,
                 )
@@ -244,9 +262,7 @@ class ValuationEngine:
         beginning_market_value: Decimal = ZERO,
         transactions: list[Transaction] | None = None,
         policy: ReturnPolicy | None = None,
-        income_amount: Decimal = ZERO,
-        fees_amount: Decimal = ZERO,
-        incomplete_symbols: tuple[str, ...] = (),
+        unvalued: tuple[str, ...] = (),
     ) -> ValuationSnapshot:
         """Assemble the snapshot for one account on one date.
 
@@ -263,6 +279,13 @@ class ValuationEngine:
         Operating cash (``PORT-GIPS-A07`` / AO 22.B.9) is excluded from
         securities value only when the account carries that explicit flag --
         never implicitly.
+
+        *transactions* are the account's rows dated *as_of*. The day's external
+        flows, income and costs all come from them, through
+        :mod:`~portable_core.services.cash_flow` (ADR 0007). *unvalued* names
+        each holding the snapshot could not value and why; any entry makes the
+        snapshot incomplete, and an incomplete snapshot must not be used for a
+        return.
         """
         with money_context():
             securities = quantize_money(sum((p.market_value for p in priced), ZERO))
@@ -291,6 +314,9 @@ class ValuationEngine:
             portfolio_flow = quantize_money(
                 sum((f.amount for f in flows[FlowLevel.PORTFOLIO]), ZERO)
             )
+        income_amount, fees_amount = self._income_and_costs(
+            transactions or [], as_of, account_id=account.account_id
+        )
 
         return ValuationSnapshot(
             account_id=account.account_id,
@@ -308,7 +334,8 @@ class ValuationEngine:
             income_amount=income_amount,
             fees_amount=fees_amount,
             level5_market_value=level5,
-            is_complete=not incomplete_symbols,
+            is_complete=not unvalued,
+            unvalued=unvalued,
             uses_estimates=any(p.is_estimate for p in priced),
             prices=tuple(priced),
             flows=tuple(flows[FlowLevel.ACCOUNT]),
@@ -360,6 +387,63 @@ class ValuationEngine:
         return result
 
     @staticmethod
+    def _income_and_costs(
+        transactions: list[Transaction], as_of: date, *, account_id: int
+    ) -> tuple[Decimal, Decimal]:
+        """The income an account received on *as_of*, and the costs it paid.
+
+        Both are memos beside the market value, which already reflects them.
+        What is income and what is a cost is the classifier's answer
+        (ADR 0007), not this function's.
+
+        * **Income** is each income row's delivered value -- the gross less the
+          tax withheld from it, in cash or in reinvested units -- on the date it
+          is delivered. A distribution accrued from its ex-date is in
+          ``accrued_dividends`` until then (ADR 0035).
+        * **Costs** are every row the classifier calls a cost -- fees of every
+          class and margin interest -- as a positive amount charged. They are
+          **all classes together**: which return bases a fee reduces depends on
+          its ``fee_class`` (``PORT-GIPS-D01``), and this figure cannot answer
+          that. A return basis is derived from the rows, never from this sum.
+        """
+        income = ZERO
+        costs = ZERO
+        with money_context():
+            for txn in transactions:
+                if txn.trade_date != as_of:
+                    continue
+                classified = cash_flow.classify_for_account(txn, account_id, FlowLevel.ACCOUNT)
+                if classified.is_income:
+                    income += _delivered(txn)
+                elif classified.is_cost:
+                    costs -= txn.net_cash_effect
+            return quantize_money(income), quantize_money(costs)
+
+    @staticmethod
+    def unaccrued_interest(holding: Holding) -> str | None:
+        """Why a holding's accrued interest cannot be put in a snapshot, or None.
+
+        ``PORT-GIPS-A06`` *requires* accrued interest in market value for an
+        interest-bearing instrument. For a coupon bond `portable` cannot yet
+        provide it honestly (ADR 0035): the ledger does not record the accrued
+        interest a buyer pays the seller or a seller receives, so adding the
+        accrual to market value would book that amount as a gain the day the
+        bond is bought and as a loss the day it is sold. A snapshot holding one
+        is therefore incomplete -- unfit for a return -- rather than valued
+        without its accrual, which is the zero this would otherwise be.
+
+        A zero-coupon bond accrues nothing to omit: its accretion is in its
+        price.
+        """
+        bond = holding.instrument.bond
+        if bond is None or bond.is_zero_coupon:
+            return None
+        return (
+            f"{holding.instrument.symbol}: accrued interest on a coupon bond is not "
+            "modelled yet, so its market value would omit it (ADR 0035)"
+        )
+
+    @staticmethod
     def level5_percentage(snapshot: ValuationSnapshot) -> Decimal:
         """Share of market value priced on unobservable inputs.
 
@@ -370,3 +454,15 @@ class ValuationEngine:
             return ZERO
         with money_context():
             return snapshot.level5_market_value / snapshot.ending_market_value
+
+
+def _delivered(txn: Transaction) -> Decimal:
+    """What an income row brings into the account: the gross less the tax withheld.
+
+    A cash distribution delivers its net cash; a reinvested one delivers units
+    worth its gross, and cannot have tax withheld from it (``record_income``).
+    A row with no gross recorded delivers its cash.
+    """
+    if txn.gross_amount is None:
+        return txn.net_cash_effect
+    return txn.gross_amount - txn.taxes_withheld

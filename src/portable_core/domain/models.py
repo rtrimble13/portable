@@ -673,9 +673,13 @@ class ValuationSnapshot:
     income_amount: Decimal = Decimal("0.00")
     fees_amount: Decimal = Decimal("0.00")
     level5_market_value: Decimal = Decimal("0.00")
-    #: 0 when any position could not be priced. A snapshot that is not complete
+    #: 0 when any position could not be valued. A snapshot that is not complete
     #: must not be silently used for a return.
     is_complete: bool = True
+    #: Each holding the snapshot could not value, and why -- a missing price,
+    #: or accrued interest it cannot yet include (ADR 0035). Said when the
+    #: snapshot is built, not stored: ``is_complete`` is what is kept.
+    unvalued: tuple[str, ...] = ()
     uses_estimates: bool = False
     snapshot_id: int | None = None
     prices: tuple[SnapshotPrice, ...] = field(default_factory=tuple)

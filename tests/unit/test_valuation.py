@@ -477,6 +477,7 @@ def test_an_incomplete_snapshot_is_marked_incomplete() -> None:
         date(2025, 6, 30),
         priced=[],
         cash_balance=D("0.00"),
-        incomplete_symbols=("ACME",),
+        unvalued=("ACME: no price for ACME on or before 2025-06-30",),
     )
     assert snapshot.is_complete is False
+    assert snapshot.unvalued == ("ACME: no price for ACME on or before 2025-06-30",)

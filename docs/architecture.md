@@ -140,7 +140,7 @@ returns domain objects. This is what makes them unit-testable without a database
 | `LotEngine` | Lot creation, relief-method matching (spec-ID, FIFO, LIFO, HIFO, LOFO, average cost), disposition, holding-period determination |
 | `PositionEngine` | Position and leg lifecycle: open, add, reduce, roll, close, group, ungroup; the long↔short flip split |
 | `TaxEngine` | Estimated liability from realized gains and effective-dated rate schedules (ADR 0011) |
-| `ValuationEngine` | Snapshots: beginning/ending market value, accrued income, cash, margin, external flows with day-resolution timing, and the price set consumed |
+| `ValuationEngine` | Snapshots: beginning/ending market value, accrued dividends (bond interest is an accepted gap, ADR 0035), cash, margin, external flows with day-resolution timing, income and cost memos, and the price set consumed |
 | `CorporateActionEngine` | Splits, reverse splits, stock dividends, spinoffs, mergers, symbol changes, delistings — and their basis and holding-period effects |
 | `CashFlowClassifier` | **One function.** `classify(txn, level)` (ADR 0007, `PORT-GIPS-B02`) |
 | `DisclosureEngine` | Ordered, stable-ID disclosure items **generated from state**, not from a template |

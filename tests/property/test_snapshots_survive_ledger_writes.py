@@ -41,10 +41,19 @@ START = date(2024, 1, 2)
 DAYS = 20
 
 #: Compared with a fresh valuation. The rest chain from the day before.
-_SAME_DAY = ("ending_market_value", "securities_value", "cash_balance", "external_flow_account")
+_SAME_DAY = (
+    "ending_market_value",
+    "securities_value",
+    "cash_balance",
+    "external_flow_account",
+    "accrued_dividends",
+    "income_amount",
+)
 
 #: ("value", first, span) | ("deposit"/"withdrawal"/"transfer", account, day, cents)
 #: | ("buy", account, day, quantity) | ("reverse", pick, days_later)
+#: | ("dividend", account, pay day, days from ex-date to pay-date) -- a row dated
+#: on its pay-date that every snapshot from its ex-date accrues (ADR 0035)
 Step = tuple[str, int, int, int]
 
 steps = st.lists(
@@ -60,6 +69,9 @@ steps = st.lists(
             st.just("buy"), st.integers(0, 1), st.integers(0, DAYS - 1), st.integers(1, 9)
         ),
         st.tuples(st.just("reverse"), st.integers(0, 50), st.integers(0, 5), st.just(0)),
+        st.tuples(
+            st.just("dividend"), st.integers(0, 1), st.integers(0, DAYS - 1), st.integers(0, 5)
+        ),
     ),
     min_size=2,
     max_size=12,
@@ -127,7 +139,12 @@ def _write(
         return
 
     account, on = accounts[a], START + timedelta(days=b)
-    if kind == "buy":
+    if kind == "dividend":
+        gross = D(c + 1) * 10
+        txn_id = append(repos, account.account_id, TransactionType.DIVIDEND, on,
+                        instrument_id=instrument_id, gross_amount=gross, net_cash_effect=gross,
+                        ex_date=max(START, on - timedelta(days=c)), pay_date=on)  # fmt: skip
+    elif kind == "buy":
         gross = D(c) * D(100 + b)
         txn_id = append(repos, account.account_id, TransactionType.BUY, on,
                         instrument_id=instrument_id, quantity=D(c), price=D(100 + b),
@@ -161,6 +178,10 @@ def _reversed(repos: Repositories) -> set[int]:
 # Found by this test: a later day valued alone began from zero, and valuing the
 # days before it left that beginning value behind.
 @example(plan=[("deposit", 0, 0, 1), ("value", 19, 0, 0), ("value", 14, 4, 0)])
+# A distribution recorded on its pay-date changes the snapshots from its
+# ex-date, which accrue it; removing only those from the pay-date left three
+# that no longer held (ADR 0035).
+@example(plan=[("deposit", 0, 0, 1), ("value", 0, 4, 0), ("dividend", 0, 5, 3)])
 def test_every_stored_snapshot_still_holds_after_every_write(plan: list[Step]) -> None:
     with _portfolio() as (repos, accounts, instrument_id):
         entries: list[int] = []

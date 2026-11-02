@@ -66,6 +66,14 @@ class FlowResult:
     def is_external(self) -> bool:
         return self.classification is FlowClassification.EXTERNAL
 
+    @property
+    def is_income(self) -> bool:
+        return self.classification is FlowClassification.INCOME
+
+    @property
+    def is_cost(self) -> bool:
+        return self.classification is FlowClassification.COST
+
 
 def classify(
     txn: Transaction,

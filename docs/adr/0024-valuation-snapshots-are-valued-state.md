@@ -5,6 +5,7 @@
 - **Milestone:** v0.2
 - **Governs:** `CLAUDE.md` invariants 3, 9; `PORT-GIPS-A09`, `PORT-GIPS-B03`, `PORT-GIPS-J03`
 - **Amends:** [ADR 0010](0010-derived-state-and-replay.md) — the partition gains a fourth class; [ADR 0016](0016-out-of-order-appends-and-validation.md) — a back-dated append's rebuild no longer deletes valuation history
+- **Amended by:** [ADR 0035](0035-accrued-income-in-valuation-snapshots.md) — a row whose ex-date precedes its date makes snapshots stale from its ex-date, because they accrue it
 
 ## Context
 

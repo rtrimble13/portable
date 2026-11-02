@@ -305,9 +305,19 @@ Things that are easy to get wrong and are therefore stated explicitly:
 - **Accrued interest is part of market value** for bonds. A bond bought between
   coupons pays accrued interest to the seller; that is not basis. Accrual is
   *required* for interest-bearing instruments and *recommended* for dividends.
+  `portable` cannot yet include it: the ledger does not record the accrued
+  interest a trade pays or receives, so a snapshot holding a coupon bond is
+  marked incomplete and names it, rather than valuing the bond without its
+  accrual ([ADR 0035](adr/0035-accrued-income-in-valuation-snapshots.md)).
 - **Ex-date versus pay-date.** Entitlement is determined on the ex-date; cash
   arrives on the pay-date. Both are recorded. Accruing on the wrong one shifts
-  return across a period boundary.
+  return across a period boundary. A distribution with an ex-date before its
+  pay-date accrues from the ex-date, at what the pay-date will deliver; one
+  recorded without an ex-date, as every imported one is, is recognised when
+  paid (ADR 0035).
+- **Income and costs on a snapshot are memos.** The market value already
+  reflects both. The cost figure is every fee class together, so a return
+  basis is derived from each fee's class, never from it (`PORT-GIPS-D01`).
 - **Unadjusted prices, always**, with explicit corporate-action transactions.
   Adjusted prices are not fair values on the measurement date and would
   double-count splits. (Performance *return series* may use adjusted prices —

@@ -819,9 +819,9 @@ def value(
             on = snapshot.snapshot_date
             if not snapshot.is_complete:
                 warnings.append(
-                    f"{name} {on.isoformat()}: incomplete -- some positions "
-                    "could not be priced. This snapshot must not be used for a "
-                    "return."
+                    f"{name} {on.isoformat()}: incomplete -- "
+                    + "; ".join(snapshot.unvalued)
+                    + ". This snapshot must not be used for a return."
                 )
             rows.append(
                 {

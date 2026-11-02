@@ -394,6 +394,7 @@ test that fails without your change.
   | 0032 | fafnir through `duk` alone: identity, actions and calendar join prices |
   | 0033 | A row's identity spells its account as the portfolio does |
   | 0034 | A wrong symbol is corrected, not renamed |
+  | 0035 | What a valuation snapshot accrues, and the bond it cannot yet value |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

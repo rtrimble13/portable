@@ -466,6 +466,31 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **Stored valuation snapshots carried zero accrued income, income and fees,
+  whatever happened that day** (ADR 0035, `PORT-GIPS-A06`). The engine could
+  compute each, and its tests handed it the inputs; the one path that builds
+  stored snapshots passed none of them. Now:
+  - a distribution recorded with an ex-date before its pay-date accrues from
+    the ex-date, at what the pay-date delivers (the gross less the tax
+    withheld), and recording one removes the snapshots from its ex-date, not
+    its pay-date, because they accrue it. A distribution recorded without an
+    ex-date -- every imported one -- is recognised when paid, as before;
+  - `income_amount` and `fees_amount` state the income delivered and the
+    costs charged that day, through the classifier. The cost figure is every
+    fee class together and is a memo: a return basis comes from each fee's
+    class;
+  - a snapshot holding a coupon bond is **incomplete**, and says so. Accrued
+    interest is required in its market value, and the ledger does not yet
+    record the accrued interest a bond trade pays or receives, so including it
+    would book a gain on the day of purchase. It was valued at its clean price
+    and called complete. A zero-coupon bond is unaffected;
+  - an incomplete snapshot names each holding it could not value and why;
+    `pt value` said "some positions could not be priced" and named none.
+
+  **Existing files:** a stored snapshot dated on a day with income or a fee,
+  or inside a dated distribution's accrual window, no longer matches what it
+  re-derives to. `pt validate` names each one, and `pt value` over its dates
+  values it again. Nothing is removed by upgrading.
 - **A 365-day return crossing 29 February could be annualized a day early**
   (`PORT-GIPS-B07`). The formatter's guard counted 365 days as a year, so a
   period from 2024-02-01 to 2025-01-31, a day short of one, passed. "Less than

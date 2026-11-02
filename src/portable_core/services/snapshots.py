@@ -67,6 +67,7 @@ def build(
     *,
     beginning: Decimal,
     transactions: list[Transaction],
+    declared: Sequence[Transaction],
     price_for: PriceLookup,
     staleness_tolerance_days: int,
 ) -> ValuationSnapshot:
@@ -79,15 +80,24 @@ def build(
     derived from. A flow taken from any other set is a flow the market value
     does not reflect.
 
-    Instruments that cannot be priced are collected rather than raised on, so
+    *declared* are the account's effective rows whose ex-date precedes the day
+    they deliver (:func:`_declared`). One whose ex-date has come and whose
+    pay-date has not is owed to the account on *on*, and is accrued
+    (``PORT-GIPS-A06``, ADR 0035) -- a row dated after *on*, read because
+    entitlement was fixed before it.
+
+    Instruments that cannot be valued are collected rather than raised on, so
     that one missing price does not hide the rest of the report -- but the
-    snapshot is marked incomplete, and an incomplete snapshot must not be used
-    for a return.
+    snapshot is marked incomplete, says which and why, and an incomplete
+    snapshot must not be used for a return.
     """
     engine = ValuationEngine(staleness_tolerance_days=staleness_tolerance_days)
     priced: list[SnapshotPrice] = []
-    missing: list[str] = []
+    unvalued: list[str] = []
     for holding in _holdings(repos, account.account_id):
+        unaccrued = engine.unaccrued_interest(holding)
+        if unaccrued is not None:
+            unvalued.append(unaccrued)
         if not holding.instrument.has_market_price:
             # ADR 0028: nothing quotes it, so no price is looked for.
             priced.append(engine.without_market_price(holding, on))
@@ -98,8 +108,8 @@ def build(
                     holding, price_for(holding.instrument.instrument_id, on), on
                 )
             )
-        except DataUnavailableError:
-            missing.append(holding.instrument.symbol)
+        except DataUnavailableError as exc:
+            unvalued.append(f"{holding.instrument.symbol}: {exc.message}")
 
     cash, margin = repos.valuations.cash(account.account_id, currency=account.currency)
     return engine.build_snapshot(
@@ -108,10 +118,11 @@ def build(
         priced=priced,
         cash_balance=cash,
         margin_loan=margin,
+        accrued_dividends=engine.accrued_dividends(list(declared), on),
         beginning_market_value=beginning,
         transactions=transactions,
         policy=repos.policies.in_force(on),
-        incomplete_symbols=tuple(missing),
+        unvalued=tuple(unvalued),
     )
 
 
@@ -133,6 +144,7 @@ def value_range(
     """
     days = [first + timedelta(days=n) for n in range((last - first).days + 1)]
     rows_on = _rows_on(repos, set(days))
+    declared = _declared(repos)
 
     beginning: dict[int, Decimal] = {}
     for target in accounts:
@@ -150,6 +162,7 @@ def value_range(
                 on,
                 beginning=beginning[target.account_id],
                 transactions=rows_on.get((target.account_id, on), []),
+                declared=declared.get(target.account_id, ()),
                 price_for=repos.prices.newest_on_or_before,
                 staleness_tolerance_days=staleness_tolerance_days,
             )
@@ -299,6 +312,7 @@ def _rederive(
     days = sorted(by_date)
     accounts = {account.account_id: account for account in repos.accounts.all()}
     rows_on = _rows_on(repos, set(days))
+    declared = _declared(repos)
 
     def visit(on: date) -> list[_Rederived]:
         again: list[_Rederived] = []
@@ -313,6 +327,7 @@ def _rederive(
                 on,
                 beginning=from_text(beginning),
                 transactions=rows_on.get((account_id, on), []),
+                declared=declared.get(account_id, ()),
                 price_for=_recorded(recorded[snapshot_id]),
                 staleness_tolerance_days=_ANY_STALENESS,
             )
@@ -418,3 +433,20 @@ def _rows_on(repos: Repositories, days: set[date]) -> dict[tuple[int, date], lis
         for side in cash_flow.accounts_touched(txn):
             rows.setdefault((side, txn.trade_date), []).append(txn)
     return rows
+
+
+def _declared(repos: Repositories) -> dict[int, tuple[Transaction, ...]]:
+    """Per account, its effective rows whose ex-date precedes the day they deliver.
+
+    Entitlement to a distribution is fixed on its ex-date and the row is dated
+    on its pay-date (``record_income``), so a snapshot between the two needs a
+    row dated after it (ADR 0035). Read from the effective ledger, so a
+    reversed distribution is owed to nobody. A row whose ex-date is its
+    pay-date -- every one imported without an ex-date -- accrues nothing and is
+    recognised when it is paid.
+    """
+    declared: dict[int, list[Transaction]] = {}
+    for txn in effective_ledger(repos.transactions.in_ledger_order()):
+        if txn.ex_date is not None and txn.ex_date < txn.trade_date:
+            declared.setdefault(txn.account_id, []).append(txn)
+    return {account_id: tuple(rows) for account_id, rows in declared.items()}
