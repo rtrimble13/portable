@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import shutil
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -34,10 +33,6 @@ from portable_pt import state
 from portable_pt.commands._shared import dispatch
 
 app = typer.Typer(help="Portfolio-level operations.", no_args_is_help=True)
-
-
-def _now() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @app.command()
@@ -106,6 +101,7 @@ def init(
         try:
             version = M.initialise(con)
             repos = Repositories(con)
+            stamp = repos.clock.stamp()
             with transaction(con):
                 for key, value in {
                     "portfolio_name": name,
@@ -114,8 +110,8 @@ def init(
                     "base_currency": base_currency.upper(),
                     "fiscal_year_end": fiscal_year_end,
                     "schema_version": str(version),
-                    "created_at": _now(),
-                    "updated_at": _now(),
+                    "created_at": stamp,
+                    "updated_at": stamp,
                     "portable_version": __version__,
                 }.items():
                     repos.meta.set(key, value)

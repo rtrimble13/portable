@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from itertools import groupby
 from pathlib import Path
@@ -100,7 +100,7 @@ def set_price(
             price_date=on,
             price=from_text(price),
             source=source,
-            as_of=datetime.now(UTC),
+            as_of=repos.clock.now(),
             valuation_level=level,
             valuation_basis=(ValuationBasis.ESTIMATE if estimate else ValuationBasis.MANUAL),
             is_estimate=estimate,

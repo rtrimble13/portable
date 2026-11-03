@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date
 from decimal import Decimal
 from typing import Any, ClassVar, cast
 
+from portable_core.clock import SYSTEM_CLOCK, Clock
 from portable_core.decimals import to_text
 from portable_core.domain.enums import TransactionType
 from portable_core.domain.models import (
@@ -72,19 +73,23 @@ __all__ = [
 ]
 
 
-def _now() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def _text(value: Decimal | None) -> str | None:
     return None if value is None else to_text(value)
 
 
 class _Repository:
-    """Common base: holds the connection, nothing more."""
+    """Common base: holds the connection and the clock, nothing more.
 
-    def __init__(self, con: sqlite3.Connection) -> None:
+    The clock has no default here. A repository gets its clock from the
+    :class:`Repositories` bundle, and one added to the bundle without it should
+    fail to construct, not quietly stamp from the wall clock.
+    """
+
+    def __init__(self, con: sqlite3.Connection, clock: Clock) -> None:
         self.con = con
+        #: What every ``created_at`` and ``updated_at`` this repository writes
+        #: is read from (ADR 0035). Never ``datetime.now()`` at a call site.
+        self.clock = clock
 
 
 # ── meta ─────────────────────────────────────────────────────────────────────
@@ -128,7 +133,7 @@ class MetaRepository(_Repository):
         self.con.execute(
             "INSERT INTO meta_change_log (key, old_value, new_value, effective_from, "
             "reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (key, old, new, effective_from.isoformat(), reason, _now()),
+            (key, old, new, effective_from.isoformat(), reason, self.clock.stamp()),
         )
 
 
@@ -143,6 +148,7 @@ class AccountRepository(_Repository):
     )
 
     def add(self, account: Account) -> int:
+        stamp = self.clock.stamp()
         cursor = self.con.execute(
             "INSERT INTO account (name, account_type, custodian, account_alias, "
             "opened_date, closed_date, status, cash_treatment, default_relief_method, "
@@ -162,8 +168,8 @@ class AccountRepository(_Repository):
                 account.sweep_instrument_id,
                 account.currency,
                 account.note,
-                _now(),
-                _now(),
+                stamp,
+                stamp,
             ),
         )
         return int(cursor.lastrowid or 0)
@@ -214,7 +220,7 @@ class AccountRepository(_Repository):
         self.con.execute(
             "UPDATE account SET status = 'closed', closed_date = ?, updated_at = ? "
             "WHERE account_id = ?",
-            (on.isoformat(), _now(), account_id),
+            (on.isoformat(), self.clock.stamp(), account_id),
         )
 
     #: Columns `update` will write. Interpolated into SQL, so the set is
@@ -251,7 +257,7 @@ class AccountRepository(_Repository):
         self.con.execute(
             f"UPDATE account SET {assignments}, updated_at = ? "  # noqa: S608 -- keys are allow-listed above
             "WHERE account_id = ?",
-            (*(fields[k] for k in keys), _now(), account_id),
+            (*(fields[k] for k in keys), self.clock.stamp(), account_id),
         )
 
     # ── tax rates ────────────────────────────────────────────────────────────
@@ -270,7 +276,7 @@ class AccountRepository(_Repository):
                 to_text(schedule.niit),
                 _text(schedule.qualified_dividend),
                 schedule.note,
-                _now(),
+                self.clock.stamp(),
                 schedule.corrects_rate_id,
             ),
         )
@@ -310,10 +316,11 @@ class InstrumentRepository(_Repository):
         self.con.execute(
             "UPDATE instrument SET has_market_price = ?, updated_at = ? "
             "WHERE instrument_id = ?",
-            (int(has_market_price), _now(), instrument_id),
+            (int(has_market_price), self.clock.stamp(), instrument_id),
         )
 
     def add(self, instrument: Instrument) -> int:
+        stamp = self.clock.stamp()
         cursor = self.con.execute(
             "INSERT INTO instrument (symbol, instrument_type, name, currency, exchange, "
             "cusip, isin, figi, sector, industry, asset_class, country, is_active, "
@@ -336,8 +343,8 @@ class InstrumentRepository(_Repository):
                 instrument.source,
                 instrument.provider_ref,
                 int(instrument.has_market_price),
-                _now(),
-                _now(),
+                stamp,
+                stamp,
             ),
         )
         instrument_id = int(cursor.lastrowid or 0)
@@ -525,7 +532,7 @@ class InstrumentRepository(_Repository):
         )
         self.con.execute(
             "UPDATE instrument SET symbol = ?, updated_at = ? WHERE instrument_id = ?",
-            (new_symbol, _now(), instrument_id),
+            (new_symbol, self.clock.stamp(), instrument_id),
         )
 
     def periods_named(self, symbol: str) -> list[tuple[int, date, date | None]]:
@@ -562,7 +569,7 @@ class InstrumentRepository(_Repository):
         self.con.execute(
             "UPDATE instrument SET symbol = ?, updated_at = ? "
             "WHERE instrument_id = ? AND symbol = ?",
-            (new_symbol, _now(), instrument_id, old_symbol),
+            (new_symbol, self.clock.stamp(), instrument_id, old_symbol),
         )
 
 
@@ -613,7 +620,7 @@ class CorporateActionRepository(_Repository):
                 action.source,
                 action.provider_ref,
                 action.applied_txn_id,
-                _now(),
+                self.clock.stamp(),
             ),
         )
         return int(cursor.lastrowid or 0)
@@ -668,7 +675,7 @@ class StatementRepository(_Repository):
                 to_text(position.quantity),
                 to_text(position.market_value),
                 position.source,
-                _now(),
+                self.clock.stamp(),
             ),
         )
         after = self.get(position.account_id, position.statement_date, position.instrument_id)
@@ -711,7 +718,7 @@ class StatementRepository(_Repository):
                 to_text(acceptance.price),
                 acceptance.price_date.isoformat(),
                 acceptance.reason,
-                _now(),
+                self.clock.stamp(),
             ),
         )
         return int(cursor.lastrowid or 0)
@@ -751,7 +758,7 @@ class PriceRepository(_Repository):
                 str(price.valuation_basis),
                 int(price.is_estimate),
                 price.provider_ref,
-                _now(),
+                self.clock.stamp(),
             ),
         )
         # Looked up, not `lastrowid`: a replacement takes the upsert's update
@@ -829,8 +836,8 @@ class RemovedSnapshots:
 class TransactionRepository(_Repository):
     """The ledger. Append-only, enforced by trigger as well as by this class."""
 
-    def __init__(self, con: sqlite3.Connection) -> None:
-        super().__init__(con)
+    def __init__(self, con: sqlite3.Connection, clock: Clock) -> None:
+        super().__init__(con, clock)
         #: What :meth:`append` removed, for the command to report. A snapshot
         #: removed in silence is valuation history lost in silence.
         self.removed_snapshots: list[RemovedSnapshots] = []
@@ -947,6 +954,9 @@ class TransactionRepository(_Repository):
         does too -- including the corporate-action and options commands, which
         build their rows directly rather than through a service. So does the
         removal of the valuation snapshots the row makes stale (ADR 0024).
+
+        A row that arrives without a ``created_at`` is stamped from this
+        repository's clock (ADR 0035), as is every other row it writes.
         """
         self.refuse_if_ref_taken(txn.account_id, txn.external_ref)
         cursor = self.con.execute(
@@ -997,7 +1007,7 @@ class TransactionRepository(_Repository):
                 txn.basis_assumption,
                 str(txn.strategy_type) if txn.strategy_type else None,
                 txn.label,
-                txn.created_at or _now(),
+                txn.created_at or self.clock.stamp(),
             ),
         )
         self._remove_stale_snapshots(txn)
@@ -1883,7 +1893,7 @@ class PolicyRepository(_Repository):
                 _text(policy.materiality_value),
                 policy.risk_measure_basis,
                 policy.note,
-                _now(),
+                self.clock.stamp(),
                 policy.corrects_policy_id,
             ),
         )
@@ -1938,7 +1948,7 @@ class BenchmarkRepository(_Repository):
                 benchmark.rebalance_rule,
                 int(benchmark.is_blend),
                 benchmark.source,
-                _now(),
+                self.clock.stamp(),
             ),
         )
         return int(cursor.lastrowid or 0)
@@ -1960,7 +1970,13 @@ class BenchmarkRepository(_Repository):
         cursor = self.con.execute(
             "INSERT INTO portfolio_benchmark (benchmark_id, effective_from, change_type, "
             "change_reason, created_at) VALUES (?, ?, ?, ?, ?)",
-            (benchmark_id, effective_from.isoformat(), change_type, change_reason, _now()),
+            (
+                benchmark_id,
+                effective_from.isoformat(),
+                change_type,
+                change_reason,
+                self.clock.stamp(),
+            ),
         )
         return int(cursor.lastrowid or 0)
 
@@ -1989,22 +2005,30 @@ class Repositories:
 
     Services take this rather than a connection, which keeps them free of SQL
     and makes them testable with a fake bundle.
+
+    *clock* is what every row written through the bundle is stamped with
+    (ADR 0035). It defaults to the wall clock. A writer that is handed a
+    :class:`~portable_core.clock.FixedClock` writes the same bytes on every
+    run, which is how the generated fixture stays byte-identical. A service
+    that stamps a row it builds itself reads ``repos.clock`` for the same
+    reason.
     """
 
-    def __init__(self, con: sqlite3.Connection) -> None:
+    def __init__(self, con: sqlite3.Connection, *, clock: Clock = SYSTEM_CLOCK) -> None:
         self.con = con
-        self.meta = MetaRepository(con)
-        self.accounts = AccountRepository(con)
-        self.instruments = InstrumentRepository(con)
-        self.prices = PriceRepository(con)
-        self.corporate_actions = CorporateActionRepository(con)
-        self.transactions = TransactionRepository(con)
-        self.positions = PositionRepository(con)
-        self.lots = LotRepository(con)
-        self.valuations = ValuationRepository(con)
-        self.policies = PolicyRepository(con)
-        self.benchmarks = BenchmarkRepository(con)
-        self.statements = StatementRepository(con)
+        self.clock = clock
+        self.meta = MetaRepository(con, clock)
+        self.accounts = AccountRepository(con, clock)
+        self.instruments = InstrumentRepository(con, clock)
+        self.prices = PriceRepository(con, clock)
+        self.corporate_actions = CorporateActionRepository(con, clock)
+        self.transactions = TransactionRepository(con, clock)
+        self.positions = PositionRepository(con, clock)
+        self.lots = LotRepository(con, clock)
+        self.valuations = ValuationRepository(con, clock)
+        self.policies = PolicyRepository(con, clock)
+        self.benchmarks = BenchmarkRepository(con, clock)
+        self.statements = StatementRepository(con, clock)
 
     #: Derived tables, with the column ordering that makes a digest of them
     #: stable, and the surrogate key to exclude from it. Surrogate ids are

@@ -15,7 +15,7 @@ routinely got wrong, and getting it wrong is not cosmetic:
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import date
 from decimal import Decimal
 from typing import Annotated
 
@@ -52,10 +52,6 @@ CA = CorporateActionEngine()
 LOTS = LotEngine()
 POSITIONS = PositionEngine()
 TAX = TaxEngine()
-
-
-def _now() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @app.command()
@@ -137,7 +133,7 @@ def expire(
                 note="expired worthless",
                 external_ref=ref,
                 source=TransactionSource.DERIVED,
-                created_at=_now(),
+                created_at=repos.clock.stamp(),
             )
             txn_id = repos.transactions.append(txn)
 
@@ -339,7 +335,7 @@ def assign(
                     note=(f"assigned on {option.symbol}; {premium} premium into proceeds"),
                     external_ref=ref,
                     source=TransactionSource.DERIVED,
-                    created_at=_now(),
+                    created_at=repos.clock.stamp(),
                 )
             )
 
@@ -484,7 +480,7 @@ def exercise(
                     note=(f"exercised {option.symbol}; {premium} premium into stock basis"),
                     external_ref=ref,
                     source=TransactionSource.DERIVED,
-                    created_at=_now(),
+                    created_at=repos.clock.stamp(),
                 )
             )
             from portable_core.services.replay import ReplayEngine

@@ -10,7 +10,7 @@ it (:meth:`ReplayEngine._label`); this module writes the row and nothing else.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import date
 from decimal import Decimal
 
 from portable_core.domain.enums import TransactionSource, TransactionType
@@ -82,7 +82,7 @@ def record_label(repos: Repositories, label: Label) -> LabelResult:
         note=label.note,
         external_ref=label.external_ref,
         source=TransactionSource.MANUAL,
-        created_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        created_at=repos.clock.stamp(),
     )
     txn_id = repos.transactions.append(row)
     stored = replace(row, txn_id=txn_id)

@@ -21,14 +21,20 @@ every path that is easy to get wrong:
   checked to show all three;
 * a taxable account, a tax-deferred account, and one with a margin loan.
 
-Everything is dated deterministically. There is no randomness and no clock
-dependence, so two runs produce byte-identical files -- which is what lets the
-fixture be committed and diffed.
+Everything is dated deterministically. There is no randomness, and the clock
+every row is stamped with is a fixed one handed to the repositories and to the
+migration runner (ADR 0035). Freed space is zeroed whatever the SQLite library
+was compiled with. So two runs produce byte-identical files, which is what lets
+the fixture be committed and diffed. The one exception is the header field in
+which SQLite records its own version.
+`tests/integration/test_sample_fixture.py` holds two builds to one another, and
+the committed file to a fresh build.
 """
 
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import sys
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -38,6 +44,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from portable_core import __version__  # noqa: E402
+from portable_core.clock import FixedClock  # noqa: E402
 from portable_core.decimals import quantize_money  # noqa: E402
 from portable_core.domain.enums import (  # noqa: E402
     AccountType,
@@ -69,10 +76,13 @@ from portable_core.services.replay import ReplayEngine  # noqa: E402
 D = Decimal
 ZERO = D("0.00")
 
-#: Fixed so the generated file is byte-identical across runs. `created_at` is
-#: the only wall-clock field in the ledger, and pinning it is what lets the
-#: fixture be committed and diffed.
-STAMP = "2026-08-27T00:00:00Z"
+#: The moment every row in the fixture claims to have been written. Fixed, so
+#: that two runs write the same bytes. It reaches every table through
+#: one clock, handed to the repositories and to the migration runner (ADR 0035):
+#: the ledger's `created_at`, but also the policy, account, instrument, tax-rate
+#: and corporate-action rows, and each migration's `applied_at`.
+STAMP = datetime(2026, 8, 27, tzinfo=UTC)
+CLOCK = FixedClock(STAMP)
 
 INCEPTION = date(2021, 1, 4)
 
@@ -82,7 +92,8 @@ def _txn(repos: Repositories, **fields: object) -> int:
 
     `source` is defaulted rather than forced, so a caller can mark a row
     `derived` -- which the corporate-action rows are, because portable produced
-    them rather than a human entering them.
+    them rather than a human entering them. `created_at` is left to the
+    repository, which reads it from the fixture's clock.
     """
     trade_date = fields["trade_date"]
     assert isinstance(trade_date, date)
@@ -91,7 +102,6 @@ def _txn(repos: Repositories, **fields: object) -> int:
         Transaction(
             txn_id=0,
             seq=repos.transactions.next_seq(trade_date),
-            created_at=STAMP,
             **fields,  # type: ignore[arg-type]
         )
     )
@@ -203,8 +213,13 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
                 extra.unlink()
 
     con = open_portfolio(path, must_exist=False)
-    M.initialise(con)
-    repos = Repositories(con)
+    # Zero what a delete frees, whatever this SQLite was compiled with. The
+    # migrations that rebuild a table free pages. Ubuntu's SQLite is compiled
+    # to zero them and other builds are not, and the old bytes those builds
+    # leave behind were the whole difference between their files (ADR 0035).
+    con.execute("PRAGMA secure_delete = ON")
+    M.initialise(con, clock=CLOCK)
+    repos = Repositories(con, clock=CLOCK)
 
     with transaction(con):
         for key, value in {
@@ -218,8 +233,8 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
             "base_currency": "USD",
             "fiscal_year_end": "12-31",
             "schema_version": str(M.CURRENT_SCHEMA_VERSION),
-            "created_at": STAMP,
-            "updated_at": STAMP,
+            "created_at": CLOCK.stamp(),
+            "updated_at": CLOCK.stamp(),
             "portable_version": __version__,
         }.items():
             repos.meta.set(key, value)
@@ -797,6 +812,9 @@ def main() -> int:
     print(f"wrote {args.out}")
     for key in sorted(counts):
         print(f"  {key}: {counts[key]}")
+    # Recorded in the file's header too, the one field a build on another
+    # library is expected to change (ADR 0035).
+    print(f"  written by SQLite {sqlite3.sqlite_version}")
     return 0
 
 

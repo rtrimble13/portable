@@ -16,7 +16,7 @@ not write.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import date
 from decimal import Decimal
 
 from portable_core.decimals import is_whole, money_context, quantize_money, quantize_quantity
@@ -180,7 +180,7 @@ class TradingService:
             note=intent.note,
             external_ref=intent.external_ref,
             source=intent.source,
-            created_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            created_at=self.repos.clock.stamp(),
         )
 
         return TradePlan(
@@ -388,7 +388,7 @@ class TradingService:
             note=note,
             external_ref=external_ref,
             source=source,
-            created_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            created_at=self.repos.clock.stamp(),
         )
 
     # ── income ───────────────────────────────────────────────────────────────
@@ -517,7 +517,7 @@ class TradingService:
             note=note,
             external_ref=external_ref,
             source=source,
-            created_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            created_at=self.repos.clock.stamp(),
         )
 
     def check_external_ref(self, account: Account, external_ref: str | None) -> None:

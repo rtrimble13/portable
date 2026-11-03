@@ -62,8 +62,11 @@ believe one is wrong, say so and propose an ADR — do not quietly work around i
 
 6. **Determinism.** Same inputs → identical bytes out. No wall-clock dependence, no
    locale dependence, no unordered iteration in output. Every command takes `--as-of` and
-   defaults it explicitly rather than implicitly to "now". This is also what makes
-   report-level error detection work — see `docs/gips-standard.md` `PORT-GIPS-J01`.
+   defaults it explicitly rather than implicitly to "now". A stamp written to a `.port`
+   file (`created_at`, `updated_at`, `applied_at`) is read from the clock handed to
+   `Repositories` and the migration runner, never from `datetime.now()` at the call site
+   (ADR 0035). This is also what makes report-level error detection work — see
+   `docs/gips-standard.md` `PORT-GIPS-J01`.
 
 7. **Trade-date accounting**, not settlement-date. Settlement dates are recorded but do
    not drive position or P&L recognition. This is stricter than the archived T+3
@@ -324,7 +327,10 @@ Also available: `make install`, `make format`, `make coverage`, `make clean`.
 
 `examples/sample.port` is **generated, not hand-crafted** — a hand-made fixture
 drifts from what the code produces and quietly stops testing anything. Rebuild it
-with `make fixtures`; it is deterministic, so two runs produce identical bytes.
+with `make fixtures`. It is deterministic: every row is stamped from a fixed clock and
+freed space is zeroed, so two runs produce identical bytes. On another SQLite library
+only the header field recording that library's version differs (ADR 0035).
+`tests/integration/test_sample_fixture.py` holds the committed file to a fresh build.
 
 The owner works on **Windows**. CI runs Linux and Windows. Do not introduce
 POSIX-only assumptions — paths, shell invocations, or line endings.
@@ -394,6 +400,7 @@ test that fails without your change.
   | 0032 | fafnir through `duk` alone: identity, actions and calendar join prices |
   | 0033 | A row's identity spells its account as the portfolio does |
   | 0034 | A wrong symbol is corrected, not renamed |
+  | 0035 | Every stored stamp is read from an injected clock |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager
