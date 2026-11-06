@@ -481,7 +481,9 @@ class ReconciliationService:
                 instrument = self.repos.instruments.get(leg.instrument_id)
                 if instrument is None:  # pragma: no cover -- foreign key prevents it
                     continue
-                held[instrument.symbol] = held.get(instrument.symbol, ZERO) + leg.quantity
+                # ADR 0038: a statement shows a short as a negative quantity.
+                symbol = instrument.symbol
+                held[symbol] = held.get(symbol, ZERO) + leg.signed_quantity
         return {symbol: quantity for symbol, quantity in held.items() if quantity != 0}
 
     def _cash(

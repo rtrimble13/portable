@@ -352,6 +352,26 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **Option lifecycle rows are recorded on the option** (ADR 0038).
+  - `option_assignment`, `option_exercise` and `option_expiration` rows name
+    the option, with contracts as their quantity and the strike as their
+    price. An exercise was a `buy` of the stock before.
+  - An assignment recorded on the underlying stock, the old shape, is
+    refused by replay with `PT-E-OPTION-ROW-INVALID`, and `pt validate`
+    reports it as unreplayable. It is to be reversed and entered again.
+  - `pt option assign` and `pt option exercise` report `net_cash_effect`.
+    For a put, assignment reports `strike_cost` and `stock_basis` in place
+    of `strike_proceeds` and `total_proceeds`.
+  - `pt option expire` refuses a date before the expiry, and reports each
+    disposition it produced.
+- **`pt cover` reports `short_proceeds_relieved` and `cost_basis`** in place of
+  `cost_basis_relieved`. The relieved figure is what the short sale received,
+  so calling it basis restated the inversion this release fixes.
+- **`pt validate` checks two more things** (ADR 0038):
+  - a short sale stored as paying cash, or a cover as receiving it;
+  - an option still open after its expiry, which an unrecorded expiration
+    leaves, and so does an exercise recorded before this release.
+
 - **fafnir is read through `duk` alone** (ADR 0032, decided by the owner;
   completes ADR 0029). The ticker history and security master
   (`duk th`), corporate actions (`duk ca --exact`) and the trading calendar
@@ -465,6 +485,66 @@ Two rules specific to this repository:
   `duk` with `th`, `ca` and `tc` (fafnir's release after 3.0.5).
 
 ### Fixed
+
+- **A return of capital never reduced basis** (ADR 0039).
+  - What happened: `pt income roc` recorded the cash, and replay stopped at
+    the row because it carries no quantity. The engine function that
+    reduces basis had no caller. 200.00 returned on shares bought for
+    5,000.00 left the basis at 5,000.00, and the later sale's gain was
+    200.00 too small.
+  - What replay does now: it reduces the basis of the shares in the account
+    before the ex-date, on the pay-date, with the total allocated by
+    quantity. A lot's part beyond its basis is capital gain at the lot's
+    own holding period.
+  - What is refused: shares disposed of between the ex-date and the
+    pay-date, and a return of capital with none held, with
+    `PT-E-ROC-ENTITLEMENT`.
+  - `pt income roc` takes `--ex-date`.
+  - Any file with a return-of-capital row reports a replay mismatch until
+    `pt rebuild`, which restates the later gains. The sample portfolio's VTI
+    lots change accordingly.
+  - `docs/broker-import.md` §9 said to record a reclassified distribution
+    with `pt income roc` alone, which counts its cash twice when it was
+    already a dividend. It now says to reverse the dividend first.
+- **Short sales were booked as purchases** (ADR 0038). Cash was wrong on both
+  trades:
+  - `pt short` and imported short sales debited cash instead of receiving
+    it, and covers credited cash instead of paying it.
+  - A short lot's basis added the commission rather than deducting it.
+
+  The gain was inverted: shorting 100 at 100.00 and covering at 80.00
+  reported a short-term **loss** of 2,000.00 rather than a gain. A short
+  position was also valued as an asset. Now:
+  - a short sale receives its gross less costs;
+  - the cover's disposition reports the short sale's credit as proceeds and
+    the cover's cost as basis, which is Form 8949's shape;
+  - a short leg is valued, held in `pt holdings` and `pt position list`, and
+    reconciled as a negative quantity.
+
+  A cover now relieves short lots only, and a sale long ones. A short sale
+  against a long holding (a constructive sale, IRC §1259) and a buy against
+  a short one are refused with `PT-E-POSITION-DIRECTION`. Every written
+  option is a short sale and inherited all of this.
+- **`pt rebuild` erased every option assignment, expiration and exercise**
+  (ADR 0038). The commands derived their effects themselves, and replay had
+  no branch for their rows, so `pt validate` failed straight after each one.
+  After a covered call was assigned, a rebuild deleted 2,420.00 of long-term
+  gain and reopened the 100 shares. Every back-dated entry, reversal and
+  `--incremental` import rebuilds (ADR 0016). Each event is now one ledger row
+  on the option, and replay derives the option's side and the stock's.
+- **Exercising a call charged its premium to cash a second time and left it
+  out of the stock's basis.** Assignment likewise credited the premium again.
+  The premium entered cash when the option was opened; at the event, cash is
+  the strike alone, and the premium is in the stock's basis or proceeds.
+- **Exercising a long put bought stock.** It is now refused with
+  `PT-E-OPTION-UNSUPPORTED`. Buying a put can restart the stock's holding
+  period (IRC §1233(b)), and which case applies is not recorded. A written
+  put's assignment, refused before by accident, now buys the stock at the
+  strike with the premium deducted from its basis.
+- **The sample portfolio's covered call never closed.** Its docstring said it
+  was assigned, but no row recorded it, and it stayed open past its 2024-01-19
+  expiry. The generator now records it expiring worthless, which is what
+  AAPL's close below the strike that day means.
 
 - **Table and CSV output never showed a command's warnings.** Not even a dry
   run's `DRY RUN: nothing was written to the portfolio.`, so in the default

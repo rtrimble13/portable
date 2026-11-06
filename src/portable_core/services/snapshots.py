@@ -400,7 +400,8 @@ def _holdings(repos: Repositories, account_id: int) -> list[Holding]:
             instrument = repos.instruments.get(leg.instrument_id)
             if instrument is None:
                 continue
-            holdings.append(Holding(instrument, leg.quantity))
+            # ADR 0038: a short leg is held negatively, so it is valued so.
+            holdings.append(Holding(instrument, leg.signed_quantity))
     return holdings
 
 

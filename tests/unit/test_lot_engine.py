@@ -346,3 +346,64 @@ def test_realized_gain_is_net_proceeds_less_basis() -> None:
     assert disposition.cost_basis_relieved == D("10000.00")
     assert disposition.realized_gain == D("4990.00")
     assert disposition.holding_period is HoldingPeriod.LONG
+
+
+# ── short lots (ADR 0038) ────────────────────────────────────────────────────
+
+
+def test_a_cover_reports_the_short_sale_as_proceeds_and_its_own_cost_as_basis() -> None:
+    """Form 8949's shape for a short sale, with costs on both sides.
+
+    The short lot holds what the sale received, net of its commission. The
+    cover's commission is part of what the cover cost. Booked the other way
+    round, a profitable short reported a loss.
+    """
+    short = lot(
+        7, open_date=date(2024, 6, 3), quantity="100", basis="9999.00", is_short=True
+    )  # shorted at 100.00, 1.00 commission
+    plan = ENGINE.select([short], D("100"), ReliefMethod.FIFO, date(2025, 7, 1))
+    (disposition,) = ENGINE.realize_cover(
+        plan,
+        txn_id=9,
+        account_id=1,
+        instrument_id=1,
+        disposition_date=date(2025, 7, 1),
+        gross_cost=D("8000.00"),
+        fees=D("1.00"),
+    )
+    assert disposition.proceeds == D("9999.00")
+    assert disposition.cost_basis_relieved == D("8001.00")
+    assert disposition.realized_gain == D("1998.00")
+    assert disposition.holding_period is HoldingPeriod.SHORT, (
+        "a short sale is short-term however long it was open"
+    )
+
+
+def test_relief_is_restricted_to_the_trades_own_side() -> None:
+    from portable_core.services.lots import check_opening_side, lots_of_side
+
+    long_lot = lot(1, open_date=date(2024, 1, 2), quantity="10", basis="1000.00")
+    short_lot = lot(
+        2, open_date=date(2024, 1, 2), quantity="10", basis="1000.00", is_short=True
+    )
+    assert lots_of_side([long_lot, short_lot], short=True) == [short_lot]
+    assert lots_of_side([long_lot, short_lot], short=False) == [long_lot]
+    with pytest.raises(ValidationError) as exc:
+        check_opening_side(short=True, open_lots=[long_lot], symbol="XYZ")
+    assert exc.value.code == "PT-E-POSITION-DIRECTION"
+    check_opening_side(short=True, open_lots=[short_lot], symbol="XYZ")
+
+
+def test_a_short_legs_signed_quantity_is_negative_and_zero_stays_zero() -> None:
+    from portable_core.domain.enums import LegRole
+    from portable_core.domain.models import PositionLeg
+
+    def leg(sign: int, quantity: str) -> PositionLeg:
+        return PositionLeg(
+            leg_id=1, position_id=1, instrument_id=1, role=LegRole.SHORT_CALL,
+            sign=sign, quantity=D(quantity), opened_date=date(2024, 1, 2),
+        )  # fmt: skip
+
+    assert leg(-1, "100").signed_quantity == D("-100")
+    assert leg(1, "100").signed_quantity == D("100")
+    assert str(leg(-1, "0").signed_quantity) == "0", "never '-0' in output"

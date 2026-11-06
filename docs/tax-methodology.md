@@ -156,25 +156,83 @@ acquired, so a spinoff from a five-year-old lot is long-term on day one.
 **Reduces basis; it is not income.** Once basis reaches zero the excess becomes
 capital gain, recognised immediately — there is no negative basis.
 
+[ADR 0039](adr/0039-return-of-capital-reduces-basis-in-replay.md) sets out how
+replay applies it:
+
+- **Entitlement is fixed on the ex-date.** The shares in the account before
+  that day are the ones whose basis is reduced. Shares bought on or after it
+  are not.
+- **The reduction is applied on the pay-date**, when the capital came back.
+- **The total is allocated by quantity** across the entitled lots, by largest
+  remainder, so the parts sum exactly to what was paid.
+- **The excess is recorded as a capital gain** on the pay-date, at the lot's
+  own holding period. It is a disposition of no units, with the excess as
+  proceeds and no basis, so every report that shows a gain shows it. The
+  holding period is never reset.
+- **Shares disposed of between the ex-date and the pay-date are refused**
+  (`PT-E-ROC-ENTITLEMENT`). They were entitled, but their basis is gone, and
+  what their part reduces instead is not `portable`'s to decide.
+
 Note the separate question this does *not* answer: for **performance** purposes
 return of capital is also not an external cash flow. Both facts are true, they
 are about different things, and conflating them gets both wrong.
+
+### Short sales
+
+[ADR 0038](adr/0038-short-sales-and-the-option-lifecycle.md).
+
+- **Cash.** A short sale **receives** its gross less costs, and a cover
+  **pays** its gross plus costs.
+- **The lot.** A short lot holds what the sale received.
+- **The disposition.** At the cover, that credit is the **proceeds** and what
+  the cover paid is the **cost basis**, which is Form 8949's shape for a short
+  sale. The gain is short-term whatever the dates.
+- **Value.** A short position is valued, and shown in `pt holdings`, as a
+  negative quantity and a negative market value. Its basis is shown negative
+  beside it, so value less basis is the unrealized P&L in either direction.
+
+A closing trade relieves lots of its own direction only: a cover never
+consumes a long lot, and a sale never a short one. A short sale in an account
+holding the instrument long is refused, because it is a constructive sale
+(IRC §1259) that `portable` does not record. A buy against a short position is
+refused as well: it is a cover, made with `pt cover`.
 
 ### Option premium
 
 The rule depends on how the option resolves, and getting it wrong both
 double-counts the premium and applies the wrong rate.
 
-| Event | Where the premium goes |
-|---|---|
-| Long call **exercised** | Into the acquired stock's **basis** |
-| Written call **assigned** | Into the stock sale's **proceeds** |
-| Written option **expires worthless** | **Short-term gain**, however long it was open |
-| Long option expires worthless | Loss of the premium, at its own holding period |
+| Event | Where the premium goes | Cash at the event |
+|---|---|---|
+| Long call **exercised** | Into the acquired stock's **basis** | the strike plus costs |
+| Written call **assigned** | Into the stock sale's **proceeds** | the strike less costs |
+| Written put **assigned** | Out of the acquired stock's **basis** | the strike plus costs |
+| Written option **expires worthless** | **Short-term gain**, however long it was open | none |
+| Long option expires worthless | Loss of the premium, at its own holding period | none |
+| Long put **exercised** | **Refused** (`PT-E-OPTION-UNSUPPORTED`) | — |
+
+The premium is what was actually received or paid when the option was opened,
+net of that trade's costs. It entered cash then, so it never enters cash
+again at the event.
 
 An option that resolves into stock produces **no independent P&L**. The stock's
-own holding period governs the disposition — which is why a covered call
+own holding period governs the disposition. That is why a covered call
 assigned against a two-year-old position is a long-term gain, premium included.
+Stock acquired by an exercise or an assignment is held from that date.
+
+**Exercising a long put is refused.** Buying a put on stock held a year or
+less is treated as a short sale (IRC §1233(b)), which can restart the stock's
+holding period. Married puts are excepted. `portable` does not record which
+case applies, so it refuses rather than guess.
+
+Each event is one ledger row on the option, and replay derives its effects,
+so a rebuild reproduces it exactly.
+
+**Not handled**, and not to be assumed handled:
+- straddles (§1092);
+- a covered call that is not "qualified", which suspends the stock's holding
+  period (§1092(f));
+- payments in lieu of dividends on a short position.
 
 ### Commissions and fees
 
@@ -247,6 +305,9 @@ Each of these stops the command rather than producing a number.
 |---|---|---|
 | No lot matches a closing trade | `PT-E-LOT-UNMATCHED` | A zero basis by default would overstate the gain by the entire proceeds. `--force-zero-basis` lets a human decide, and records the decision on the lot's adjustment log. |
 | Closing more than is held | `PT-E-LOT-INSUFFICIENT` | A short position is opened with `pt short`, not by overselling. |
+| A short sale against a long holding, or a buy against a short one | `PT-E-POSITION-DIRECTION` | The first is a constructive sale (IRC §1259) `portable` does not record; the second is a cover (ADR 0038). |
+| A return of capital on shares disposed of between its ex-date and pay-date, or with none held | `PT-E-ROC-ENTITLEMENT` | The disposed shares' part has no basis left to reduce, and where it goes instead is not decided (ADR 0039). |
+| Exercising a long put | `PT-E-OPTION-UNSUPPORTED` | The put may have restarted the stock's holding period (IRC §1233(b)), and which case applies is not recorded. |
 | Spec-ID that does not add up | `PT-E-LOT-SELECTION-INVALID` | Topping up from another lot changes the tax treatment silently. |
 | A sale recorded before schema 10 whose lots are not settled | `PT-E-LOT-DESIGNATION-UNRESOLVED` | Reading its lot ids as numbered today is the defect that re-pointed sales (ADR 0036). |
 | Average cost mixed with spec-ID | `PT-E-TAX-METHOD-CONFLICT` | Either resolution restates basis on shares already sold. |

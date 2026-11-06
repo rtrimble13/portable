@@ -320,8 +320,8 @@ pt --port examples/sample.port lot list --as-of 2025-06-30
 ```
 
 `examples/sample.port` is generated, not hand-made — `make fixtures` rebuilds
-it. One hundred transactions across three accounts and five years, including a
-split, a spinoff, a covered call written and assigned, a bond bought between
+it. A hundred and one transactions across three accounts and five years, including a
+split, a spinoff, a covered call written and left to expire, a bond bought between
 coupons, a large cash flow, an inter-account transfer, a reversed trade, and a
 mid-history tax rate change.
 

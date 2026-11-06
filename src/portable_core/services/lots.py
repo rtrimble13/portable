@@ -23,6 +23,7 @@ from portable_core.errors.kinds import (
     E_LOT_INSUFFICIENT,
     E_LOT_SELECTION_INVALID,
     E_LOT_UNMATCHED,
+    E_POSITION_DIRECTION,
     E_TAX_METHOD_CONFLICT,
 )
 
@@ -31,11 +32,13 @@ __all__ = [
     "LotConsumption",
     "LotEngine",
     "ReliefPlan",
+    "check_opening_side",
     "derived_lot_key",
     "designate",
     "format_keyed_selection",
     "is_keyed",
     "keyed_selection",
+    "lots_of_side",
     "opening_lot_key",
     "parse_keyed_selection",
     "parse_lot_selection",
@@ -186,6 +189,44 @@ def resolve_keyed_selection(spec: str, lots: list[Lot]) -> dict[int, Decimal]:
             )
         selection[lot.lot_id] = selection.get(lot.lot_id, ZERO) + quantity
     return selection
+
+
+# ── direction (ADR 0038) ─────────────────────────────────────────────────────
+
+
+def lots_of_side(lots: list[Lot], *, short: bool) -> list[Lot]:
+    """The lots a closing trade of one direction may relieve.
+
+    A sale or a transfer out relieves long lots, and a cover short ones. Handed
+    every open lot, relief would let `pt cover` consume a long lot as if it
+    were covering it, and report a gain measured against the wrong thing.
+    """
+    return [lot for lot in lots if lot.is_short is short]
+
+
+def check_opening_side(*, short: bool, open_lots: list[Lot], symbol: str) -> None:
+    """Refuse opening one direction while the other is open. ADR 0038.
+
+    A short sale against shares held long is a constructive sale (IRC §1259):
+    the long position's gain is recognised as if it were sold. `portable` does
+    not record one, so it refuses rather than open a short lot beside the long
+    ones and report neither correctly. A purchase while short is a cover.
+    """
+    if short and any(not lot.is_short for lot in open_lots):
+        raise ValidationError(
+            f"{symbol} is held long in this account, so a short sale against it is "
+            "a constructive sale (IRC §1259), which portable does not record",
+            code=E_POSITION_DIRECTION,
+            remedy="Sell the long position with `pt sell` before shorting.",
+            symbol=symbol,
+        )
+    if not short and any(lot.is_short for lot in open_lots):
+        raise ValidationError(
+            f"{symbol} is held short in this account, so acquiring it covers the short",
+            code=E_POSITION_DIRECTION,
+            remedy="Close the short position with `pt cover`.",
+            symbol=symbol,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -585,6 +626,59 @@ class LotEngine:
                     quantity=consumption.quantity,
                     proceeds=net_proceeds,
                     cost_basis_relieved=consumption.cost_basis_relieved,
+                    realized_gain=gain,
+                    holding_period=consumption.holding_period,
+                    days_held=consumption.days_held,
+                    relief_method=plan.method,
+                    allocated_fees=fees_split[index],
+                )
+            )
+        return dispositions
+
+    def realize_cover(
+        self,
+        plan: ReliefPlan,
+        *,
+        txn_id: int,
+        account_id: int,
+        instrument_id: int,
+        disposition_date: date,
+        gross_cost: Decimal,
+        fees: Decimal = Decimal("0.00"),
+        next_disposition_id: int = 1,
+    ) -> list[LotDisposition]:
+        """Close short lots: dispositions shaped as Form 8949 shapes a short sale.
+
+        ADR 0038. A short lot's basis column holds what the short sale
+        received, so here it is the **proceeds**, relieved by quantity. What
+        the cover paid, gross plus its costs, is the **cost basis**. The gain
+        is proceeds less basis, as for any disposition, and the holding period
+        is short-term whatever the dates (the consumption already says so).
+
+        A written option that lapses is a cover at zero cost, so its premium
+        is all gain.
+        """
+        quantities = [c.quantity for c in plan.consumptions]
+        cost_split = allocate(gross_cost, quantities)
+        fees_split = allocate(fees, quantities)
+
+        dispositions: list[LotDisposition] = []
+        for index, consumption in enumerate(plan.consumptions):
+            with money_context():
+                proceeds = consumption.cost_basis_relieved
+                basis = quantize_money(cost_split[index] + fees_split[index])
+                gain = quantize_money(proceeds - basis)
+            dispositions.append(
+                LotDisposition(
+                    disposition_id=next_disposition_id + index,
+                    lot_id=consumption.lot.lot_id,
+                    txn_id=txn_id,
+                    account_id=account_id,
+                    instrument_id=instrument_id,
+                    disposition_date=disposition_date,
+                    quantity=consumption.quantity,
+                    proceeds=proceeds,
+                    cost_basis_relieved=basis,
                     realized_gain=gain,
                     holding_period=consumption.holding_period,
                     days_held=consumption.days_held,

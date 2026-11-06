@@ -91,6 +91,10 @@ E_INSTRUMENT_NOT_FOUND: Final = "PT-E-INSTRUMENT-NOT-FOUND"
 E_INSTRUMENT_AMBIGUOUS: Final = "PT-E-INSTRUMENT-AMBIGUOUS"
 E_POSITION_NOT_FOUND: Final = "PT-E-POSITION-NOT-FOUND"
 E_POSITION_CLOSED: Final = "PT-E-POSITION-CLOSED"
+#: ADR 0038. Opening one direction in an account that holds the other: a
+#: short sale against a long holding (a constructive sale, IRC §1259), or a
+#: buy against a short one (a cover).
+E_POSITION_DIRECTION: Final = "PT-E-POSITION-DIRECTION"
 
 E_LOT_UNMATCHED: Final = "PT-E-LOT-UNMATCHED"
 E_LOT_INSUFFICIENT: Final = "PT-E-LOT-INSUFFICIENT"
@@ -100,6 +104,16 @@ E_LOT_SELECTION_INVALID: Final = "PT-E-LOT-SELECTION-INVALID"
 E_LOT_DESIGNATION_UNRESOLVED: Final = "PT-E-LOT-DESIGNATION-UNRESOLVED"
 #: ADR 0036. A recorded designation is decided once and never changed.
 E_DESIGNATION_IMMUTABLE: Final = "PT-E-DESIGNATION-IMMUTABLE"
+#: ADR 0038. An option event `portable` cannot yet treat correctly, refused
+#: rather than approximated: a long put's exercise.
+E_OPTION_UNSUPPORTED: Final = "PT-E-OPTION-UNSUPPORTED"
+#: ADR 0038. An option lifecycle row whose shape replay cannot derive from:
+#: an assignment recorded on the underlier, as rows were before ADR 0038.
+E_OPTION_ROW_INVALID: Final = "PT-E-OPTION-ROW-INVALID"
+#: ADR 0039. A return of capital whose entitled shares cannot be settled from
+#: the ledger: none held before its ex-date, or some disposed of between its
+#: ex-date and its pay-date.
+E_ROC_ENTITLEMENT: Final = "PT-E-ROC-ENTITLEMENT"
 E_TAX_METHOD_CONFLICT: Final = "PT-E-TAX-METHOD-CONFLICT"
 E_TAX_NO_RATE_SCHEDULE: Final = "PT-E-TAX-NO-RATE-SCHEDULE"
 
@@ -163,11 +177,15 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_INSTRUMENT_AMBIGUOUS,
     E_POSITION_NOT_FOUND,
     E_POSITION_CLOSED,
+    E_POSITION_DIRECTION,
     E_LOT_UNMATCHED,
     E_LOT_INSUFFICIENT,
     E_LOT_SELECTION_INVALID,
     E_LOT_DESIGNATION_UNRESOLVED,
     E_DESIGNATION_IMMUTABLE,
+    E_OPTION_UNSUPPORTED,
+    E_OPTION_ROW_INVALID,
+    E_ROC_ENTITLEMENT,
     E_TAX_METHOD_CONFLICT,
     E_TAX_NO_RATE_SCHEDULE,
     E_CASH_INSUFFICIENT,

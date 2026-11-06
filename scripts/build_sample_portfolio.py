@@ -11,8 +11,9 @@ every path that is easy to get wrong:
 * a **split** mid-holding-period, followed by a sale, so the holding period
   can be checked not to have reset;
 * a **spinoff** with an explicit fair-market-value allocation;
-* a **covered call** written and assigned, so the premium can be checked to
-  land in the stock's proceeds;
+* a **covered call** written and left to expire worthless, so the premium can
+  be checked to be short-term gain however long it was open, and the written
+  option's cash to be a receipt (ADR 0038);
 * a **bond bought between coupons**, so accrued interest can be checked to be
   part of market value;
 * a **large cash flow**, and an **inter-account transfer**, so the
@@ -524,8 +525,8 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
         ]:
             _dividend(repos, taxable, aapl, ex, pay, amount)
 
-        # A covered call written against the AAPL position, then assigned.
-        # The premium must land in the stock's PROCEEDS, not as separate P&L.
+        # A covered call written against the AAPL position. Writing it RECEIVES
+        # the premium, less the commission (ADR 0038).
         _txn(
             repos,
             account_id=taxable,
@@ -541,7 +542,22 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
             note="Covered call written against the AAPL position.",
         )
 
-        # ── 2024: a split, and a spinoff ─────────────────────────────────────
+        # ── 2024: the call expires, a split, and a spinoff ───────────────────
+        # AAPL closed below the 200 strike on the expiry date, so the call
+        # lapses: its 844.35 premium is short-term gain, however long it was
+        # open. The row is an event on the option; replay derives the rest.
+        _txn(
+            repos,
+            account_id=taxable,
+            trade_date=date(2024, 1, 19),
+            txn_type=TransactionType.OPTION_EXPIRATION,
+            instrument_id=covered_call,
+            quantity=D("1"),
+            net_cash_effect=ZERO,
+            source=TransactionSource.DERIVED,
+            note="expired worthless",
+        )
+
         # 100 ACME becomes 200; total basis unchanged, holding period NOT reset.
         # Each corporate action is TWO records: the ledger entry saying it
         # happened, and the corporate_action row carrying the parameters. The

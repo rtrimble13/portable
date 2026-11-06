@@ -235,8 +235,9 @@ The ledger covers:
   capital, bond coupon, accrual.
 - **Corporate actions** — forward and reverse split, stock dividend, spinoff,
   merger (cash, stock, or mixed), symbol change, delisting.
-- **Options lifecycle** — exercise, assignment, expiration, and roll as a linked
-  close+open pair.
+- **Options lifecycle** — exercise, assignment, and expiration, each one ledger
+  row on the option from which replay derives the stock's side (ADR 0038). A
+  roll is a cover and a new write, entered as two trades.
 - **Fixed income lifecycle** — coupon, accrual, amortization and accretion, call,
   maturity.
 - **Adjustments** — reversal (pointing at what it reverses) and correction.

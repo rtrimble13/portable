@@ -29,18 +29,32 @@ from datetime import date
 from decimal import Decimal
 from typing import Generic, TypeVar
 
-from portable_core.decimals import money_context, quantize_money, quantize_quantity, to_text
+from portable_core.decimals import (
+    allocate,
+    money_context,
+    quantize_money,
+    quantize_quantity,
+    to_text,
+)
+from portable_core.domain.dates import days_between, holding_period
 from portable_core.domain.enums import (
+    BasisAdjustmentReason,
     BasisSource,
     LegRole,
     LotStatus,
+    OptionRight,
     PositionStatus,
+    ReliefMethod,
     StrategyType,
     TransactionType,
 )
 from portable_core.domain.models import (
+    Account,
+    BasisAdjustment,
     CorporateAction,
+    Instrument,
     Lot,
+    LotDisposition,
     Position,
     PositionLeg,
     Transaction,
@@ -49,14 +63,20 @@ from portable_core.errors import ValidationError
 from portable_core.errors.kinds import (
     E_CASH_NOT_CONSERVED,
     E_LOT_DESIGNATION_UNRESOLVED,
+    E_OPTION_ROW_INVALID,
+    E_OPTION_UNSUPPORTED,
     E_REPLAY_MISMATCH,
+    E_ROC_ENTITLEMENT,
 )
 from portable_core.persistence.connection import scratch_savepoint
 from portable_core.persistence.repositories import Repositories
 from portable_core.services.corporate_actions import CorporateActionEngine
 from portable_core.services.lots import (
     LotEngine,
+    ReliefPlan,
+    check_opening_side,
     is_keyed,
+    lots_of_side,
     opening_lot_key,
     resolve_keyed_selection,
 )
@@ -95,6 +115,16 @@ _ACTION_TYPE_FOR: dict[TransactionType, str] = {
     TransactionType.MERGER_STOCK: "merger",
 }
 _CORPORATE_ACTIONS = frozenset(_ACTION_TYPE_FOR)
+
+#: ADR 0038. Rows on an option that resolve it: replay derives the option's
+#: side and, for an assignment or an exercise, the stock's.
+_OPTION_EVENTS = frozenset(
+    {
+        TransactionType.OPTION_EXPIRATION,
+        TransactionType.OPTION_ASSIGNMENT,
+        TransactionType.OPTION_EXERCISE,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -431,6 +461,20 @@ class ReplayEngine:
             self._corporate_action(txn, counters)
             return
 
+        # ADR 0038. Before the quantity check, so that a malformed row is
+        # refused rather than skipped: skipping these rows is how a rebuild
+        # used to erase every assignment.
+        if txn.txn_type in _OPTION_EVENTS:
+            self._option_event(txn, counters)
+            return
+
+        # ADR 0039. A return of capital carries an instrument and no quantity,
+        # so it is dispatched before the quantity check -- which is where it
+        # used to stop, leaving every basis it should have reduced untouched.
+        if txn.txn_type is TransactionType.RETURN_OF_CAPITAL:
+            self._return_of_capital(txn, counters)
+            return
+
         if txn.quantity is None:
             return
 
@@ -483,6 +527,14 @@ class ReplayEngine:
             return
 
         is_short = txn.txn_type is TransactionType.SELL_SHORT
+        # ADR 0038. Checked here as well as when the trade is planned, so that
+        # no row -- imported, back-dated or written before the check existed --
+        # opens a short lot beside long ones, or the reverse.
+        check_opening_side(
+            short=is_short,
+            open_lots=self.repos.lots.open_lots(txn.account_id, txn.instrument_id),
+            symbol=instrument.symbol,
+        )
         leg = self.repos.positions.leg_for(txn.account_id, txn.instrument_id)
 
         if leg is None:
@@ -547,9 +599,17 @@ class ReplayEngine:
                     if txn.gross_amount is not None
                     else ((txn.price or ZERO) * txn.quantity * instrument.contract_size)
                 )
-                # Commissions and fees are part of basis on an opening trade:
-                # they are a cost of acquiring, not a separate deduction.
-                basis = quantize_money(abs(gross) + txn.total_costs)
+                if is_short:
+                    # ADR 0038. A short lot holds what the sale RECEIVED, its
+                    # gross less costs: at the cover it is the proceeds, and
+                    # what the cover pays is the cost. Adding the costs here,
+                    # as for a purchase, booked a short sale as one.
+                    basis = quantize_money(abs(gross) - txn.total_costs)
+                else:
+                    # Commissions and fees are part of basis on an opening
+                    # trade: they are a cost of acquiring, not a separate
+                    # deduction.
+                    basis = quantize_money(abs(gross) + txn.total_costs)
             per_unit = basis / txn.quantity if txn.quantity else ZERO
 
         # A change of custodian is not a disposition: the holding period runs
@@ -690,7 +750,12 @@ class ReplayEngine:
             return
 
         method = txn.relief_method or account.default_relief_method
-        open_lots = self.repos.lots.open_lots(txn.account_id, txn.instrument_id)
+        # ADR 0038: a cover relieves short lots, and a sale or a transfer out
+        # long ones -- never the other side's.
+        covering = txn.txn_type is TransactionType.BUY_TO_COVER
+        open_lots = lots_of_side(
+            self.repos.lots.open_lots(txn.account_id, txn.instrument_id), short=covering
+        )
 
         selection = self._selection(txn, open_lots)
 
@@ -704,18 +769,41 @@ class ReplayEngine:
                 if txn.gross_amount is not None
                 else ((txn.price or ZERO) * txn.quantity * instrument.contract_size)
             )
-            proceeds = abs(quantize_money(gross))
+            amount = abs(quantize_money(gross))
 
-        dispositions = self.lots.realize(
-            plan,
-            txn_id=txn.txn_id,
-            account_id=txn.account_id,
-            instrument_id=txn.instrument_id,
-            disposition_date=txn.trade_date,
-            gross_proceeds=proceeds,
-            fees=txn.total_costs,
-        )
+        if covering:
+            # What the cover pays is the cost; the short lot holds the proceeds.
+            dispositions = self.lots.realize_cover(
+                plan,
+                txn_id=txn.txn_id,
+                account_id=txn.account_id,
+                instrument_id=txn.instrument_id,
+                disposition_date=txn.trade_date,
+                gross_cost=amount,
+                fees=txn.total_costs,
+            )
+        else:
+            dispositions = self.lots.realize(
+                plan,
+                txn_id=txn.txn_id,
+                account_id=txn.account_id,
+                instrument_id=txn.instrument_id,
+                disposition_date=txn.trade_date,
+                gross_proceeds=amount,
+                fees=txn.total_costs,
+            )
 
+        self._record(plan, dispositions, txn, account, counters)
+
+    def _record(
+        self,
+        plan: ReliefPlan,
+        dispositions: list[LotDisposition],
+        txn: Transaction,
+        account: Account,
+        counters: dict[str, int],
+    ) -> None:
+        """Store a closing trade's dispositions and gains, and consume its lots."""
         schedules = self.repos.accounts.rate_schedules(txn.account_id)
         leg_ids: set[int] = set()
 
@@ -738,6 +826,377 @@ class ReplayEngine:
 
         for leg_id in sorted(leg_ids):
             self._refresh_leg(leg_id, txn.trade_date)
+
+    # ── return of capital (ADR 0039) ─────────────────────────────────────────
+
+    def _held_since(self, lot: Lot) -> date:
+        """The trade date from which *lot* has been in its account.
+
+        Not ``open_date``: a lot transferred in keeps its original acquisition
+        date for its holding period, but it was not in this account to be
+        entitled to anything before it arrived.
+        """
+        opening = self.repos.transactions.get(lot.open_txn_id)
+        return opening.trade_date if opening is not None else lot.open_date
+
+    def _return_of_capital(self, txn: Transaction, counters: dict[str, int]) -> None:
+        """Reduce the basis of the shares entitled; the excess over basis is gain.
+
+        Entitlement is fixed on the **ex-date**: the shares held in the account
+        before it, and still held when the distribution is paid. The reduction
+        is applied on the **pay-date**, when the row sorts, because that is when
+        the capital came back. The stated total is allocated across those lots
+        by quantity, by largest remainder, so the parts sum to it exactly.
+
+        A lot's distribution beyond its basis is capital gain, recognised on
+        the pay-date at the lot's own holding period: there is no negative
+        basis. It is recorded as a disposition of no units, proceeds equal to
+        the excess and no basis, so it reaches every report a gain reaches.
+        """
+        account = self.repos.accounts.get(txn.account_id)
+        instrument = (
+            self.repos.instruments.get(txn.instrument_id)
+            if txn.instrument_id is not None
+            else None
+        )
+        if account is None or instrument is None:  # pragma: no cover -- foreign keys
+            return
+        ex = txn.ex_date or txn.trade_date
+        paid = txn.trade_date
+        with money_context():
+            total = quantize_money(abs(txn.gross_amount or txn.net_cash_effect))
+
+        lots = lots_of_side(
+            self.repos.lots.open_lots(txn.account_id, instrument.instrument_id), short=False
+        )
+        entitled = [lot for lot in lots if self._held_since(lot) < ex]
+        # Shares held before the ex-date but disposed of since -- all of a lot
+        # or part of one -- were entitled too, and their basis is gone. Whether
+        # the distribution then adjusts that sale or something else is not
+        # decided here: refused.
+        sold_since = [
+            d
+            for d in self.repos.lots.dispositions(account_id=txn.account_id, start=ex, end=paid)
+            if d.instrument_id == instrument.instrument_id
+            and d.quantity > 0
+            and (held := self.repos.lots.get(d.lot_id)) is not None
+            and self._held_since(held) < ex
+        ]
+        if sold_since:
+            raise ValidationError(
+                f"return of capital row {txn.txn_id} on {instrument.symbol}: shares "
+                f"held on its ex-date {ex.isoformat()} were disposed of before it was "
+                f"paid on {paid.isoformat()}",
+                code=E_ROC_ENTITLEMENT,
+                remedy=(
+                    "Those shares were entitled to their part of the distribution, "
+                    "but their basis is gone, and portable will not decide what the "
+                    "part reduces instead. Record the distribution in the parts your "
+                    "tax documents attribute, and treat the sold shares' part with "
+                    "your adviser."
+                ),
+                txn_id=txn.txn_id,
+            )
+        if not entitled:
+            raise ValidationError(
+                f"return of capital row {txn.txn_id}: no {instrument.symbol} was held "
+                f"in {account.name} before its ex-date {ex.isoformat()}",
+                code=E_ROC_ENTITLEMENT,
+                remedy="Check the account, the symbol and the ex-date.",
+                txn_id=txn.txn_id,
+            )
+
+        shares = sum((lot.remaining_quantity for lot in entitled), Decimal(0))
+        distributions = allocate(total, [lot.remaining_quantity for lot in entitled])
+        adjusted, adjustments, _excess = self.corporate_actions.return_of_capital(
+            entitled,
+            amount_per_share=total / shares,
+            pay_date=paid,
+            txn_id=txn.txn_id,
+            distributions=distributions,
+        )
+        schedules = self.repos.accounts.rate_schedules(txn.account_id)
+        for lot, adjustment, distribution in zip(
+            adjusted, adjustments, distributions, strict=True
+        ):
+            self.repos.lots.update_basis(lot)
+            self.repos.lots.add_adjustment(adjustment)
+            with money_context():
+                excess = quantize_money(distribution + adjustment.basis_delta)
+            if excess <= 0:
+                continue
+            disposition = LotDisposition(
+                disposition_id=0,
+                lot_id=lot.lot_id,
+                txn_id=txn.txn_id,
+                account_id=txn.account_id,
+                instrument_id=instrument.instrument_id,
+                disposition_date=paid,
+                quantity=Decimal(0),
+                proceeds=excess,
+                cost_basis_relieved=ZERO,
+                realized_gain=excess,
+                holding_period=holding_period(lot.holding_period_start, paid),
+                days_held=days_between(lot.holding_period_start, paid),
+                relief_method=ReliefMethod.SPEC,
+            )
+            disposition_id = self.repos.lots.add_disposition(disposition)
+            counters["dispositions"] += 1
+            stored = replace(disposition, disposition_id=disposition_id)
+            self.repos.lots.add_realized_gain(self.tax.estimate(stored, account, schedules))
+
+    # ── the options lifecycle (ADR 0038) ─────────────────────────────────────
+
+    def _option_event(self, txn: Transaction, counters: dict[str, int]) -> None:
+        """Resolve an option: expiration, assignment or exercise.
+
+        The row is an event on the option, and its quantity is contracts. The
+        stock side is derived from the option's own detail, so the row cannot
+        disagree with it. The premium is the basis of the option lots the
+        event relieves: what was actually received or paid, costs included.
+        """
+        account = self.repos.accounts.get(txn.account_id)
+        option = (
+            self.repos.instruments.get(txn.instrument_id)
+            if txn.instrument_id is not None
+            else None
+        )
+        if account is None or option is None:  # pragma: no cover -- foreign keys
+            return
+        label = str(txn.txn_type).replace("_", " ")
+        if option.option is None:
+            raise ValidationError(
+                f"{label} row {txn.txn_id} is recorded on {option.symbol}, which is "
+                "not an option",
+                code=E_OPTION_ROW_INVALID,
+                remedy=(
+                    "Before ADR 0038 an assignment was recorded on the underlying "
+                    "stock, and replay cannot tell which option it resolved. Reverse "
+                    f"it with `pt trade reverse {txn.txn_id}` and record it again with "
+                    "`pt option assign`."
+                ),
+                txn_id=txn.txn_id,
+            )
+        if txn.quantity is None or txn.quantity <= 0:
+            raise ValidationError(
+                f"{label} row {txn.txn_id} states no number of contracts",
+                code=E_OPTION_ROW_INVALID,
+                remedy="Reverse the row and record it again with `pt option`.",
+                txn_id=txn.txn_id,
+            )
+
+        held = self.repos.lots.open_lots(txn.account_id, option.instrument_id)
+        if txn.txn_type is TransactionType.OPTION_ASSIGNMENT:
+            written = True
+        elif txn.txn_type is TransactionType.OPTION_EXERCISE:
+            written = False
+        else:
+            # An expiration resolves whichever side is open; ADR 0038 decision
+            # 2 means only one can be.
+            written = any(lot.is_short for lot in held)
+        # Contracts in the order they were opened. The premium a partial event
+        # relieves is then a fixed function of the ledger, not a choice.
+        plan = self.lots.select(
+            lots_of_side(held, short=written),
+            txn.quantity,
+            ReliefMethod.FIFO,
+            txn.trade_date,
+        )
+
+        if txn.txn_type is TransactionType.OPTION_EXPIRATION:
+            self._expire(txn, account, plan, written, counters)
+            return
+
+        premium = plan.total_basis
+        # The option resolves into stock and has no disposition of its own:
+        # its premium moves into the stock's proceeds or basis.
+        self._consume_without_disposition(plan, txn.trade_date)
+
+        detail = option.option
+        underlier = self.repos.instruments.get(detail.underlier_instrument_id)
+        if underlier is None:  # pragma: no cover -- foreign key
+            return
+        with money_context():
+            shares = txn.quantity * detail.multiplier
+            strike_amount = quantize_money(detail.strike * shares)
+
+        is_call = detail.option_right is OptionRight.CALL
+        if written and is_call:
+            proceeds = strike_amount + premium
+            self._deliver_stock(txn, account, underlier, shares, proceeds, counters)
+        elif written:
+            self._receive_stock(
+                txn,
+                underlier,
+                shares,
+                strike_amount,
+                -premium,
+                BasisAdjustmentReason.OPTION_PREMIUM_ASSIGNMENT,
+                f"premium {premium} received for the put assigned",
+                counters,
+            )
+        elif is_call:
+            self._receive_stock(
+                txn,
+                underlier,
+                shares,
+                strike_amount,
+                premium,
+                BasisAdjustmentReason.OPTION_PREMIUM_EXERCISE,
+                f"premium {premium} paid for the call exercised",
+                counters,
+            )
+        else:
+            raise ValidationError(
+                f"row {txn.txn_id} exercises the long put {option.symbol}, which "
+                "portable does not yet derive",
+                code=E_OPTION_UNSUPPORTED,
+                remedy=(
+                    "Buying a put on stock held a year or less is treated as a short "
+                    "sale (IRC §1233(b)), which can restart the stock's holding "
+                    "period, and portable does not record which case applies. "
+                    "Reverse the row."
+                ),
+                txn_id=txn.txn_id,
+            )
+
+    def _expire(
+        self,
+        txn: Transaction,
+        account: Account,
+        plan: ReliefPlan,
+        written: bool,
+        counters: dict[str, int],
+    ) -> None:
+        """An option lapsing: a close at zero.
+
+        A written option's premium is then all gain, short-term however long it
+        was open; a long option's cost is all loss, by its own holding period.
+        Both follow from the short-sale rule the consumption already applies.
+        """
+        assert txn.instrument_id is not None
+        if written:
+            dispositions = self.lots.realize_cover(
+                plan,
+                txn_id=txn.txn_id,
+                account_id=txn.account_id,
+                instrument_id=txn.instrument_id,
+                disposition_date=txn.trade_date,
+                gross_cost=ZERO,
+                fees=txn.total_costs,
+            )
+        else:
+            dispositions = self.lots.realize(
+                plan,
+                txn_id=txn.txn_id,
+                account_id=txn.account_id,
+                instrument_id=txn.instrument_id,
+                disposition_date=txn.trade_date,
+                gross_proceeds=ZERO,
+                fees=txn.total_costs,
+            )
+        self._record(plan, dispositions, txn, account, counters)
+
+    def _consume_without_disposition(self, plan: ReliefPlan, on: date) -> None:
+        """Close option lots whose premium moves into the stock's figures."""
+        leg_ids: set[int] = set()
+        for consumption in plan.consumptions:
+            self.repos.lots.update_after_disposition(
+                self.positions.apply_disposition(consumption.lot, consumption.quantity, on)
+            )
+            leg_ids.add(consumption.lot.leg_id)
+        for leg_id in sorted(leg_ids):
+            self._refresh_leg(leg_id, on)
+
+    def _deliver_stock(
+        self,
+        txn: Transaction,
+        account: Account,
+        underlier: Instrument,
+        shares: Decimal,
+        proceeds: Decimal,
+        counters: dict[str, int],
+    ) -> None:
+        """A written call assigned: the stock is sold, the premium in its proceeds."""
+        stock_lots = lots_of_side(
+            self.repos.lots.open_lots(txn.account_id, underlier.instrument_id), short=False
+        )
+        plan = self.lots.select(
+            stock_lots,
+            shares,
+            txn.relief_method or account.default_relief_method,
+            txn.trade_date,
+            selection=self._selection(txn, stock_lots),
+        )
+        dispositions = self.lots.realize(
+            plan,
+            txn_id=txn.txn_id,
+            account_id=txn.account_id,
+            instrument_id=underlier.instrument_id,
+            disposition_date=txn.trade_date,
+            gross_proceeds=proceeds,
+            fees=txn.total_costs,
+        )
+        self._record(plan, dispositions, txn, account, counters)
+
+    def _receive_stock(
+        self,
+        txn: Transaction,
+        underlier: Instrument,
+        shares: Decimal,
+        strike_amount: Decimal,
+        premium_delta: Decimal,
+        reason: BasisAdjustmentReason,
+        note: str,
+        counters: dict[str, int],
+    ) -> None:
+        """Stock acquired by an option: a lot at the strike, adjusted by the premium.
+
+        The lot's original basis is what the strike and costs paid on the day,
+        and the premium is an adjustment beside it -- added for a call
+        exercised, deducted for a put assigned -- so the trail says why the
+        basis is not the strike.
+        """
+        purchase = replace(
+            txn,
+            txn_type=TransactionType.BUY,
+            instrument_id=underlier.instrument_id,
+            quantity=shares,
+            price=strike_amount / shares,
+            gross_amount=strike_amount,
+            lot_selection=None,
+        )
+        self._open(purchase, counters)
+        lot = self.repos.lots.by_key(opening_lot_key(txn.txn_id))
+        assert lot is not None
+        with money_context():
+            adjusted = quantize_money(lot.adjusted_cost_basis + premium_delta)
+        if adjusted < 0:
+            raise ValidationError(
+                f"row {txn.txn_id}: the premium exceeds what the stock cost",
+                code=E_OPTION_ROW_INVALID,
+                remedy="Check the option's strike and the premium recorded for it.",
+                txn_id=txn.txn_id,
+            )
+        self.repos.lots.update_basis(
+            replace(
+                lot,
+                adjusted_cost_basis=adjusted,
+                per_unit_price=adjusted / lot.remaining_quantity,
+            )
+        )
+        self.repos.lots.add_adjustment(
+            BasisAdjustment(
+                adjustment_id=0,
+                lot_id=lot.lot_id,
+                adjustment_date=txn.trade_date,
+                reason=reason,
+                basis_delta=premium_delta,
+                holding_period_start_after=lot.holding_period_start,
+                txn_id=txn.txn_id,
+                note=note,
+            )
+        )
 
     def _selection(self, txn: Transaction, open_lots: list[Lot]) -> dict[int, Decimal] | None:
         """The lot ids in this replay of the lots *txn* designates, or None.
@@ -1043,6 +1502,58 @@ class ReplayEngine:
                     f"account {account.name!r}: materialized cash {to_text(balance)} "
                     f"but the ledger sums to {to_text(ledger_total)}"
                 )
+        return problems
+
+    def check_short_sale_cash(self) -> list[str]:
+        """ADR 0038. A short sale that paid cash, or a cover that received it.
+
+        Before ADR 0038 the planner booked a short sale as a purchase, so rows it
+        wrote carry the inverted sign. Replay moves the cash a row states, so
+        nothing else can see them: the ledger and the balances agree, and both
+        are wrong. Such a row is corrected by a reversing entry and a new one
+        (invariant 2), never edited.
+        """
+        problems: list[str] = []
+        for txn in effective_ledger(self.repos.transactions.in_ledger_order()):
+            if txn.txn_type is TransactionType.SELL_SHORT and txn.net_cash_effect < 0:
+                problems.append(
+                    f"txn {txn.txn_id}: a short sale that paid {-txn.net_cash_effect} "
+                    "instead of receiving it; reverse it with `pt trade reverse` and "
+                    "enter it again"
+                )
+            elif txn.txn_type is TransactionType.BUY_TO_COVER and txn.net_cash_effect > 0:
+                problems.append(
+                    f"txn {txn.txn_id}: a cover that received {txn.net_cash_effect} "
+                    "instead of paying it; reverse it with `pt trade reverse` and "
+                    "enter it again"
+                )
+        return problems
+
+    def check_options_past_expiry(self, as_of: date) -> list[str]:
+        """ADR 0038. An option still open after its expiry date.
+
+        An option cannot outlive its expiry: it lapsed, was exercised, or was
+        assigned, and a book still holding it values it at a stale price and
+        has not recognised what became of it. An unrecorded expiration leaves
+        one, and so does an exercise recorded before ADR 0038, as a buy of the
+        stock that left the option open.
+        """
+        problems: list[str] = []
+        for position in self.repos.positions.all(open_only=True):
+            for leg in position.legs:
+                if leg.quantity == 0:
+                    continue
+                instrument = self.repos.instruments.get(leg.instrument_id)
+                if instrument is None or instrument.option is None:
+                    continue
+                if instrument.option.expiry < as_of:
+                    account = self.repos.accounts.get(position.account_id)
+                    name = account.name if account else str(position.account_id)
+                    problems.append(
+                        f"{instrument.symbol} is open in {name} after its expiry on "
+                        f"{instrument.option.expiry.isoformat()}; record what became "
+                        "of it with `pt option expire`, `assign` or `exercise`"
+                    )
         return problems
 
     def check_leg_invariants(self) -> list[str]:

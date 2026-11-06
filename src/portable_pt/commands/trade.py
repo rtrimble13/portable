@@ -215,13 +215,21 @@ def _plan_result(
     txn_type: TransactionType, symbol: str, plan: TradePlan, portfolio: str | None
 ) -> CommandResult:
     table = None
+    # ADR 0038. A short lot holds what the short sale received, so a cover
+    # relieves proceeds, and its own cost is the basis. Labelling the relieved
+    # credit "basis" would be the inversion that fix removed, in the output.
+    covering = txn_type is TransactionType.BUY_TO_COVER
     if plan.relief_plan is not None:
         table = Table(
             columns=(
                 Column("lot_id", "Lot", ColumnKind.INTEGER),
-                Column("open_date", "Acquired", ColumnKind.DATE),
+                Column("open_date", "Opened" if covering else "Acquired", ColumnKind.DATE),
                 Column("quantity", "Qty", ColumnKind.QUANTITY),
-                Column("basis", "Basis Relieved", ColumnKind.MONEY),
+                Column(
+                    "basis",
+                    "Proceeds Relieved" if covering else "Basis Relieved",
+                    ColumnKind.MONEY,
+                ),
                 Column("holding_period", "Holding", ColumnKind.TEXT),
                 Column("days_held", "Days", ColumnKind.INTEGER),
             ),
@@ -258,6 +266,12 @@ def _plan_result(
             "account": plan.intent.account.name,
             **(
                 {
+                    "short_proceeds_relieved": plan.relief_plan.total_basis,
+                    "cost_basis": -plan.net_cash_effect,
+                    "relief_method": str(plan.relief_plan.method),
+                }
+                if plan.relief_plan and covering
+                else {
                     "cost_basis_relieved": plan.relief_plan.total_basis,
                     "relief_method": str(plan.relief_plan.method),
                 }

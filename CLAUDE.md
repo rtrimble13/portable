@@ -402,6 +402,9 @@ test that fails without your change.
   | 0034 | A wrong symbol is corrected, not renamed |
   | 0035 | Every stored stamp is read from an injected clock |
   | 0036 | A lot is designated by its lineage, not by its row number |
+  | 0037 | Wash sales are detected in replay, across every account (proposed) |
+  | 0038 | A short sale credits cash, and an option resolves in replay |
+  | 0039 | Return of capital reduces basis in replay, entitled on the ex-date |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager
