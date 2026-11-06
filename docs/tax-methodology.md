@@ -156,6 +156,23 @@ acquired, so a spinoff from a five-year-old lot is long-term on day one.
 **Reduces basis; it is not income.** Once basis reaches zero the excess becomes
 capital gain, recognised immediately — there is no negative basis.
 
+[ADR 0039](adr/0039-return-of-capital-reduces-basis-in-replay.md) sets out how
+replay applies it:
+
+- **Entitlement is fixed on the ex-date.** The shares in the account before
+  that day are the ones whose basis is reduced. Shares bought on or after it
+  are not.
+- **The reduction is applied on the pay-date**, when the capital came back.
+- **The total is allocated by quantity** across the entitled lots, by largest
+  remainder, so the parts sum exactly to what was paid.
+- **The excess is recorded as a capital gain** on the pay-date, at the lot's
+  own holding period. It is a disposition of no units, with the excess as
+  proceeds and no basis, so every report that shows a gain shows it. The
+  holding period is never reset.
+- **Shares disposed of between the ex-date and the pay-date are refused**
+  (`PT-E-ROC-ENTITLEMENT`). They were entitled, but their basis is gone, and
+  what their part reduces instead is not `portable`'s to decide.
+
 Note the separate question this does *not* answer: for **performance** purposes
 return of capital is also not an external cash flow. Both facts are true, they
 are about different things, and conflating them gets both wrong.
@@ -289,6 +306,7 @@ Each of these stops the command rather than producing a number.
 | No lot matches a closing trade | `PT-E-LOT-UNMATCHED` | A zero basis by default would overstate the gain by the entire proceeds. `--force-zero-basis` lets a human decide, and records the decision on the lot's adjustment log. |
 | Closing more than is held | `PT-E-LOT-INSUFFICIENT` | A short position is opened with `pt short`, not by overselling. |
 | A short sale against a long holding, or a buy against a short one | `PT-E-POSITION-DIRECTION` | The first is a constructive sale (IRC §1259) `portable` does not record; the second is a cover (ADR 0038). |
+| A return of capital on shares disposed of between its ex-date and pay-date, or with none held | `PT-E-ROC-ENTITLEMENT` | The disposed shares' part has no basis left to reduce, and where it goes instead is not decided (ADR 0039). |
 | Exercising a long put | `PT-E-OPTION-UNSUPPORTED` | The put may have restarted the stock's holding period (IRC §1233(b)), and which case applies is not recorded. |
 | Spec-ID that does not add up | `PT-E-LOT-SELECTION-INVALID` | Topping up from another lot changes the tax treatment silently. |
 | A sale recorded before schema 10 whose lots are not settled | `PT-E-LOT-DESIGNATION-UNRESOLVED` | Reading its lot ids as numbered today is the defect that re-pointed sales (ADR 0036). |

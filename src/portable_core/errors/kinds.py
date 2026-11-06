@@ -110,6 +110,10 @@ E_OPTION_UNSUPPORTED: Final = "PT-E-OPTION-UNSUPPORTED"
 #: ADR 0038. An option lifecycle row whose shape replay cannot derive from:
 #: an assignment recorded on the underlier, as rows were before ADR 0038.
 E_OPTION_ROW_INVALID: Final = "PT-E-OPTION-ROW-INVALID"
+#: ADR 0039. A return of capital whose entitled shares cannot be settled from
+#: the ledger: none held before its ex-date, or some disposed of between its
+#: ex-date and its pay-date.
+E_ROC_ENTITLEMENT: Final = "PT-E-ROC-ENTITLEMENT"
 E_TAX_METHOD_CONFLICT: Final = "PT-E-TAX-METHOD-CONFLICT"
 E_TAX_NO_RATE_SCHEDULE: Final = "PT-E-TAX-NO-RATE-SCHEDULE"
 
@@ -181,6 +185,7 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_DESIGNATION_IMMUTABLE,
     E_OPTION_UNSUPPORTED,
     E_OPTION_ROW_INVALID,
+    E_ROC_ENTITLEMENT,
     E_TAX_METHOD_CONFLICT,
     E_TAX_NO_RATE_SCHEDULE,
     E_CASH_INSUFFICIENT,

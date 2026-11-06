@@ -465,8 +465,18 @@ def coupon(
 def roc(
     symbol: Annotated[str, typer.Argument()],
     account: Annotated[str, typer.Option("--account", "-a")],
-    amount: Annotated[str, typer.Option("--amount")],
-    pay_date: Annotated[str | None, typer.Option("--pay-date")] = None,
+    amount: Annotated[str, typer.Option("--amount", help="Total cash received.")],
+    ex_date: Annotated[
+        str | None,
+        typer.Option(
+            "--ex-date",
+            help="Entitlement date: the shares held before it are the ones whose "
+            "basis is reduced. Defaults to the pay-date.",
+        ),
+    ] = None,
+    pay_date: Annotated[
+        str | None, typer.Option("--pay-date", help="When the cash arrived.")
+    ] = None,
     note: Annotated[str | None, typer.Option("--note")] = None,
     ref: RefOpt = None,
 ) -> None:
@@ -476,13 +486,19 @@ def roc(
     basis and is not income, and once basis reaches zero the excess is capital
     gain. For **performance** it is not an external cash flow. Conflating them
     gets both wrong.
+
+    The shares held in the account before the ex-date are entitled, and their
+    basis is reduced on the pay-date, the total allocated across their lots by
+    quantity (ADR 0039). A lot's part beyond its basis is capital gain on the
+    pay-date, at the lot's own holding period. Shares sold between the two
+    dates are refused: their basis is already gone.
     """
     _income(
         TransactionType.RETURN_OF_CAPITAL,
         symbol,
         account,
         amount,
-        ex_date=None,
+        ex_date=ex_date,
         pay_date=pay_date,
         qualified=None,
         note=note,

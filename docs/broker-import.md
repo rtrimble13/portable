@@ -657,8 +657,12 @@ An import is accepted when it reconciles, not when it parses.
    nothing (a sweep redemption) is shown, not a break. A break with the lots
    agreeing is a basis the custodian adjusted and the activity export never
    showed — a distribution reclassified as return of capital is the usual
-   one — and is the owner's to record with `pt income roc`, not the importer's
-   to infer.
+   one — and is the owner's to record, not the importer's to infer. The
+   distribution's cash is usually already in the ledger as a dividend, so a
+   reclassification is two rows: `pt trade reverse` on the dividend, and
+   `pt income roc` with its ex-date and pay-date, which reduces the basis of
+   the shares held before the ex-date (ADR 0039). Recording the return of
+   capital alone would count the cash twice.
 3. `pt validate` passes — which, after ADR 0016, means stored derived state
    actually equals replayed state.
 4. `pt export` → `pt import` → `pt export` is byte-identical.

@@ -23,6 +23,7 @@ rate** rather than merely a presentation:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import date
 from decimal import ROUND_DOWN, Decimal
@@ -461,6 +462,7 @@ class CorporateActionEngine:
         pay_date: date,
         txn_id: int | None = None,
         next_adjustment_id: int = 1,
+        distributions: Sequence[Decimal] | None = None,
     ) -> tuple[tuple[Lot, ...], tuple[BasisAdjustment, ...], Decimal]:
         """Reduce basis by a return of capital; the excess becomes gain.
 
@@ -474,17 +476,30 @@ class CorporateActionEngine:
         facts are true and they are about different things
         (:mod:`portable_core.services.cash_flow`).
 
+        Args:
+            distributions: each lot's share of the distribution, when the
+                caller has allocated a stated total itself (by largest
+                remainder, so the parts sum to it exactly). Without it, each
+                lot receives ``amount_per_share`` times its quantity.
+
         Returns:
             ``(lots, adjustments, excess_gain)``. The excess is the caller's to
-            record as a realized gain.
+            record as a realized gain; a lot's part of it is its distribution
+            plus its adjustment's (negative) ``basis_delta``.
         """
+        if distributions is not None and len(distributions) != len(lots):
+            raise ValueError("one distribution per lot")
         adjusted: list[Lot] = []
         adjustments: list[BasisAdjustment] = []
         excess_total = ZERO
 
         for offset, lot in enumerate(lots):
             with money_context():
-                distribution = quantize_money(amount_per_share * lot.remaining_quantity)
+                distribution = (
+                    quantize_money(distributions[offset])
+                    if distributions is not None
+                    else quantize_money(amount_per_share * lot.remaining_quantity)
+                )
                 reduction = min(distribution, lot.adjusted_cost_basis)
                 excess = distribution - reduction
                 new_basis = lot.adjusted_cost_basis - reduction
@@ -506,7 +521,12 @@ class CorporateActionEngine:
                     holding_period_start_after=lot.holding_period_start,
                     txn_id=txn_id,
                     note=(
-                        f"return of capital {amount_per_share}/share"
+                        (
+                            f"return of capital {distribution} on "
+                            f"{lot.remaining_quantity} units"
+                            if distributions is not None
+                            else f"return of capital {amount_per_share}/share"
+                        )
                         + (f"; {excess} exceeded basis and is capital gain" if excess else "")
                     ),
                 )

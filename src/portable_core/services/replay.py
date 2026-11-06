@@ -29,7 +29,14 @@ from datetime import date
 from decimal import Decimal
 from typing import Generic, TypeVar
 
-from portable_core.decimals import money_context, quantize_money, quantize_quantity, to_text
+from portable_core.decimals import (
+    allocate,
+    money_context,
+    quantize_money,
+    quantize_quantity,
+    to_text,
+)
+from portable_core.domain.dates import days_between, holding_period
 from portable_core.domain.enums import (
     BasisAdjustmentReason,
     BasisSource,
@@ -59,6 +66,7 @@ from portable_core.errors.kinds import (
     E_OPTION_ROW_INVALID,
     E_OPTION_UNSUPPORTED,
     E_REPLAY_MISMATCH,
+    E_ROC_ENTITLEMENT,
 )
 from portable_core.persistence.connection import scratch_savepoint
 from portable_core.persistence.repositories import Repositories
@@ -460,6 +468,13 @@ class ReplayEngine:
             self._option_event(txn, counters)
             return
 
+        # ADR 0039. A return of capital carries an instrument and no quantity,
+        # so it is dispatched before the quantity check -- which is where it
+        # used to stop, leaving every basis it should have reduced untouched.
+        if txn.txn_type is TransactionType.RETURN_OF_CAPITAL:
+            self._return_of_capital(txn, counters)
+            return
+
         if txn.quantity is None:
             return
 
@@ -811,6 +826,124 @@ class ReplayEngine:
 
         for leg_id in sorted(leg_ids):
             self._refresh_leg(leg_id, txn.trade_date)
+
+    # ── return of capital (ADR 0039) ─────────────────────────────────────────
+
+    def _held_since(self, lot: Lot) -> date:
+        """The trade date from which *lot* has been in its account.
+
+        Not ``open_date``: a lot transferred in keeps its original acquisition
+        date for its holding period, but it was not in this account to be
+        entitled to anything before it arrived.
+        """
+        opening = self.repos.transactions.get(lot.open_txn_id)
+        return opening.trade_date if opening is not None else lot.open_date
+
+    def _return_of_capital(self, txn: Transaction, counters: dict[str, int]) -> None:
+        """Reduce the basis of the shares entitled; the excess over basis is gain.
+
+        Entitlement is fixed on the **ex-date**: the shares held in the account
+        before it, and still held when the distribution is paid. The reduction
+        is applied on the **pay-date**, when the row sorts, because that is when
+        the capital came back. The stated total is allocated across those lots
+        by quantity, by largest remainder, so the parts sum to it exactly.
+
+        A lot's distribution beyond its basis is capital gain, recognised on
+        the pay-date at the lot's own holding period: there is no negative
+        basis. It is recorded as a disposition of no units, proceeds equal to
+        the excess and no basis, so it reaches every report a gain reaches.
+        """
+        account = self.repos.accounts.get(txn.account_id)
+        instrument = (
+            self.repos.instruments.get(txn.instrument_id)
+            if txn.instrument_id is not None
+            else None
+        )
+        if account is None or instrument is None:  # pragma: no cover -- foreign keys
+            return
+        ex = txn.ex_date or txn.trade_date
+        paid = txn.trade_date
+        with money_context():
+            total = quantize_money(abs(txn.gross_amount or txn.net_cash_effect))
+
+        lots = lots_of_side(
+            self.repos.lots.open_lots(txn.account_id, instrument.instrument_id), short=False
+        )
+        entitled = [lot for lot in lots if self._held_since(lot) < ex]
+        # Shares held before the ex-date but disposed of since -- all of a lot
+        # or part of one -- were entitled too, and their basis is gone. Whether
+        # the distribution then adjusts that sale or something else is not
+        # decided here: refused.
+        sold_since = [
+            d
+            for d in self.repos.lots.dispositions(account_id=txn.account_id, start=ex, end=paid)
+            if d.instrument_id == instrument.instrument_id
+            and d.quantity > 0
+            and (held := self.repos.lots.get(d.lot_id)) is not None
+            and self._held_since(held) < ex
+        ]
+        if sold_since:
+            raise ValidationError(
+                f"return of capital row {txn.txn_id} on {instrument.symbol}: shares "
+                f"held on its ex-date {ex.isoformat()} were disposed of before it was "
+                f"paid on {paid.isoformat()}",
+                code=E_ROC_ENTITLEMENT,
+                remedy=(
+                    "Those shares were entitled to their part of the distribution, "
+                    "but their basis is gone, and portable will not decide what the "
+                    "part reduces instead. Record the distribution in the parts your "
+                    "tax documents attribute, and treat the sold shares' part with "
+                    "your adviser."
+                ),
+                txn_id=txn.txn_id,
+            )
+        if not entitled:
+            raise ValidationError(
+                f"return of capital row {txn.txn_id}: no {instrument.symbol} was held "
+                f"in {account.name} before its ex-date {ex.isoformat()}",
+                code=E_ROC_ENTITLEMENT,
+                remedy="Check the account, the symbol and the ex-date.",
+                txn_id=txn.txn_id,
+            )
+
+        shares = sum((lot.remaining_quantity for lot in entitled), Decimal(0))
+        distributions = allocate(total, [lot.remaining_quantity for lot in entitled])
+        adjusted, adjustments, _excess = self.corporate_actions.return_of_capital(
+            entitled,
+            amount_per_share=total / shares,
+            pay_date=paid,
+            txn_id=txn.txn_id,
+            distributions=distributions,
+        )
+        schedules = self.repos.accounts.rate_schedules(txn.account_id)
+        for lot, adjustment, distribution in zip(
+            adjusted, adjustments, distributions, strict=True
+        ):
+            self.repos.lots.update_basis(lot)
+            self.repos.lots.add_adjustment(adjustment)
+            with money_context():
+                excess = quantize_money(distribution + adjustment.basis_delta)
+            if excess <= 0:
+                continue
+            disposition = LotDisposition(
+                disposition_id=0,
+                lot_id=lot.lot_id,
+                txn_id=txn.txn_id,
+                account_id=txn.account_id,
+                instrument_id=instrument.instrument_id,
+                disposition_date=paid,
+                quantity=Decimal(0),
+                proceeds=excess,
+                cost_basis_relieved=ZERO,
+                realized_gain=excess,
+                holding_period=holding_period(lot.holding_period_start, paid),
+                days_held=days_between(lot.holding_period_start, paid),
+                relief_method=ReliefMethod.SPEC,
+            )
+            disposition_id = self.repos.lots.add_disposition(disposition)
+            counters["dispositions"] += 1
+            stored = replace(disposition, disposition_id=disposition_id)
+            self.repos.lots.add_realized_gain(self.tax.estimate(stored, account, schedules))
 
     # ── the options lifecycle (ADR 0038) ─────────────────────────────────────
 

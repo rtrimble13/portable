@@ -486,6 +486,26 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **A return of capital never reduced basis** (ADR 0039).
+  - What happened: `pt income roc` recorded the cash, and replay stopped at
+    the row because it carries no quantity. The engine function that
+    reduces basis had no caller. 200.00 returned on shares bought for
+    5,000.00 left the basis at 5,000.00, and the later sale's gain was
+    200.00 too small.
+  - What replay does now: it reduces the basis of the shares in the account
+    before the ex-date, on the pay-date, with the total allocated by
+    quantity. A lot's part beyond its basis is capital gain at the lot's
+    own holding period.
+  - What is refused: shares disposed of between the ex-date and the
+    pay-date, and a return of capital with none held, with
+    `PT-E-ROC-ENTITLEMENT`.
+  - `pt income roc` takes `--ex-date`.
+  - Any file with a return-of-capital row reports a replay mismatch until
+    `pt rebuild`, which restates the later gains. The sample portfolio's VTI
+    lots change accordingly.
+  - `docs/broker-import.md` §9 said to record a reclassified distribution
+    with `pt income roc` alone, which counts its cash twice when it was
+    already a dividend. It now says to reverse the dividend first.
 - **Short sales were booked as purchases** (ADR 0038). Cash was wrong on both
   trades:
   - `pt short` and imported short sales debited cash instead of receiving
