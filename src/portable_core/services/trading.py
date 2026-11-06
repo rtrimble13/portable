@@ -39,7 +39,13 @@ from portable_core.errors.kinds import (
     E_WITHHOLDING_INVALID,
 )
 from portable_core.persistence.repositories import Repositories
-from portable_core.services.lots import LotEngine, ReliefPlan, designate
+from portable_core.services.lots import (
+    LotEngine,
+    ReliefPlan,
+    check_opening_side,
+    designate,
+    lots_of_side,
+)
 from portable_core.services.replay import ReplayEngine
 
 __all__ = ["CommitResult", "TradeIntent", "TradePlan", "TradingService"]
@@ -54,6 +60,12 @@ _APPROXIMATE = frozenset(
 
 #: Trade types that open or add. The rest reduce.
 _OPENING = {TransactionType.BUY, TransactionType.SELL_SHORT}
+#: Trade types that pay cash out. Not the same set as `_OPENING`: a short sale
+#: opens and receives, and a cover closes and pays (ADR 0038). Conflating the
+#: two booked every short sale as a purchase.
+_PAYING = {TransactionType.BUY, TransactionType.BUY_TO_COVER}
+#: Trade types on the short side: they open or close short lots.
+_SHORT_SIDE = {TransactionType.SELL_SHORT, TransactionType.BUY_TO_COVER}
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,20 +149,28 @@ class TradingService:
                 intent.price * intent.quantity * intent.instrument.contract_size
             )
             costs = intent.fees + intent.commissions
-            # An opening trade pays out gross plus costs; a closing trade
-            # receives gross minus costs. Costs always reduce the cash the
-            # trader ends up with, in both directions.
-            if intent.txn_type in _OPENING:
+            # A buy or a cover pays out gross plus costs; a sale or a short
+            # sale receives gross minus costs. Costs always reduce the cash
+            # the trader ends up with, in both directions.
+            if intent.txn_type in _PAYING:
                 net_cash = quantize_money(-(gross + costs))
             else:
                 net_cash = quantize_money(gross - costs)
 
         relief_plan: ReliefPlan | None = None
         stored_selection: str | None = None
-        if intent.txn_type not in _OPENING:
+        if intent.txn_type in _OPENING:
+            check_opening_side(
+                short=intent.txn_type is TransactionType.SELL_SHORT,
+                open_lots=self.repos.lots.open_lots(
+                    intent.account.account_id, intent.instrument.instrument_id
+                ),
+                symbol=intent.instrument.symbol,
+            )
+        else:
             relief_plan, stored_selection = self._plan_relief(intent)
 
-        if intent.txn_type is TransactionType.BUY:
+        if intent.txn_type in _PAYING:
             balance, _margin = self.repos.valuations.cash(
                 intent.account.account_id, currency=intent.account.currency
             )
@@ -296,8 +316,13 @@ class TradingService:
         }
         LotEngine.check_method_consistency(intent.instrument.instrument_id, method, prior)
 
-        open_lots = self.repos.lots.open_lots(
-            intent.account.account_id, intent.instrument.instrument_id
+        # ADR 0038: a cover relieves short lots and a sale long ones, never the
+        # other side's.
+        open_lots = lots_of_side(
+            self.repos.lots.open_lots(
+                intent.account.account_id, intent.instrument.instrument_id
+            ),
+            short=intent.txn_type in _SHORT_SIDE,
         )
         selection: dict[int, Decimal] | None = None
         stored: str | None = None

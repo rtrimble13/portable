@@ -77,10 +77,16 @@ def holdings(
                                 instrument.instrument_id, ctx.as_of
                             )
                             lots = repos.lots.by_leg(leg.leg_id)
+                            # ADR 0038. A short leg is valued negatively, and
+                            # its lots hold what the short sale received, which
+                            # is shown negative beside it: value less basis is
+                            # then the unrealized P&L in either direction.
                             basis = sum((lot.adjusted_cost_basis for lot in lots), ZERO)
+                            if leg.sign < 0:
+                                basis = ZERO - basis
                             value = (
                                 quantize_money(
-                                    price.price * leg.quantity * instrument.contract_size
+                                    price.price * leg.signed_quantity * instrument.contract_size
                                 )
                                 if price
                                 else None
@@ -101,7 +107,7 @@ def holdings(
                                     "sector": instrument.sector,
                                     "asset_class": instrument.asset_class,
                                     "role": str(leg.role),
-                                    "quantity": leg.quantity,
+                                    "quantity": leg.signed_quantity,
                                     "price": price.price if price else None,
                                     "price_date": (
                                         price.price_date.isoformat() if price else None
@@ -381,8 +387,12 @@ def pnl(
                                 continue
                             lots = repos.lots.by_leg(leg.leg_id)
                             basis = sum((lot.adjusted_cost_basis for lot in lots), ZERO)
+                            # ADR 0038: signed as `pt holdings` signs them.
+                            if leg.sign < 0:
+                                basis = ZERO - basis
                             unrealized += (
-                                price.price * leg.quantity * instrument.contract_size - basis
+                                price.price * leg.signed_quantity * instrument.contract_size
+                                - basis
                             )
             return _PnlFigures(
                 rows=rows,

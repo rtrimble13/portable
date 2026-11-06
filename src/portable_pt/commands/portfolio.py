@@ -334,6 +334,12 @@ def validate(
             problems.append(("cash conservation", problem))
         for problem in engine.check_leg_invariants():
             problems.append(("leg quantity", problem))
+        # ADR 0038. Rows stored under the short-sale sign the planner used to
+        # get wrong, and options the book still holds after they expired.
+        for problem in engine.check_short_sale_cash():
+            problems.append(("short sale", problem))
+        for problem in engine.check_options_past_expiry(ctx.as_of):
+            problems.append(("option expiry", problem))
 
         # ADR 0036. A designation by lot id is read only through the meaning
         # recorded for it, because the ids themselves are renumbered by every

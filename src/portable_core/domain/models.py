@@ -386,6 +386,8 @@ class PositionLeg:
     role: LegRole
     #: +1 long, -1 short.
     sign: int
+    #: Unsigned, as its lots' quantities are (invariant 5). The direction is
+    #: `sign`; :attr:`signed_quantity` combines them.
     quantity: Decimal
     opened_date: date
     closed_date: date | None = None
@@ -393,6 +395,15 @@ class PositionLeg:
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)
+
+    @property
+    def signed_quantity(self) -> Decimal:
+        """The quantity with its direction: negative for a short leg. ADR 0038.
+
+        Everything that values or compares a holding reads this. Reading
+        :attr:`quantity` there counted a short position as an asset.
+        """
+        return Decimal(0) - self.quantity if self.sign < 0 else self.quantity
 
 
 @dataclass(frozen=True, slots=True)

@@ -61,8 +61,8 @@ Five things make it harder than it sounds:
      - a buy;
      - a reinvested dividend;
      - a capital-gain distribution taken in units;
-     - stock acquired by exercising a call or by assignment of a written put,
-       once the ledger records one. Today `pt` records neither.
+     - stock acquired by exercising a call or by assignment of a written put
+       (ADR 0038 derives both in replay).
 
      The law has no de minimis, so a 3-share dividend reinvestment disallows
      its share of a loss.
@@ -250,11 +250,10 @@ Each has a recommendation. The ADR is accepted once each is answered.
   sale exists. The rebuild after migrating says which years moved, and by
   how much. It also names any reconstructed block that decision 7 says to
   check.
-- **Prerequisite: `pt option assign` must be replayable first.** It writes
-  its stock sale outside replay, and replay ignores the row, so `pt validate`
-  fails after it and a rebuild erases the sale's realized gain. Reproduced
-  2026-11-06 and tracked separately. Until that is fixed, a loss on an
-  assigned covered call is invisible to detection built in replay.
+- **Prerequisite met: the option lifecycle is replayable** (ADR 0038). Before
+  it, `pt option assign` wrote its stock sale outside replay, and a rebuild
+  erased it, so a loss on an assigned covered call would have been invisible
+  to detection built in replay.
 - **Tax-loss harvesting** in `po` (v0.3) can be built on decision 8's table.
 - **Citations still to verify.** The verification standard of
   `docs/gips-standard.md` applies here too. These points were checked only

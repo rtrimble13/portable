@@ -45,7 +45,8 @@ def list_positions(
                         "strategy": str(position.strategy_type),
                         "symbol": instrument.symbol if instrument else None,
                         "role": str(leg.role),
-                        "quantity": leg.quantity,
+                        # ADR 0038: a short leg shows negative, as statements do.
+                        "quantity": leg.signed_quantity,
                         "opened": position.opened_date.isoformat(),
                         "status": str(leg.status),
                     }
