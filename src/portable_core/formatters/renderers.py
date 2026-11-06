@@ -1,8 +1,12 @@
 """The four output formats.
 
-Every command supports all four. Structured results go to **stdout**; logs,
-warnings, and progress go to **stderr** (bootstrap §3.5) -- which is what makes
+Every command supports all four. Structured results go to **stdout**; logs
+and progress go to **stderr** (bootstrap §3.5) -- which is what makes
 ``pt holdings --format json | jq`` work while ``-v`` is on.
+
+A result's warnings travel with it where the format can carry them: the JSON
+envelope's ``warnings`` field, and a section of the Markdown. Table and CSV
+cannot, so ``portable_core.cli.runner.emit`` writes them to **stderr**.
 """
 
 from __future__ import annotations

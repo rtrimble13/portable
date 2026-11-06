@@ -64,14 +64,31 @@ class _JsonFormatter(logging.Formatter):
         return json.dumps(payload, sort_keys=True)
 
 
+#: Formats with nowhere in-band to carry a warning. JSON has the envelope's
+#: ``warnings`` field and Markdown renders a section; these write the result
+#: and nothing else to stdout, so the warnings go to stderr.
+_WARNINGS_TO_STDERR = frozenset({OutputFormat.TABLE, OutputFormat.CSV})
+
+
 def emit(
     result: CommandResult,
     output_format: OutputFormat,
     *,
     no_color: bool = False,
+    quiet: bool = False,
 ) -> None:
-    """Write a command result to stdout in the active format."""
+    """Write a command result to stdout in the active format, warnings to stderr.
+
+    The one place every result is written, so no command has to remember its
+    warnings. Before this, table and CSV output dropped them entirely, the
+    notice that a dry run wrote nothing included: the output of a dry run and
+    of the real write looked the same. ``--quiet`` suppresses them, as it
+    suppresses every log line below an error.
+    """
     render(result, output_format, stream=sys.stdout, no_color=no_color)
+    if output_format in _WARNINGS_TO_STDERR and not quiet:
+        for warning in result.warnings:
+            sys.stderr.write(f"warning: {warning}\n")
 
 
 def render_error(
@@ -109,6 +126,7 @@ def run_command(
     output_format: OutputFormat = OutputFormat.TABLE,
     no_color: bool = False,
     verbose: int = 0,
+    quiet: bool = False,
 ) -> int:
     """Run *action*, render whatever it produced, and return an exit code."""
     try:
@@ -138,7 +156,7 @@ def run_command(
             logging.getLogger("portable").exception("traceback")
         return int(ExitCode.GENERIC)
 
-    emit(result, output_format, no_color=no_color)
+    emit(result, output_format, no_color=no_color, quiet=quiet)
     return int(ExitCode.OK)
 
 

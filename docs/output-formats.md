@@ -6,6 +6,12 @@ by an agent parsing stdout.
 **Structured results go to stdout; logs, warnings, and progress go to stderr.**
 That is what makes `pt holdings --format json | jq` work while `-v` is on.
 
+A result's warnings are part of it where the format can carry them: the JSON
+envelope's `warnings` field, and a **Warnings** section in Markdown. Table and
+CSV cannot, so each warning is written to stderr as a `warning: ...` line,
+`DRY RUN: nothing was written to the portfolio.` included. `--quiet` suppresses
+those lines.
+
 ---
 
 ## The JSON envelope

@@ -162,3 +162,21 @@ def test_a_dry_run_refuses_what_the_real_run_refuses(run_pt: CliRunner, book: st
 def test_a_dry_run_needs_no_confirmation(run_pt: CliRunner, book: str) -> None:
     """`pt account close` prompts; a rehearsal keeps nothing, so it does not."""
     run_pt("--port", book, "--dry-run", "account", "close", "IRA")
+
+
+def test_a_dry_run_says_so_in_the_default_table_output(run_pt: CliRunner, book: str) -> None:
+    """The notice reaches a human too, on stderr, and stays out of the result.
+
+    Table output used to drop every warning, so a dry run and the real write
+    looked the same in the format most people read.
+    """
+    deposit = ("cash", "deposit", "-a", "B", "--amount", "50", "--date", "2024-01-04")
+    before = _contents(book)
+
+    shown = run_pt("--port", book, "--dry-run", *deposit, fmt="table")
+    assert "warning: DRY RUN: nothing was written to the portfolio." in shown.stderr
+    assert "DRY RUN: nothing" not in shown.stdout
+
+    quiet = run_pt("--port", book, "--dry-run", "--quiet", *deposit, fmt="table")
+    assert "warning:" not in quiet.stderr
+    assert _contents(book) == before

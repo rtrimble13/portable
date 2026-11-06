@@ -466,6 +466,15 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **Table and CSV output never showed a command's warnings.** Not even a dry
+  run's `DRY RUN: nothing was written to the portfolio.`, so in the default
+  format a dry run and the real write looked the same; nor rebuild notices,
+  snapshot removals, or `pt migrate`'s pending designations. Each warning is
+  now written to stderr as a `warning: ...` line, from the one place every
+  result is written, so stdout still carries only the result. JSON keeps
+  them in the envelope and Markdown in its section, as before. `--quiet`
+  suppresses them.
+
 - **A spec-ID sale could be moved onto a different lot by a later entry,
   silently** (ADR 0036). A sale recorded its designated lots by lot id, and
   every rebuild renumbers lots. A back-dated buy turned a designated 500.00
