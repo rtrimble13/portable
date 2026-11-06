@@ -558,6 +558,9 @@ everything but the lot id, which only the ledger knows. At commit each entry
 resolves to the ledger's lot opened on that day — where two were, to the one
 whose original basis is what the custodian says the lot cost — and a lot
 acquired before the ledger begins resolves to the seed carrying its block.
+The row records each lot by its lineage key, the transaction that opened it,
+never by its lot id: the rebuild at the end of the batch, and every rebuild
+after it, renumbers lots (ADR 0036).
 Anything else is refused as `PT-E-LOT-SELECTION-INVALID` naming the lots that
 do exist: designating a lot the ledger cannot find and relieving something
 else instead is the substitution specific identification exists to prevent.

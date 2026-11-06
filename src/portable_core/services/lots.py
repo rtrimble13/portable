@@ -26,9 +26,166 @@ from portable_core.errors.kinds import (
     E_TAX_METHOD_CONFLICT,
 )
 
-__all__ = ["LotConsumption", "LotEngine", "ReliefPlan", "parse_lot_selection"]
+__all__ = [
+    "KEY_PREFIX",
+    "LotConsumption",
+    "LotEngine",
+    "ReliefPlan",
+    "derived_lot_key",
+    "designate",
+    "format_keyed_selection",
+    "is_keyed",
+    "keyed_selection",
+    "opening_lot_key",
+    "parse_keyed_selection",
+    "parse_lot_selection",
+    "resolve_keyed_selection",
+]
 
 ZERO = Decimal("0")
+
+# ── lineage keys (ADR 0036) ──────────────────────────────────────────────────
+#
+# A ledger row may not name a derived key (ADR 0023): a rebuild renumbers lot
+# ids, so a designation by id names whichever lot the next replay happens to
+# number that way. A lot is named by its lineage instead, which no later row
+# can change.
+
+#: Marks a designation that names lineage keys: ``@1234:10;@1500.1234:3``. A
+#: designation without it predates schema 10 and names lot ids; its meaning is
+#: recorded in ``lot_designation``.
+KEY_PREFIX = "@"
+
+
+def opening_lot_key(txn_id: int) -> str:
+    """The key of the lot an opening transaction created."""
+    return str(txn_id)
+
+
+def derived_lot_key(txn_id: int, parent_key: str) -> str:
+    """The key of a lot the action in *txn_id* derived from the lot *parent_key*.
+
+    A spinoff gives each parent lot one spun lot, and a conversion one lot of
+    the new instrument, all opened by the same transaction. The parent's key
+    is what tells them apart, and it is stable for the same reason this is.
+    """
+    return f"{txn_id}.{parent_key}"
+
+
+def is_keyed(spec: str) -> bool:
+    """Whether *spec* names lineage keys rather than lot ids."""
+    return spec.strip().startswith(KEY_PREFIX)
+
+
+def parse_keyed_selection(spec: str) -> dict[str, Decimal]:
+    """Parse ``"@1234:10;@1500.1234:3"`` into ``{key: quantity}``.
+
+    Raises:
+        ValidationError: on anything malformed, including a designation that
+            mixes keys and lot ids.
+    """
+    selection: dict[str, Decimal] = {}
+    for part in spec.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        if not part.startswith(KEY_PREFIX) or ":" not in part:
+            raise ValidationError(
+                f"malformed lot designation {part!r}: expected '@key:quantity'",
+                code=E_LOT_SELECTION_INVALID,
+                spec=spec,
+            )
+        key_text, qty_text = part[len(KEY_PREFIX) :].rsplit(":", 1)
+        key = key_text.strip()
+        try:
+            quantity = Decimal(qty_text.strip())
+        except ArithmeticError as exc:
+            raise ValidationError(
+                f"malformed lot designation {part!r}: {exc}",
+                code=E_LOT_SELECTION_INVALID,
+                spec=spec,
+            ) from exc
+        if not key or quantity <= 0:
+            raise ValidationError(
+                f"malformed lot designation {part!r}",
+                code=E_LOT_SELECTION_INVALID,
+                spec=spec,
+            )
+        selection[key] = selection.get(key, ZERO) + quantity
+    if not selection:
+        raise ValidationError("empty lot designation", code=E_LOT_SELECTION_INVALID, spec=spec)
+    return selection
+
+
+def format_keyed_selection(selection: dict[str, Decimal]) -> str:
+    """The stored form of a keyed designation, in the order given."""
+    return ";".join(f"{KEY_PREFIX}{key}:{quantity}" for key, quantity in selection.items())
+
+
+def keyed_selection(selection: dict[int, Decimal], lots: list[Lot]) -> str:
+    """Name the lots in *selection* (by id, as a user sees them) by their keys.
+
+    Done when a trade is planned, against the lots the user is looking at, so
+    the ledger never stores an id.
+
+    Raises:
+        ValidationError: for an id that is not one of *lots*.
+    """
+    by_id = {lot.lot_id: lot for lot in lots}
+    keyed: dict[str, Decimal] = {}
+    for lot_id, quantity in selection.items():
+        lot = by_id.get(lot_id)
+        if lot is None:
+            raise ValidationError(
+                f"lot {lot_id} is not an open lot of this instrument in this account",
+                code=E_LOT_SELECTION_INVALID,
+                remedy="`pt lot list SYMBOL` shows the open lots and their ids.",
+                lot_id=lot_id,
+            )
+        keyed[lot.lot_key] = keyed.get(lot.lot_key, ZERO) + quantity
+    return format_keyed_selection(keyed)
+
+
+def designate(spec: str, lots: list[Lot]) -> tuple[dict[int, Decimal], str]:
+    """A designation as a writer received it, ready to plan and to store.
+
+    *spec* is what the user typed (lot ids, as ``pt lot list`` shows them) or
+    a keyed designation an importer built. Returns the lot ids this plan
+    relieves and the keyed form the ledger stores, so no row ever records an
+    id a rebuild could renumber (ADR 0036).
+    """
+    if is_keyed(spec):
+        by_id = resolve_keyed_selection(spec, lots)
+        return by_id, format_keyed_selection(parse_keyed_selection(spec))
+    by_id = parse_lot_selection(spec)
+    return by_id, keyed_selection(by_id, lots)
+
+
+def resolve_keyed_selection(spec: str, lots: list[Lot]) -> dict[int, Decimal]:
+    """The lot ids, in this replay, of the lots a keyed designation names.
+
+    Raises:
+        ValidationError: for a key that names no lot among *lots*: the lot was
+            never opened, is already closed, or is in another account or
+            instrument. Relieving something else instead is the substitution
+            specific identification exists to prevent.
+    """
+    by_key = {lot.lot_key: lot for lot in lots}
+    selection: dict[int, Decimal] = {}
+    for key, quantity in parse_keyed_selection(spec).items():
+        lot = by_key.get(key)
+        if lot is None:
+            raise ValidationError(
+                f"designated lot @{key} is not open in this account and instrument",
+                code=E_LOT_SELECTION_INVALID,
+                remedy=(
+                    "A designation names the lot by the transaction that opened it. "
+                    "Check that lot with `pt lot list SYMBOL --as-of DATE`."
+                ),
+                lot_key=key,
+            )
+        selection[lot.lot_id] = selection.get(lot.lot_id, ZERO) + quantity
+    return selection
 
 
 @dataclass(frozen=True, slots=True)

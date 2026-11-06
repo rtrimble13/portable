@@ -39,6 +39,7 @@ from portable_core.domain.models import Transaction
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import E_LOT_SELECTION_INVALID, E_USAGE
 from portable_core.persistence.repositories import Repositories
+from portable_core.services.lots import keyed_selection
 from portable_core.services.replay import ReplayEngine
 from portable_core.services.trading import TradeIntent, TradingService
 
@@ -791,7 +792,9 @@ class BatchImporter:
         for designation in row.lots:
             lot_id = self._resolve_lot(row, designation, open_lots, inception, taken)
             taken[lot_id] = taken.get(lot_id, ZERO) + designation.quantity
-        return ";".join(f"{lot_id}:{to_text(qty)}" for lot_id, qty in taken.items())
+        # ADR 0036: by lineage key. The ids above are this moment's numbering,
+        # which the rebuild at the end of this very batch may change.
+        return keyed_selection(taken, open_lots)
 
     def _resolve_lot(
         self,

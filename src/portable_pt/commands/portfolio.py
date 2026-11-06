@@ -27,7 +27,7 @@ from portable_core.persistence.connection import (
 )
 from portable_core.persistence.repositories import Repositories
 from portable_core.schema import migrations as M
-from portable_core.services import snapshots
+from portable_core.services import designations, snapshots
 from portable_core.services.replay import ReplayEngine, derived_state_digests
 from portable_pt import state
 from portable_pt.commands._shared import dispatch
@@ -211,6 +211,40 @@ def info() -> None:
     dispatch(action)
 
 
+def _recovery_data(recovery: designations.Recovery) -> dict[str, object]:
+    return {
+        "recorded": len(recovery.rows),
+        "agreed": recovery.agreed,
+        "pending": [
+            {
+                "txn_id": row.txn_id,
+                "trade_date": row.trade_date.isoformat(),
+                "written": row.spec,
+                "as_written": row.as_written,
+                "as_read": row.as_read,
+                "note": row.note,
+            }
+            for row in recovery.pending
+        ],
+    }
+
+
+def _recovery_warnings(recovery: designations.Recovery) -> tuple[str, ...]:
+    """Say, loudly, which old sales need the owner before replay applies them."""
+    if not recovery.pending:
+        return ()
+    return (
+        f"{len(recovery.pending)} sale(s) designated lots by id, and what those ids "
+        "mean could not be settled from the ledger alone (ADR 0036). Each is refused "
+        "by replay until you decide it: `pt lot designation list --pending`, then "
+        "`pt lot designation resolve`.",
+        *(
+            f"txn {row.txn_id} ({row.trade_date.isoformat()}, {row.spec}): {row.note}"
+            for row in recovery.pending
+        ),
+    )
+
+
 @app.command()
 def migrate(
     no_backup: Annotated[
@@ -229,17 +263,35 @@ def migrate(
         before, after, pending, backup = M.migrate(
             repos.con, path, backup=not no_backup, dry_run=options.dry_run
         )
-        result = CommandResult(
+        data: dict[str, object] = {
+            "from_version": before,
+            "to_version": after,
+            "applied": [f"{m.version:04d}_{m.name}" for m in pending],
+            "backup": str(backup) if backup else None,
+        }
+        if options.dry_run:
+            # A migration writes a file, so its dry run reports rather than
+            # rehearses (ADR 0026 §4). Recovery needs the migrated schema.
+            data["old_designations"] = len(
+                designations.old_designations(repos.transactions.in_ledger_order())
+            )
+            return dry_run_note(CommandResult(command="migrate", data=data))
+
+        # ADR 0036. Record what each designation by lot id meant, then rebuild:
+        # schema 10 leaves derived state empty, and replay reads the recorded
+        # meanings. Run even with no migration pending, so a pass that stopped
+        # part-way is finished by the next one.
+        with transaction(repos.con):
+            recovery = designations.recover(repos)
+            outcome = ReplayEngine(repos).rebuild() if pending or recovery.rows else None
+        data["designations"] = _recovery_data(recovery)
+        data["rebuilt"] = outcome is not None
+        return CommandResult(
             command="migrate",
-            data={
-                "from_version": before,
-                "to_version": after,
-                "applied": [f"{m.version:04d}_{m.name}" for m in pending],
-                "backup": str(backup) if backup else None,
-            },
+            data=data,
+            warnings=_recovery_warnings(recovery) + (outcome.warnings if outcome else ()),
             portfolio=ctx.portfolio_name(),
         )
-        return dry_run_note(result) if options.dry_run else result
 
     dispatch(action)
 
@@ -282,6 +334,28 @@ def validate(
             problems.append(("cash conservation", problem))
         for problem in engine.check_leg_invariants():
             problems.append(("leg quantity", problem))
+
+        # ADR 0036. A designation by lot id is read only through the meaning
+        # recorded for it, because the ids themselves are renumbered by every
+        # rebuild. Replay refuses one with no record or one still pending, so
+        # each is also reported as unreplayable below; this says why, and what
+        # to run.
+        for row in designations.unrecorded(repos):
+            problems.append(
+                (
+                    "designation",
+                    f"txn {row.txn_id} designates lots by id ({row.lot_selection!r}) "
+                    "with no recorded meaning; run `pt migrate`",
+                )
+            )
+        for waiting in repos.designations.all(pending_only=True):
+            problems.append(
+                (
+                    "designation",
+                    f"txn {waiting.txn_id}: what its designation means waits for your "
+                    "decision; `pt lot designation list --pending`",
+                )
+            )
 
         # Foreign keys and CHECK constraints, asked of SQLite directly.
         for row in repos.con.execute("PRAGMA foreign_key_check"):
@@ -516,11 +590,22 @@ def import_portfolio(
             with transaction(con):
                 counts = repos.import_tables(payload)
             with transaction(con):
-                ReplayEngine(repos).rebuild()
+                # ADR 0036: an export written before schema 10 carries
+                # designations by lot id and no record of what they meant.
+                recovery = designations.recover(repos)
+                outcome = ReplayEngine(repos).rebuild()
         finally:
             con.close()
 
-        return CommandResult(command="import", data={"target": str(target), **counts})
+        return CommandResult(
+            command="import",
+            data={
+                "target": str(target),
+                **counts,
+                "designations": _recovery_data(recovery),
+            },
+            warnings=_recovery_warnings(recovery) + outcome.warnings,
+        )
 
     dispatch(action)
 

@@ -27,6 +27,7 @@ from portable_pt.commands import (
     importing,
     instrument,
     introspect,
+    lot_designations,
     options,
     portfolio,
     positions,
@@ -147,6 +148,7 @@ app.add_typer(cash.income_app, name="income")
 app.add_typer(trade.app, name="trade")
 app.add_typer(pricing.price_app, name="price")
 app.add_typer(positions.position_app, name="position")
+positions.lot_app.add_typer(lot_designations.app, name="designation")
 app.add_typer(positions.lot_app, name="lot")
 app.add_typer(reporting.policy_app, name="policy")
 app.add_typer(reporting.benchmark_app, name="benchmark")

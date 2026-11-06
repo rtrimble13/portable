@@ -24,6 +24,7 @@ from portable_core.domain.enums import (
     BenchmarkReturnType,
     CashTreatment,
     DayCount,
+    DesignationStatus,
     ExerciseStyle,
     FeeClass,
     HoldingPeriod,
@@ -470,6 +471,12 @@ class Lot:
     #: A split does NOT reset this. A spinoff's new shares INHERIT it. Wash
     #: sales (v0.2) will move it forward.
     holding_period_start: date
+    #: ADR 0036. The lot's lineage, unique in the file: the transaction that
+    #: opened it (``"1234"``), or the action that derived it and the parent's
+    #: key (``"1500.1234"``). A designation on the ledger names this, never
+    #: ``lot_id``, which every rebuild renumbers. No default, so no writer can
+    #: create a lot without saying where it came from.
+    lot_key: str
     #: ADR 0017 §2. NOT NULL in the schema with no default, so no writer can
     #: create a lot without answering the question. Every report that consumes
     #: a lot has to be able to say which rung it rested on.
@@ -502,6 +509,30 @@ class Lot:
     @property
     def is_open(self) -> bool:
         return self.status is not LotStatus.CLOSED and self.remaining_quantity > 0
+
+
+@dataclass(frozen=True, slots=True)
+class LotDesignation:
+    """What a designation written before schema 10 means, by lineage key.
+
+    ADR 0036. The ledger row keeps its text, which names lot ids. This records
+    the lots those ids named when the row was written (``as_written``), the
+    lots they named as the ledger was read before the change (``as_read``),
+    and the meaning in force (``lot_selection``), ``None`` while pending.
+    """
+
+    txn_id: int
+    status: DesignationStatus
+    as_written: str | None = None
+    as_read: str | None = None
+    lot_selection: str | None = None
+    note: str | None = None
+    created_at: str = ""
+    decided_at: str | None = None
+
+    @property
+    def is_pending(self) -> bool:
+        return self.status is DesignationStatus.PENDING
 
 
 @dataclass(frozen=True, slots=True)

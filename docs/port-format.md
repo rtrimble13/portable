@@ -37,7 +37,7 @@ table ([ADR 0010](adr/0010-derived-state-and-replay.md)).
 | Class | Tables | Mutability | Rebuilt? |
 |---|---|---|---|
 | **Ledger** | `transaction` | Append-only, enforced by trigger | Never touched |
-| **Reference** | `instrument*`, `price`, `corporate_action` | Immutable once written | Never touched |
+| **Reference** | `instrument*`, `price`, `corporate_action`, `lot_designation` | Immutable once written (a pending `lot_designation` row is decided once, ADR 0036) | Never touched |
 | **Config** | `account`, `tax_rate_schedule`, `benchmark*`, `return_policy`, `portfolio_event`, `meta`, `settings`, `report_issue` | Effective-dated, immutable once effective | Never touched |
 | **Derived** | `position`, `position_leg`, `lot`, `lot_basis_adjustment`, `lot_disposition`, `realized_gain`, `cash_balance` | Materialized for speed | **Dropped and rebuilt** |
 | **Valued** | `valuation_snapshot*`, `snapshot_flow` | Derived from the ledger and the prices each recorded | **Kept**; removed by a ledger write that makes them stale, checked by `pt validate` (ADR 0024) |
