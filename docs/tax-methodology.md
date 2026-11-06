@@ -81,6 +81,26 @@ is refused for the same reason.
 Run `pt lot list SYMBOL --as-of DATE` first: it shows which lots are already
 long-term and what each carries, which is the table you need in order to choose.
 
+### A designation names the lot, and nothing can re-point it
+
+`--lots 12:100` takes the lot ids `pt lot list` shows, but the sale does not
+record them. A lot id is a row number, and every rebuild renumbers lots: before
+schema 10, a back-dated buy or a reversal of an earlier one quietly moved a
+recorded sale onto a different lot, with a different basis and a different
+gain. The sale now records each lot by its **lineage key**, which `pt lot list`
+shows beside the id: the transaction that opened the lot (`1234`), or the
+corporate action that derived it and the parent's key (`1500.1234`). No later
+entry can change a key. You may designate by key directly, `--lots '@1234:100'`.
+
+A sale recorded before schema 10 still says `12:100`. `pt migrate` works out
+which lots those ids named when the sale was written, by replaying exactly the
+rows that existed then, and compares that with how they read today. Where the
+two agree, that is recorded. Where they differ, the sale had already drifted;
+where the first cannot be worked out, it is unknown. Either way the sale is
+refused until you decide it: `pt lot designation list --pending` shows both
+readings and the gain each gives, and `pt lot designation resolve` records your
+choice and its reason, once ([ADR 0036](adr/0036-a-lot-is-designated-by-its-lineage.md)).
+
 ### Average cost: two things are true at once
 
 1. **Basis is averaged** across every open lot of the instrument, so each
@@ -228,6 +248,7 @@ Each of these stops the command rather than producing a number.
 | No lot matches a closing trade | `PT-E-LOT-UNMATCHED` | A zero basis by default would overstate the gain by the entire proceeds. `--force-zero-basis` lets a human decide, and records the decision on the lot's adjustment log. |
 | Closing more than is held | `PT-E-LOT-INSUFFICIENT` | A short position is opened with `pt short`, not by overselling. |
 | Spec-ID that does not add up | `PT-E-LOT-SELECTION-INVALID` | Topping up from another lot changes the tax treatment silently. |
+| A sale recorded before schema 10 whose lots are not settled | `PT-E-LOT-DESIGNATION-UNRESOLVED` | Reading its lot ids as numbered today is the defect that re-pointed sales (ADR 0036). |
 | Average cost mixed with spec-ID | `PT-E-TAX-METHOD-CONFLICT` | Either resolution restates basis on shares already sold. |
 | No rate schedule in force | `PT-E-TAX-NO-RATE-SCHEDULE` | A defaulted zero produces a plausible number that is wrong. |
 | A fractional share the account cannot hold | `PT-E-FRACTIONAL-SHARE` | Cash in lieu is a taxable disposition; rounding it away hides one. |

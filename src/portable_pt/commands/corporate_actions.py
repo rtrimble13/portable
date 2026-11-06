@@ -260,6 +260,27 @@ def spinoff(
                 if not lots:
                     continue
 
+                # Appended first: the spun position and lots are named by this
+                # row (ADR 0023, ADR 0036), exactly as a replay of it names them.
+                spinoff_txn_id = repos.transactions.append(
+                    Transaction(
+                        txn_id=0,
+                        account_id=target.account_id,
+                        trade_date=on,
+                        seq=repos.transactions.next_seq(on),
+                        txn_type=TransactionType.SPINOFF,
+                        net_cash_effect=ZERO,
+                        instrument_id=parent.instrument_id,
+                        ex_date=on,
+                        note=(
+                            f"spinoff of {child.symbol} at {ratio} per share; "
+                            f"basis allocated by FMV {parent_fmv}/{spun_fmv}"
+                        ),
+                        external_ref=ref,
+                        source=TransactionSource.DERIVED,
+                        created_at=repos.clock.stamp(),
+                    )
+                )
                 position_id = repos.positions.add(
                     Position(
                         position_id=0,
@@ -267,7 +288,9 @@ def spinoff(
                         strategy_type=StrategyType.SINGLE,
                         opened_date=on,
                         status=PositionStatus.OPEN,
-                        note=f"spun off from {parent.symbol}",
+                        # What replay gives it (`_replay_spinoff`): the row that
+                        # opened it, and no note of its own.
+                        opened_txn_id=spinoff_txn_id,
                     )
                 )
                 leg_id = repos.positions.add_leg(
@@ -291,6 +314,7 @@ def spinoff(
                     spun_instrument_id=child.instrument_id,
                     spun_leg_id=leg_id,
                     spun_position_id=position_id,
+                    txn_id=spinoff_txn_id,
                     allows_fractional=target.allows_fractional,
                 )
                 if outcome.fractional_shares > 0 and not target.allows_fractional:
@@ -328,25 +352,6 @@ def spinoff(
                     )
                     repos.lots.add(replace(spun_lot, lot_id=0))
 
-                spinoff_txn_id = repos.transactions.append(
-                    Transaction(
-                        txn_id=0,
-                        account_id=target.account_id,
-                        trade_date=on,
-                        seq=repos.transactions.next_seq(on),
-                        txn_type=TransactionType.SPINOFF,
-                        net_cash_effect=ZERO,
-                        instrument_id=parent.instrument_id,
-                        ex_date=on,
-                        note=(
-                            f"spinoff of {child.symbol} at {ratio} per share; "
-                            f"basis allocated by FMV {parent_fmv}/{spun_fmv}"
-                        ),
-                        external_ref=ref,
-                        source=TransactionSource.DERIVED,
-                        created_at=repos.clock.stamp(),
-                    )
-                )
                 repos.corporate_actions.add(
                     CorporateAction(
                         instrument_id=parent.instrument_id,
@@ -483,6 +488,27 @@ def convert(
                     )
                 )
 
+            # Appended first: the new lots are named by this row (ADR 0036),
+            # exactly as a replay of it names them.
+            txn_id = repos.transactions.append(
+                Transaction(
+                    txn_id=0,
+                    account_id=found.account_id,
+                    trade_date=on,
+                    seq=repos.transactions.next_seq(on),
+                    txn_type=TransactionType.MERGER_STOCK,
+                    net_cash_effect=ZERO,
+                    instrument_id=source.instrument_id,
+                    # The delivered count, exactly as stated; the ratio on the
+                    # reference row is its derivation.
+                    quantity=received,
+                    ex_date=on,
+                    note=f"converted into {received} {target.symbol}",
+                    external_ref=ref,
+                    source=TransactionSource.DERIVED,
+                    created_at=repos.clock.stamp(),
+                )
+            )
             outcome = ENGINE.convert(
                 lots,
                 target_units=received,
@@ -490,6 +516,7 @@ def convert(
                 target_instrument_id=target.instrument_id,
                 target_leg_id=leg_id,
                 target_position_id=position_id,
+                txn_id=txn_id,
             )
 
             rows: list[dict[str, object]] = []
@@ -535,25 +562,6 @@ def convert(
                     "period and provenance carry to the units it became.",
                 ),
             )
-            txn_id = repos.transactions.append(
-                Transaction(
-                    txn_id=0,
-                    account_id=found.account_id,
-                    trade_date=on,
-                    seq=repos.transactions.next_seq(on),
-                    txn_type=TransactionType.MERGER_STOCK,
-                    net_cash_effect=ZERO,
-                    instrument_id=source.instrument_id,
-                    # The delivered count, exactly as stated; the ratio on the
-                    # reference row is its derivation.
-                    quantity=received,
-                    ex_date=on,
-                    note=f"converted into {received} {target.symbol}",
-                    external_ref=ref,
-                    source=TransactionSource.DERIVED,
-                    created_at=repos.clock.stamp(),
-                )
-            )
             repos.corporate_actions.add(
                 CorporateAction(
                     instrument_id=source.instrument_id,
@@ -570,7 +578,7 @@ def convert(
                 repos.lots.update_after_disposition(closed)
                 repos.lots.add_adjustment(replace(adjustment, adjustment_id=0, txn_id=txn_id))
             for opened in outcome.new_lots:
-                repos.lots.add(replace(opened, lot_id=0, open_txn_id=txn_id))
+                repos.lots.add(replace(opened, lot_id=0))
             repos.positions.update_leg_quantity(
                 leg_id,
                 sum(

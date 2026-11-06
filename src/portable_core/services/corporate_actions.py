@@ -38,6 +38,7 @@ from portable_core.domain.enums import BasisAdjustmentReason, HoldingPeriod, Lot
 from portable_core.domain.models import BasisAdjustment, Lot
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import E_FRACTIONAL_SHARE, E_INVARIANT_BROKEN
+from portable_core.services.lots import derived_lot_key
 
 __all__ = ["CorporateActionEngine", "SpinoffResult", "SplitResult"]
 
@@ -192,7 +193,7 @@ class CorporateActionEngine:
         spun_instrument_id: int,
         spun_leg_id: int,
         spun_position_id: int,
-        txn_id: int | None = None,
+        txn_id: int,
         allows_fractional: bool = False,
         next_lot_id: int = 1,
         next_adjustment_id: int = 1,
@@ -297,7 +298,10 @@ class CorporateActionEngine:
                         instrument_id=spun_instrument_id,
                         account_id=lot.account_id,
                         open_date=ex_date,
-                        open_txn_id=txn_id or lot.open_txn_id,
+                        open_txn_id=txn_id,
+                        # ADR 0036: the spinoff and the parent lot, which
+                        # together tell one spun lot from the others.
+                        lot_key=derived_lot_key(txn_id, lot.lot_key),
                         original_quantity=spun_quantity,
                         remaining_quantity=spun_quantity,
                         per_unit_price=spun_per_unit,
@@ -328,7 +332,7 @@ class CorporateActionEngine:
         target_instrument_id: int,
         target_leg_id: int,
         target_position_id: int,
-        txn_id: int | None = None,
+        txn_id: int,
         next_lot_id: int = 1,
         next_adjustment_id: int = 1,
     ) -> ConversionResult:
@@ -425,7 +429,9 @@ class CorporateActionEngine:
                         account_id=lot.account_id,
                         # Not ex_date: the claim is not newly acquired.
                         open_date=lot.open_date,
-                        open_txn_id=txn_id or lot.open_txn_id,
+                        open_txn_id=txn_id,
+                        # ADR 0036: the conversion and the lot it became.
+                        lot_key=derived_lot_key(txn_id, lot.lot_key),
                         original_quantity=new_quantity,
                         remaining_quantity=new_quantity,
                         per_unit_price=per_unit,

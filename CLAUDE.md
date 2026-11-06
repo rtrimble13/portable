@@ -401,6 +401,7 @@ test that fails without your change.
   | 0033 | A row's identity spells its account as the portfolio does |
   | 0034 | A wrong symbol is corrected, not renamed |
   | 0035 | Every stored stamp is read from an injected clock |
+  | 0036 | A lot is designated by its lineage, not by its row number |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

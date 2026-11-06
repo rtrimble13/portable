@@ -137,6 +137,19 @@ class LotStatus(enum.StrEnum):
     CLOSED = "closed"
 
 
+class DesignationStatus(enum.StrEnum):
+    """Whether a designation written before schema 10 has a meaning. ADR 0036."""
+
+    #: Both readings name the same lots.
+    AGREED = "agreed"
+    #: They differ, or one cannot be established. Replay refuses the row.
+    PENDING = "pending"
+    #: The owner chose what the row meant when it was written.
+    AS_WRITTEN = "as_written"
+    #: The owner chose what it read as before schema 10.
+    AS_READ = "as_read"
+
+
 class TransactionType(enum.StrEnum):
     """Every ledger event type.
 

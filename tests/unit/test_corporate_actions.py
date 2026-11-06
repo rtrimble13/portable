@@ -48,6 +48,7 @@ def lot(
         account_id=1,
         open_date=open_date,
         open_txn_id=lot_id,
+        lot_key=str(lot_id),
         original_quantity=qty,
         remaining_quantity=qty,
         per_unit_price=total / qty,
@@ -164,6 +165,7 @@ def test_spinoff_allocates_basis_by_relative_fair_market_value() -> None:
         spun_instrument_id=2,
         spun_leg_id=2,
         spun_position_id=2,
+        txn_id=50,
     )
     # parent value 100 x 90 = 9000; spun value 50 x 20 = 1000; total 10000
     # so 90% / 10% of the $10,000 basis.
@@ -189,6 +191,7 @@ def test_spun_shares_inherit_the_parents_holding_period() -> None:
         spun_instrument_id=2,
         spun_leg_id=2,
         spun_position_id=2,
+        txn_id=50,
     )
     spun = result.spun_lots[0]
     assert spun.holding_period_start == date(2019, 1, 10)
@@ -212,6 +215,7 @@ def test_spinoff_with_no_observable_values_is_refused_not_guessed() -> None:
             spun_instrument_id=2,
             spun_leg_id=2,
             spun_position_id=2,
+            txn_id=50,
         )
     assert "Form 8937" in (exc.value.remedy or "")
 
@@ -356,6 +360,7 @@ def test_a_conversion_delivers_a_positive_count(units: str) -> None:
             target_instrument_id=9,
             target_leg_id=9,
             target_position_id=9,
+            txn_id=77,
         )
 
 
@@ -368,4 +373,5 @@ def test_a_conversion_of_nothing_is_refused() -> None:
             target_instrument_id=9,
             target_leg_id=9,
             target_position_id=9,
+            txn_id=77,
         )

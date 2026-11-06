@@ -309,6 +309,14 @@ Two rules specific to this repository:
 
 ### Schema
 
+- **`schema_version` 9 → 10**, migration `0010_lot_lineage_keys` (ADR 0036).
+  `lot` is recreated with `lot_key`, a lot's lineage (`NOT NULL UNIQUE`), and
+  derived state is cleared for `pt migrate` to rebuild. Valuation snapshots
+  are kept. New reference table `lot_designation` records what each
+  designation written before schema 10 meant, by key; a pending row is
+  decided once, and triggers refuse every other change and every delete.
+  `pt export` carries it. `pt migrate` now records those meanings and ends
+  with a rebuild.
 - **`schema_version` 8 → 9**, migration `0009_config_row_corrections`
   (ADR 0025). A rebuild of `tax_rate_schedule` and `return_policy`
   (ADR 0019) that adds `corrects_rate_id` and `corrects_policy_id`. Each
@@ -457,6 +465,37 @@ Two rules specific to this repository:
   `duk` with `th`, `ca` and `tc` (fafnir's release after 3.0.5).
 
 ### Fixed
+
+- **Table and CSV output never showed a command's warnings.** Not even a dry
+  run's `DRY RUN: nothing was written to the portfolio.`, so in the default
+  format a dry run and the real write looked the same; nor rebuild notices,
+  snapshot removals, or `pt migrate`'s pending designations. Each warning is
+  now written to stderr as a `warning: ...` line, from the one place every
+  result is written, so stdout still carries only the result. JSON keeps
+  them in the envelope and Markdown in its section, as before. `--quiet`
+  suppresses them.
+
+- **A spec-ID sale could be moved onto a different lot by a later entry,
+  silently** (ADR 0036). A sale recorded its designated lots by lot id, and
+  every rebuild renumbers lots. A back-dated buy turned a designated 500.00
+  loss into a 500.00 gain; reversing an unrelated earlier buy made it a
+  1,500.00 loss. No error was raised, and `pt validate` could not see it,
+  because stored state and replay read the ids the same way. Every
+  back-dated import, reversal and `--incremental` update that sorts before
+  an existing row rebuilds, and broker import designates every sale the
+  custodian's lot report covers. A sale now records each lot by its lineage
+  key, the transaction that opened it, or the corporate action and parent
+  that derived it, which `pt lot list` shows. `pt sell --lots` still takes
+  ids, or keys as `@key:qty`. Old sales keep their text. `pt migrate` replays
+  the rows that existed when each was written to recover which lots its ids
+  named then, and records it where today's reading agrees. Where it does not,
+  or cannot be established (a batch import that interleaved with later-dated
+  rows), the sale is refused with `PT-E-LOT-DESIGNATION-UNRESOLVED` until
+  `pt lot designation resolve` decides it; `pt lot designation list
+  --pending` shows the gain under each reading. `pt ca spinoff` now gives
+  the spun lots and position the spinoff's transaction, as replay always
+  did, so `pt validate` no longer fails after one. `pt trade show` reports a
+  row's designation.
 
 - **`make fixtures` gave a different `examples/sample.port` on every run**
   (ADR 0035). The generator pinned `created_at` on ledger rows only. Every

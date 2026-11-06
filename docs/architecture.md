@@ -125,7 +125,7 @@ Four classes of table, and the distinction drives everything (ADR 0010):
 | Class | Mutability | Rebuilt by `pt rebuild`? |
 |---|---|---|
 | **Ledger** — `transaction` | Append-only, enforced by trigger | Never touched |
-| **Reference** — instruments, prices, corporate actions | Immutable once written | Never touched |
+| **Reference** — instruments, prices, corporate actions, the recorded meaning of an old lot designation | Immutable once written | Never touched |
 | **Config** — accounts, tax rates, benchmarks, policies | Effective-dated, immutable once effective | Never touched |
 | **Derived** — positions, legs, lots, dispositions, balances | Materialized for speed | **Dropped and rebuilt** |
 | **Valued** — valuation snapshots, their price sets and flows | Derived from the ledger *and* the prices each recorded | **Kept**; removed by a ledger write that makes them stale, checked by `pt validate`, recreated by `pt value` (ADR 0024) |

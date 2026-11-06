@@ -383,6 +383,7 @@ def list_lots(
                         rows.append(
                             {
                                 "lot_id": lot.lot_id,
+                                "lot_key": lot.lot_key,
                                 "account": target.name,
                                 "symbol": instrument.symbol,
                                 "open_date": lot.open_date.isoformat(),
@@ -403,6 +404,7 @@ def list_lots(
             table=Table(
                 columns=(
                     Column("lot_id", "Lot", ColumnKind.INTEGER),
+                    Column("lot_key", "Key"),
                     Column("account", "Account"),
                     Column("symbol", "Symbol"),
                     Column("open_date", "Acquired", ColumnKind.DATE),
@@ -418,7 +420,9 @@ def list_lots(
                     "Holding period is as of --as-of. Long-term requires MORE than "
                     "one year from the day after acquisition; exactly one year is "
                     "short-term.",
-                    "Designate lots on a sale with --lots 'lot_id:qty;lot_id:qty'.",
+                    "Designate lots on a sale with --lots 'lot_id:qty;lot_id:qty', or "
+                    "by key as '@key:qty'. The sale records each lot by its key, which "
+                    "no later entry or rebuild can change (ADR 0036).",
                 ),
             ),
             warnings=as_of_state.warnings,
@@ -475,6 +479,7 @@ def show_lot(lot_id: Annotated[int, typer.Argument()]) -> None:
             ),
             data={
                 "lot_id": lot.lot_id,
+                "lot_key": lot.lot_key,
                 "symbol": instrument.symbol if instrument else None,
                 "open_date": lot.open_date.isoformat(),
                 "holding_period_start": lot.holding_period_start.isoformat(),

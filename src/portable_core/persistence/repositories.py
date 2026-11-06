@@ -33,6 +33,7 @@ from portable_core.domain.models import (
     CorporateAction,
     Instrument,
     Lot,
+    LotDesignation,
     LotDisposition,
     Position,
     PositionLeg,
@@ -59,6 +60,7 @@ __all__ = [
     "AccountRepository",
     "BenchmarkRepository",
     "CorporateActionRepository",
+    "DesignationRepository",
     "InstrumentRepository",
     "LotRepository",
     "MetaRepository",
@@ -1310,11 +1312,11 @@ class LotRepository(_Repository):
     def add(self, lot: Lot) -> int:
         cursor = self.con.execute(
             "INSERT INTO lot (leg_id, position_id, instrument_id, account_id, open_date, "
-            "open_txn_id, original_quantity, remaining_quantity, per_unit_price, "
+            "open_txn_id, lot_key, original_quantity, remaining_quantity, per_unit_price, "
             "allocated_fees, original_cost_basis, adjusted_cost_basis, "
             "holding_period_start, is_short, status, closed_date, "
             "basis_source, basis_assumption) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 lot.leg_id,
                 lot.position_id,
@@ -1322,6 +1324,7 @@ class LotRepository(_Repository):
                 lot.account_id,
                 lot.open_date.isoformat(),
                 lot.open_txn_id,
+                lot.lot_key,
                 to_text(lot.original_quantity),
                 to_text(lot.remaining_quantity),
                 to_text(lot.per_unit_price),
@@ -1343,6 +1346,13 @@ class LotRepository(_Repository):
         if row is None:
             return None
         return mappers.to_lot(row, tuple(self.adjustments(lot_id)))
+
+    def by_key(self, lot_key: str) -> Lot | None:
+        """The lot with lineage *lot_key* (ADR 0036), open or closed."""
+        row = self.con.execute("SELECT * FROM lot WHERE lot_key = ?", (lot_key,)).fetchone()
+        if row is None:
+            return None
+        return mappers.to_lot(row, tuple(self.adjustments(int(row["lot_id"]))))
 
     def open_lots(
         self, account_id: int, instrument_id: int, *, as_of: date | None = None
@@ -1997,6 +2007,55 @@ class BenchmarkRepository(_Repository):
         ]
 
 
+# ── what an old designation means ───────────────────────────────────────────
+
+
+class DesignationRepository(_Repository):
+    """`lot_designation`: the meaning of a designation written before schema 10.
+
+    ADR 0036. Reference state: written by `pt migrate`, `pt import` and the
+    owner's decision, never by a rebuild. A row is decided once; the schema's
+    triggers refuse any other change and every delete.
+    """
+
+    def record(self, designation: LotDesignation) -> None:
+        self.con.execute(
+            "INSERT INTO lot_designation (txn_id, as_written, as_read, lot_selection, "
+            "status, note, created_at, decided_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                designation.txn_id,
+                designation.as_written,
+                designation.as_read,
+                designation.lot_selection,
+                str(designation.status),
+                designation.note,
+                designation.created_at or self.clock.stamp(),
+                designation.decided_at,
+            ),
+        )
+
+    def get(self, txn_id: int) -> LotDesignation | None:
+        row = self.con.execute(
+            "SELECT * FROM lot_designation WHERE txn_id = ?", (txn_id,)
+        ).fetchone()
+        return None if row is None else mappers.to_lot_designation(row)
+
+    def all(self, *, pending_only: bool = False) -> list[LotDesignation]:
+        sql = "SELECT * FROM lot_designation"
+        if pending_only:
+            sql += " WHERE status = 'pending'"
+        sql += " ORDER BY txn_id"
+        return [mappers.to_lot_designation(r) for r in self.con.execute(sql)]
+
+    def decide(self, txn_id: int, status: str, lot_selection: str, note: str) -> None:
+        """Decide a pending row, once. The trigger refuses anything else."""
+        self.con.execute(
+            "UPDATE lot_designation SET status = ?, lot_selection = ?, note = ?, "
+            "decided_at = ? WHERE txn_id = ?",
+            (status, lot_selection, note, self.clock.stamp(), txn_id),
+        )
+
+
 # ── the bundle ───────────────────────────────────────────────────────────────
 
 
@@ -2029,6 +2088,7 @@ class Repositories:
         self.policies = PolicyRepository(con, clock)
         self.benchmarks = BenchmarkRepository(con, clock)
         self.statements = StatementRepository(con, clock)
+        self.designations = DesignationRepository(con, clock)
 
     #: Derived tables, with the column ordering that makes a digest of them
     #: stable, and the surrogate key to exclude from it. Surrogate ids are
@@ -2037,7 +2097,7 @@ class Repositories:
     DERIVED_DIGEST_TABLES: ClassVar[dict[str, tuple[str, str]]] = {
         "position": ("account_id, opened_date, strategy_type, status", "position_id"),
         "position_leg": ("instrument_id, role, opened_date", "leg_id"),
-        "lot": ("account_id, instrument_id, open_date, original_quantity", "lot_id"),
+        "lot": ("account_id, instrument_id, open_date, original_quantity, lot_key", "lot_id"),
         "lot_basis_adjustment": ("lot_id, adjustment_date, reason", "adjustment_id"),
         "lot_disposition": (
             "account_id, instrument_id, disposition_date, quantity",
@@ -2147,6 +2207,8 @@ class Repositories:
         "settings",
         "report_issue",
         "transaction",
+        # After the ledger: each row names the ledger row it gives a meaning.
+        "lot_designation",
     )
 
     def export_table(self, table: str) -> list[dict[str, Any]]:

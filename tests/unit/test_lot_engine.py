@@ -41,6 +41,7 @@ def lot(
         account_id=1,
         open_date=open_date,
         open_txn_id=lot_id,
+        lot_key=str(lot_id),
         original_quantity=qty,
         remaining_quantity=qty,
         per_unit_price=total / qty,

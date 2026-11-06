@@ -634,6 +634,10 @@ def show(txn_id: Annotated[int, typer.Argument()]) -> None:
                 ),
                 "txn_type": str(txn.txn_type),
                 "symbol": _symbol(repos, txn.instrument_id),
+                # ADR 0036: the lots the row designates, by lineage key; a row
+                # written before schema 10 names ids, read through
+                # `pt lot designation list`.
+                "lot_selection": txn.lot_selection,
                 "quantity": txn.quantity,
                 "price": txn.price,
                 "gross_amount": txn.gross_amount,

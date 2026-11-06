@@ -77,6 +77,7 @@ def dispatch(action: Callable[[], CommandResult]) -> None:
             output_format=options.output_format,
             no_color=options.no_color,
             verbose=options.verbose,
+            quiet=options.quiet,
         )
     finally:
         # Every connection the command opened, closed whether it succeeded or

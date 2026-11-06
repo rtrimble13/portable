@@ -46,15 +46,25 @@ from portable_core.domain.models import (
     Transaction,
 )
 from portable_core.errors import ValidationError
-from portable_core.errors.kinds import E_CASH_NOT_CONSERVED, E_REPLAY_MISMATCH
+from portable_core.errors.kinds import (
+    E_CASH_NOT_CONSERVED,
+    E_LOT_DESIGNATION_UNRESOLVED,
+    E_REPLAY_MISMATCH,
+)
 from portable_core.persistence.connection import scratch_savepoint
 from portable_core.persistence.repositories import Repositories
 from portable_core.services.corporate_actions import CorporateActionEngine
-from portable_core.services.lots import LotEngine
+from portable_core.services.lots import (
+    LotEngine,
+    is_keyed,
+    opening_lot_key,
+    resolve_keyed_selection,
+)
 from portable_core.services.positions import PositionEngine, leg_role_for
 from portable_core.services.tax import TaxEngine
 
 __all__ = [
+    "LegacyReader",
     "ReplayEngine",
     "ReplayResult",
     "Walk",
@@ -66,6 +76,13 @@ __all__ = [
 ]
 
 T = TypeVar("T")
+
+#: How replay reads a designation written before schema 10, which names lot ids
+#: (ADR 0036): given the row and the lots open for it, the lot ids and
+#: quantities it relieves. The default reads the meaning recorded in
+#: ``lot_designation``; recovering that meaning swaps in the reading being
+#: recovered.
+LegacyReader = Callable[[Transaction, list[Lot]], dict[int, Decimal]]
 
 ZERO = Decimal("0.00")
 
@@ -192,12 +209,15 @@ def derived_state_digests(repos: Repositories) -> dict[str, str]:
 class ReplayEngine:
     """Rebuilds derived state from the ledger."""
 
-    def __init__(self, repos: Repositories) -> None:
+    def __init__(
+        self, repos: Repositories, *, legacy_reader: LegacyReader | None = None
+    ) -> None:
         self.repos = repos
         self.lots = LotEngine()
         self.corporate_actions = CorporateActionEngine()
         self.positions = PositionEngine()
         self.tax = TaxEngine()
+        self._legacy_reader = legacy_reader or self._recorded_meaning
 
     def rebuild(self) -> ReplayResult:
         """Drop every derived row and replay the ledger.
@@ -211,9 +231,19 @@ class ReplayEngine:
         different one -- the ledger *as booked* through D, with a reversal
         dated after D not yet netting its original out (ADR 0021).
         """
+        return self.replay_rows(self.repos.transactions.in_ledger_order())
+
+    def replay_rows(self, transactions: list[Transaction]) -> ReplayResult:
+        """Drop every derived row and replay *transactions*, in ledger order.
+
+        :meth:`rebuild` passes the whole ledger. ADR 0036 passes the rows that
+        had been appended when a given row was written, inside a scratch
+        savepoint, to recover the lot numbering that row was written against.
+        That is a question about what the ledger *contained* at a moment, not
+        about state on a date, which is :meth:`walk`'s.
+        """
         self.repos.clear_derived()
 
-        transactions = self.repos.transactions.in_ledger_order()
         counters = {"positions": 0, "lots": 0, "dispositions": 0}
         warnings: list[str] = []
         cash: dict[tuple[int, str], Decimal] = {}
@@ -548,6 +578,9 @@ class ReplayEngine:
                 original_cost_basis=basis,
                 adjusted_cost_basis=basis,
                 holding_period_start=opened,
+                # ADR 0036. Named by the row that opened it, which no later
+                # row can change, so a designation naming it stays true.
+                lot_key=opening_lot_key(txn.txn_id),
                 # ADR 0017. Carried from the ledger row rather than decided
                 # here: invariant 3 requires derived state to be reproducible
                 # by replay, and the difference between `reconstructed`,
@@ -659,11 +692,7 @@ class ReplayEngine:
         method = txn.relief_method or account.default_relief_method
         open_lots = self.repos.lots.open_lots(txn.account_id, txn.instrument_id)
 
-        selection = None
-        if txn.lot_selection:
-            from portable_core.services.lots import parse_lot_selection
-
-            selection = parse_lot_selection(txn.lot_selection)
+        selection = self._selection(txn, open_lots)
 
         plan = self.lots.select(
             open_lots, txn.quantity, method, txn.trade_date, selection=selection
@@ -709,6 +738,46 @@ class ReplayEngine:
 
         for leg_id in sorted(leg_ids):
             self._refresh_leg(leg_id, txn.trade_date)
+
+    def _selection(self, txn: Transaction, open_lots: list[Lot]) -> dict[int, Decimal] | None:
+        """The lot ids in this replay of the lots *txn* designates, or None.
+
+        ADR 0036. A designation names lots by lineage key, which no later row
+        can change. One written before schema 10 names lot ids, which every
+        rebuild renumbers, so it is read through its recorded meaning instead
+        of being trusted.
+        """
+        if not txn.lot_selection:
+            return None
+        if is_keyed(txn.lot_selection):
+            return resolve_keyed_selection(txn.lot_selection, open_lots)
+        return self._legacy_reader(txn, open_lots)
+
+    def _recorded_meaning(self, txn: Transaction, open_lots: list[Lot]) -> dict[int, Decimal]:
+        """Read a designation by lot id through ``lot_designation``.
+
+        Raises:
+            ValidationError: ``PT-E-LOT-DESIGNATION-UNRESOLVED`` while no
+                meaning is recorded, or the owner has not decided one. Reading
+                the ids as numbered today is the defect ADR 0036 removes.
+        """
+        recorded = self.repos.designations.get(txn.txn_id)
+        if recorded is None or recorded.lot_selection is None:
+            pending = recorded is not None
+            raise ValidationError(
+                f"transaction {txn.txn_id} designates lots by id "
+                f"({txn.lot_selection!r}), and what those ids mean is "
+                + ("not decided" if pending else "not recorded"),
+                code=E_LOT_DESIGNATION_UNRESOLVED,
+                remedy=(
+                    "`pt lot designation list --pending` shows both readings and the "
+                    "gain each gives; `pt lot designation resolve` decides one."
+                    if pending
+                    else "Run `pt migrate`, which records what each designation meant."
+                ),
+                txn_id=txn.txn_id,
+            )
+        return resolve_keyed_selection(recorded.lot_selection, open_lots)
 
     def _corporate_action(self, txn: Transaction, counters: dict[str, int]) -> None:
         """Reapply a corporate action during replay.

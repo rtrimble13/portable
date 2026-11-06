@@ -22,6 +22,7 @@ from portable_core.domain.enums import (
     BenchmarkReturnType,
     CashTreatment,
     DayCount,
+    DesignationStatus,
     ExerciseStyle,
     FeeClass,
     HoldingPeriod,
@@ -44,6 +45,7 @@ from portable_core.domain.models import (
     CorporateAction,
     Instrument,
     Lot,
+    LotDesignation,
     LotDisposition,
     OptionDetail,
     Position,
@@ -332,6 +334,7 @@ def to_lot(row: sqlite3.Row, adjustments: tuple[BasisAdjustment, ...] = ()) -> L
         original_cost_basis=to_decimal(row["original_cost_basis"]),
         adjusted_cost_basis=to_decimal(row["adjusted_cost_basis"]),
         holding_period_start=to_date(row["holding_period_start"]),
+        lot_key=str(row["lot_key"]),
         allocated_fees=to_decimal(row["allocated_fees"]),
         is_short=to_bool(row["is_short"]),
         status=LotStatus(row["status"]),
@@ -339,6 +342,19 @@ def to_lot(row: sqlite3.Row, adjustments: tuple[BasisAdjustment, ...] = ()) -> L
         basis_source=BasisSource(row["basis_source"]),
         basis_assumption=row["basis_assumption"],
         adjustments=adjustments,
+    )
+
+
+def to_lot_designation(row: sqlite3.Row) -> LotDesignation:
+    return LotDesignation(
+        txn_id=int(row["txn_id"]),
+        status=DesignationStatus(row["status"]),
+        as_written=row["as_written"],
+        as_read=row["as_read"],
+        lot_selection=row["lot_selection"],
+        note=row["note"],
+        created_at=str(row["created_at"]),
+        decided_at=row["decided_at"],
     )
 
 

@@ -39,7 +39,7 @@ from portable_core.errors.kinds import (
     E_WITHHOLDING_INVALID,
 )
 from portable_core.persistence.repositories import Repositories
-from portable_core.services.lots import LotEngine, ReliefPlan, parse_lot_selection
+from portable_core.services.lots import LotEngine, ReliefPlan, designate
 from portable_core.services.replay import ReplayEngine
 
 __all__ = ["CommitResult", "TradeIntent", "TradePlan", "TradingService"]
@@ -146,8 +146,9 @@ class TradingService:
                 net_cash = quantize_money(gross - costs)
 
         relief_plan: ReliefPlan | None = None
+        stored_selection: str | None = None
         if intent.txn_type not in _OPENING:
-            relief_plan = self._plan_relief(intent)
+            relief_plan, stored_selection = self._plan_relief(intent)
 
         if intent.txn_type is TransactionType.BUY:
             balance, _margin = self.repos.valuations.cash(
@@ -175,7 +176,9 @@ class TradingService:
             fees=quantize_money(intent.fees),
             commissions=quantize_money(intent.commissions),
             fee_class=intent.fee_class,
-            lot_selection=intent.lot_selection,
+            # ADR 0036: the lots the user named, by lineage key, never by the
+            # ids `pt lot list` showed, which the next rebuild may renumber.
+            lot_selection=stored_selection,
             relief_method=intent.relief_method,
             note=intent.note,
             external_ref=intent.external_ref,
@@ -285,7 +288,7 @@ class TradingService:
             choices=[str(f) for f in FeeClass],
         )
 
-    def _plan_relief(self, intent: TradeIntent) -> ReliefPlan:
+    def _plan_relief(self, intent: TradeIntent) -> tuple[ReliefPlan, str | None]:
         method = intent.relief_method or intent.account.default_relief_method
         prior = {
             ReliefMethod(m)
@@ -296,10 +299,14 @@ class TradingService:
         open_lots = self.repos.lots.open_lots(
             intent.account.account_id, intent.instrument.instrument_id
         )
-        selection = parse_lot_selection(intent.lot_selection) if intent.lot_selection else None
-        return self.lots.select(
+        selection: dict[int, Decimal] | None = None
+        stored: str | None = None
+        if intent.lot_selection:
+            selection, stored = designate(intent.lot_selection, open_lots)
+        plan = self.lots.select(
             open_lots, intent.quantity, method, intent.trade_date, selection=selection
         )
+        return plan, stored
 
     # ── cash ─────────────────────────────────────────────────────────────────
 
@@ -705,6 +712,13 @@ class TradingService:
                 remedy="State the market value on the transfer date as a positive amount.",
                 value=str(value),
             )
+        stored_selection: str | None = None
+        if lot_selection:
+            # ADR 0036: stored by lineage key, as a sale's designation is.
+            _ids, stored_selection = designate(
+                lot_selection,
+                self.repos.lots.open_lots(account.account_id, instrument.instrument_id),
+            )
         with money_context():
             gross = quantize_money(value)
         return Transaction(
@@ -726,7 +740,7 @@ class TradingService:
             # same controls. ADR 0017's consequence applies: a reconstructed
             # block is one lot, nameable but not divisible.
             relief_method=relief_method,
-            lot_selection=lot_selection,
+            lot_selection=stored_selection,
             note=note,
             external_ref=external_ref,
             source=source,
