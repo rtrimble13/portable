@@ -64,7 +64,7 @@ schemas:  ## Validate every schemas/*.json and every recorded command output
 	$(BIN)/pytest tests/unit/test_json_schemas.py -q
 
 docs:  ## Regenerate docs/schema.md from the DDL comments
-	$(BIN)/python -m portable_core.schema.docgen > docs/schema.md
+	$(BIN)/python -m portable_core.schema.docgen --out docs/schema.md
 	@echo "docs/schema.md regenerated"
 
 fixtures:  ## Rebuild examples/sample.port from its generator script

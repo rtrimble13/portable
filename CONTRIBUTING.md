@@ -118,6 +118,7 @@ has a test that fails without your change.
 2. Idempotent, and tested in both directions where reversible.
 3. Bump `schema_version`; add a `CHANGELOG.md` entry.
 4. `make docs` to regenerate `docs/schema.md` from the DDL comments.
+   `tests/integration/test_schema_reference.py` fails until you do.
 5. Money, quantity, price, and rate columns are `TEXT` with a `-- decimal`
    comment.
 

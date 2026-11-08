@@ -500,6 +500,22 @@ Two rules specific to this repository:
   them in the envelope and Markdown in its section, as before. `--quiet`
   suppresses them.
 
+- **On Windows, `make docs` truncated `docs/schema.md`.** The recipe
+  redirected the generator's stdout into the file, and Python encodes a
+  redirected stdout in the ANSI code page, cp1252. The generator wrote each
+  `—` as byte `0x97`, then raised `UnicodeEncodeError` at the first `─`,
+  which cp1252 lacks, leaving a file cut short after its first 1,755 bytes.
+  A schema whose comments held only characters cp1252 has would have exited
+  0 and written cp1252 bytes. The generator now encodes the reference as
+  UTF-8 with LF line endings itself, so stdout and the new `--out PATH`
+  carry the same bytes whatever the code page. `make docs` uses `--out`,
+  because a redirect empties the file before Python starts and `--out` opens
+  it only once the document is complete. The generator cannot use `pt`'s
+  stream set-up, because `portable_core.schema` may not import
+  `portable_core.cli`. `tests/integration/test_schema_reference.py` runs it
+  under `PYTHONIOENCODING=cp1252` and holds both outputs to the committed
+  file. A DDL comment edited without `make docs` now fails that test too.
+
 - **A spec-ID sale could be moved onto a different lot by a later entry,
   silently** (ADR 0036). A sale recorded its designated lots by lot id, and
   every rebuild renumbers lots. A back-dated buy turned a designated 500.00
