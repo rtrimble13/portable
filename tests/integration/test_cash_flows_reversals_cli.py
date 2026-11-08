@@ -76,10 +76,15 @@ def test_a_reversal_after_the_window_still_nets_its_original_out(
     ]
 
 
+@pytest.mark.parametrize("level", ["account", "portfolio"])
 def test_cash_flows_and_snapshot_flows_are_the_same_series(
-    run_pt: CliRunner, corrected: str
+    run_pt: CliRunner, corrected: str, level: str
 ) -> None:
-    """The two series the return engine reads must not disagree in timing."""
+    """The two series the return engine reads must not disagree in timing.
+
+    A snapshot records its flows at both levels (ADR 0040), so each level is
+    held to `pt cash-flows` at that level.
+    """
     run_pt("--port", corrected, "value", "--from", "2024-01-02", "--to", "2024-01-31")
     con = sqlite3.connect(corrected)
     try:
@@ -87,13 +92,15 @@ def test_cash_flows_and_snapshot_flows_are_the_same_series(
             (str(on), str(name), str(amount))
             for on, name, amount in con.execute(
                 "SELECT f.flow_date, a.name, f.amount FROM snapshot_flow f "
-                "JOIN account a USING (account_id) ORDER BY f.flow_date, a.name"
+                "JOIN account a USING (account_id) WHERE f.level = ? "
+                "ORDER BY f.flow_date, a.name",
+                (level,),
             )
         ]
     finally:
         con.close()
 
-    assert _flows(run_pt, corrected, "account", "2024-01-31") == stored
+    assert _flows(run_pt, corrected, level, "2024-01-31") == stored
 
 
 def test_activity_still_shows_both_rows_of_each_pair(run_pt: CliRunner, corrected: str) -> None:

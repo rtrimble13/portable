@@ -16,6 +16,27 @@ Two rules specific to this repository:
 
 ### Added
 
+- **Snapshots record what the time-weighted return will read** (ADR 0040
+  §13, accepted by the owner). Stored snapshots made before this re-derive
+  differently, so `pt validate` names them, and `pt value` over their dates
+  values them again.
+  - **Dividends accrue from the ex-date** (`PORT-GIPS-A06`). A distribution
+    entitled and not yet paid is a receivable in ending value, at what will
+    arrive: gross less tax withheld. This covers dividends, reinvested
+    dividends, return of capital and capital-gain distributions. Before, the
+    price fell on the ex-date and the cash came on the pay-date, so a period
+    boundary between the two moved return from one period into the next.
+  - **Entering a distribution removes the stored snapshots from its
+    ex-date**, not its pay-date, because those are the snapshots that accrue
+    it.
+  - **`income_amount` and `fees_amount` are filled.** They hold the day's
+    income paid, gross of withholding, and its fees and commissions. They
+    were always `0.00`, which read as zero. Margin interest is a financing
+    cost and counts in neither.
+  - **Flows are stored at both levels.** `snapshot_flow` held account-level
+    flows only. A portfolio-level return weights each flow by its own sign,
+    which the day's portfolio total cannot give back.
+
 - **Wash sales are detected, across every account** (ADR 0037, accepted by
   the owner with the recommended answers).
   - **Matching.** Replay pairs each loss on a long lot in a taxable account

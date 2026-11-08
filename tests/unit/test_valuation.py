@@ -228,7 +228,7 @@ def test_dividend_accrues_on_ex_date() -> None:
         Transaction(
             txn_id=1,
             account_id=1,
-            trade_date=date(2025, 6, 10),
+            trade_date=date(2025, 7, 15),  # a distribution is dated its pay-date
             seq=1,
             txn_type=TransactionType.DIVIDEND,
             net_cash_effect=D("0.00"),
@@ -239,7 +239,7 @@ def test_dividend_accrues_on_ex_date() -> None:
         Transaction(  # ex-date in the future: not yet entitled
             txn_id=2,
             account_id=1,
-            trade_date=date(2025, 9, 10),
+            trade_date=date(2025, 10, 15),  # a distribution is dated its pay-date
             seq=1,
             txn_type=TransactionType.DIVIDEND,
             net_cash_effect=D("0.00"),
@@ -250,7 +250,7 @@ def test_dividend_accrues_on_ex_date() -> None:
         Transaction(  # already paid: no longer a receivable
             txn_id=3,
             account_id=1,
-            trade_date=date(2025, 3, 10),
+            trade_date=date(2025, 4, 15),  # a distribution is dated its pay-date
             seq=1,
             txn_type=TransactionType.DIVIDEND,
             net_cash_effect=D("230.00"),

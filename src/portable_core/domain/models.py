@@ -27,6 +27,7 @@ from portable_core.domain.enums import (
     DesignationStatus,
     ExerciseStyle,
     FeeClass,
+    FlowLevel,
     HoldingPeriod,
     InstrumentType,
     LegRole,
@@ -285,6 +286,20 @@ class PriceAcceptance:
 # ── Ledger ───────────────────────────────────────────────────────────────────
 
 
+#: Distributions accrued from their ex-date to their pay-date (PORT-GIPS-A06).
+#: Interest on cash is recognised when paid, which A06 permits; a coupon
+#: accrues from its bond's schedule.
+ACCRUED_FROM_EX_DATE: frozenset[TransactionType] = frozenset(
+    {
+        TransactionType.DIVIDEND,
+        TransactionType.DIVIDEND_REINVEST,
+        TransactionType.RETURN_OF_CAPITAL,
+        TransactionType.CAPITAL_GAIN_LT,
+        TransactionType.CAPITAL_GAIN_ST,
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class Transaction:
     """An immutable ledger event.
@@ -372,6 +387,28 @@ class Transaction:
     def order_key(self) -> tuple[date, int, int]:
         """The ledger's total order. See the class docstring."""
         return (self.trade_date, self.seq, self.txn_id)
+
+    @property
+    def accrues_from(self) -> date | None:
+        """The ex-date, when this row is income accrued before it is paid.
+
+        A distribution is entitled on its ex-date and paid on its pay-date,
+        the row's trade date. Between the two it is a receivable in market
+        value (``PORT-GIPS-A06``, ADR 0040 §13.2), so a snapshot dated before
+        the row depends on it. None for every other row, and for one whose
+        ex-date is its pay-date. Bond coupons accrue from the coupon
+        schedule, not from here.
+        """
+        if self.txn_type not in ACCRUED_FROM_EX_DATE:
+            return None
+        if self.ex_date is None or self.ex_date >= self.trade_date:
+            return None
+        return self.ex_date
+
+    @property
+    def values_from(self) -> date:
+        """The first snapshot date this row changes: its ex-date if it accrues."""
+        return self.accrues_from or self.trade_date
 
 
 # ── Positions and lots ───────────────────────────────────────────────────────
@@ -742,6 +779,10 @@ class CashFlow:
     amount: Decimal
     is_large: bool = False
     is_in_kind: bool = False
+    #: The level the flow is external at (ADR 0007). A snapshot records both:
+    #: the time-weighted return times each flow by its sign, so a portfolio
+    #: return needs the portfolio's flows one by one, not their sum (ADR 0040).
+    level: FlowLevel = FlowLevel.ACCOUNT
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)

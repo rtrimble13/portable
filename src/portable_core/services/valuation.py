@@ -30,7 +30,7 @@ from decimal import Decimal
 
 from portable_core.decimals import money_context, quantize_money
 from portable_core.domain.dates import accrual_fraction
-from portable_core.domain.enums import CashTreatment, FlowLevel
+from portable_core.domain.enums import CashTreatment, FlowClassification, FlowLevel
 from portable_core.domain.models import (
     Account,
     CashFlow,
@@ -45,7 +45,7 @@ from portable_core.errors import DataUnavailableError
 from portable_core.errors.kinds import E_PRICE_MISSING, E_PRICE_STALE
 from portable_core.services import cash_flow
 
-__all__ = ["Holding", "ValuationEngine"]
+__all__ = ["Holding", "ValuationEngine", "is_accruing", "receivable"]
 
 ZERO = Decimal("0.00")
 
@@ -61,6 +61,25 @@ class Holding:
     #: value.
     last_coupon_date: date | None = None
     next_coupon_date: date | None = None
+
+
+def is_accruing(txn: Transaction, as_of: date) -> bool:
+    """Entitled by *as_of* and not yet paid: a receivable on that date."""
+    entitled = txn.accrues_from
+    return entitled is not None and entitled <= as_of < txn.trade_date
+
+
+def receivable(txn: Transaction) -> Decimal:
+    """What an accruing distribution will bring: gross, less tax withheld.
+
+    Withholding is known at the ex-date and never arrives, so accruing the
+    gross would put it in value until the pay-date and take it out then.
+    Reclaimable withholding is recovered later, if at all, and is not
+    accrued here (ADR 0040 §10 discloses it). A reinvested distribution
+    withholds nothing and brings its gross, in units.
+    """
+    with money_context():
+        return quantize_money((txn.gross_amount or ZERO) - txn.taxes_withheld)
 
 
 #: The source a snapshot records for a holding nothing quotes (ADR 0028).
@@ -214,19 +233,16 @@ class ValuationEngine:
         Note this is a **recommendation** (Firms 2.B.3), not a requirement, and
         must not be described as one. `portable` adopts it because the
         alternative moves return between periods for no reason.
+
+        *declared* is the account's income rows, from the ledger as it now
+        stands: a row is dated its pay-date, after the snapshot that accrues
+        it, so derived state at the snapshot's date does not hold it
+        (ADR 0040 §13.2). The amount accrued is what will arrive, gross less
+        tax withheld; see :func:`receivable`.
         """
         with money_context():
             return quantize_money(
-                sum(
-                    (
-                        t.gross_amount or ZERO
-                        for t in declared
-                        if t.ex_date is not None
-                        and t.ex_date <= as_of
-                        and (t.pay_date is None or t.pay_date > as_of)
-                    ),
-                    ZERO,
-                )
+                sum((receivable(t) for t in declared if is_accruing(t, as_of)), ZERO)
             )
 
     # ── snapshots ────────────────────────────────────────────────────────────
@@ -244,8 +260,6 @@ class ValuationEngine:
         beginning_market_value: Decimal = ZERO,
         transactions: list[Transaction] | None = None,
         policy: ReturnPolicy | None = None,
-        income_amount: Decimal = ZERO,
-        fees_amount: Decimal = ZERO,
         incomplete_symbols: tuple[str, ...] = (),
     ) -> ValuationSnapshot:
         """Assemble the snapshot for one account on one date.
@@ -284,6 +298,9 @@ class ValuationEngine:
             portfolio_value=beginning_market_value or ending,
         )
 
+        income_amount, fees_amount = self._income_and_fees(
+            transactions or [], as_of, account_id=account.account_id
+        )
         with money_context():
             account_flow = quantize_money(
                 sum((f.amount for f in flows[FlowLevel.ACCOUNT]), ZERO)
@@ -311,7 +328,7 @@ class ValuationEngine:
             is_complete=not incomplete_symbols,
             uses_estimates=any(p.is_estimate for p in priced),
             prices=tuple(priced),
-            flows=tuple(flows[FlowLevel.ACCOUNT]),
+            flows=(*flows[FlowLevel.ACCOUNT], *flows[FlowLevel.PORTFOLIO]),
         )
 
     @staticmethod
@@ -355,9 +372,38 @@ class ValuationEngine:
                             else False
                         ),
                         is_in_kind=classified.is_in_kind,
+                        level=level,
                     )
                 )
         return result
+
+    @staticmethod
+    def _income_and_fees(
+        transactions: list[Transaction], as_of: date, *, account_id: int
+    ) -> tuple[Decimal, Decimal]:
+        """The account's income paid and fees charged on *as_of*. ADR 0040 §13.3.
+
+        Informational, so that a stored zero means zero rather than "not
+        computed". Income is gross of withholding, on the day it is paid --
+        what the instrument paid, as ``gross_amount`` records it. Fees are
+        every row's ``fees + commissions``, whatever their class; margin
+        interest is a financing cost and carries neither. A transfer filed
+        here from the account it left is the other account's to charge.
+
+        Which return bases a fee reduces is answered from its class, by the
+        return engine, never from this total (``PORT-GIPS-D01``).
+        """
+        income = ZERO
+        fees = ZERO
+        with money_context():
+            for txn in transactions:
+                if txn.trade_date != as_of or txn.account_id != account_id:
+                    continue
+                classified = cash_flow.classify(txn, FlowLevel.ACCOUNT)
+                if classified.classification is FlowClassification.INCOME:
+                    income += txn.gross_amount or ZERO
+                fees += txn.fees + txn.commissions
+            return quantize_money(income), quantize_money(fees)
 
     @staticmethod
     def level5_percentage(snapshot: ValuationSnapshot) -> Decimal:

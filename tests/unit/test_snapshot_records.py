@@ -73,8 +73,10 @@ def test_valuing_a_day_again_keeps_each_price_set_on_its_own_snapshot(
         D("101.25")
     ]
     assert repos.valuations.recorded_prices(ira["snapshot_id"]) == []
-    assert len(repos.valuations.record(taxable["snapshot_id"])["flows"]) == 1
-    assert len(repos.valuations.record(ira["snapshot_id"])["flows"]) == 1
+    # The deposit, once at each level: a snapshot keeps both (ADR 0040).
+    for snapshot in (taxable, ira):
+        flows = repos.valuations.record(snapshot["snapshot_id"])["flows"]
+        assert sorted(flow[3] for flow in flows) == ["account", "portfolio"]
     assert snapshots.verify(repos) == []
 
 

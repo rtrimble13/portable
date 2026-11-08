@@ -1,7 +1,7 @@
 # ADR 0041 — A bond is held at face, priced by its quote basis, and carries its accrued interest
 
-- **Status:** Proposed. Records what the bond model lacks and three open questions for the owner. No code yet
-- **Date:** 2026-11-08
+- **Status:** Accepted (owner, 2026-11-08), with the recommended answers, and schema 12 approved. No bonds are in the owner's file yet, so nothing is re-entered
+- **Date:** 2026-11-08; accepted 2026-11-08
 - **Milestone:** v0.2, a prerequisite of [ADR 0040](0040-time-weighted-return.md) §13.1
 - **Governs:** `PORT-GIPS-A06` (accrued interest is required), `A05` (trade date), `A01`; `CLAUDE.md` "Accrued interest is part of market value"; `docs/tax-methodology.md`
 - **Depends on:** [ADR 0005](0005-decimal-representation-and-rounding.md), [ADR 0019](0019-migrations-that-rebuild-a-table.md), [ADR 0031](0031-price-acceptance-against-statements.md)
@@ -48,7 +48,7 @@ accrual alone.
 No return has been computed yet, so none of this has produced a wrong
 number. ADR 0040's engine would, starting with its first bond.
 
-## Decision (proposed)
+## Decision
 
 ### 1. Quantity is face amount; the quote basis decides the price
 
@@ -146,14 +146,23 @@ by interview like any other mapping field.
    type, which rebuilds the ledger table (ADR 0019), and a pairing rule
    between the two rows.
 
+## Owner's answers (2026-11-08)
+
+1. **No bonds are in the file yet.** Import refused them and none were
+   entered by hand, so there is nothing to reverse. The model applies from
+   the first bond added.
+2. **Quantity is face amount**, as recommended.
+3. **Accrued interest is a column on the trade row**, as recommended:
+   schema 12.
+
 ## Consequences
 
 - **ADR 0040's engine** refuses any period in which a coupon bond is held,
   until this lands. Its §12 refusal stays in place until then.
 - **Scenario 5** is rewritten under §1, with the bond's quote basis stated.
-- **Existing hand-entered bond rows**, if there are any, may need reversing
-  and re-entering: the ledger is append-only, and replay reads quantity
-  under the convention in force.
+- **No existing rows change.** The owner's file holds no bonds (answer 1).
+  Any other file that does is valued under §1 from schema 12, and its
+  snapshots re-derive differently, so `pt validate` names them.
 
 ## Alternatives considered
 

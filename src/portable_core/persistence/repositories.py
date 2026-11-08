@@ -1021,8 +1021,10 @@ class TransactionRepository(_Repository):
         """Remove every stored snapshot *txn* changes. ADR 0024.
 
         A snapshot describes an account at the end of its date. A row dated D
-        changes every snapshot of every account it touches dated D or later,
-        and a reversal also changes them from the date of the entry it
+        changes every snapshot of every account it touches dated D or later --
+        a distribution from its ex-date, because it accrues from there
+        (``Transaction.values_from``) -- and a reversal also changes them from
+        the date of the entry it
         reverses, because :func:`effective_ledger` nets that entry out of
         history rather than unwinding it on the reversal's date (ADR 0021).
 
@@ -1040,7 +1042,10 @@ class TransactionRepository(_Repository):
         if any(row.txn_type in _NAMES_ONLY for row in affected):
             return
 
-        since = min(row.trade_date for row in affected)
+        # A distribution accrues from its ex-date, before the row's own date
+        # (ADR 0040 §13.2), so the snapshots that accrued it, or should have,
+        # change from there.
+        since = min(row.values_from for row in affected)
         accounts = sorted(
             {
                 side
@@ -1843,13 +1848,14 @@ def _price_values(entry: SnapshotPrice) -> tuple[Any, ...]:
 
 
 def _flow_values(flow: CashFlow) -> tuple[Any, ...]:
-    # Every stored flow is account level and external; the portfolio-level view
-    # is the snapshot's `external_flow_portfolio` (ADR 0007).
+    # Every stored flow is external, at the level it records (ADR 0007): a
+    # snapshot keeps its flows at both levels, because a portfolio-level
+    # return weights each flow by its own sign (ADR 0040).
     return (
         flow.txn_id,
         flow.account_id,
         flow.flow_date.isoformat(),
-        "account",
+        flow.level.value,
         "external",
         to_text(flow.amount),
         int(flow.is_large),

@@ -39,6 +39,7 @@ from portable_core.services.valuation import NO_MARKET_PRICE, Holding, Valuation
 __all__ = [
     "PriceLookup",
     "build",
+    "declared_by_account",
     "rederived_differently",
     "removal_notices",
     "store",
@@ -68,6 +69,7 @@ def build(
     transactions: list[Transaction],
     price_for: PriceLookup,
     staleness_tolerance_days: int,
+    declared: Sequence[Transaction] = (),
 ) -> ValuationSnapshot:
     """Price an account's holdings and assemble its snapshot for one date.
 
@@ -77,6 +79,9 @@ def build(
     *on*: the rows, reversals netted out, that the positions and cash were
     derived from. A flow taken from any other set is a flow the market value
     does not reflect.
+    *declared* are the account's distributions entitled before they are paid
+    (:func:`declared_by_account`), from the ledger as it now stands, because
+    each is dated after the snapshots that accrue it (ADR 0040 §13.2).
 
     Instruments that cannot be priced are collected rather than raised on, so
     that one missing price does not hide the rest of the report -- but the
@@ -109,6 +114,7 @@ def build(
         margin_loan=margin,
         beginning_market_value=beginning,
         transactions=transactions,
+        accrued_dividends=engine.accrued_dividends(list(declared), on),
         policy=repos.policies.in_force(on),
         incomplete_symbols=tuple(missing),
     )
@@ -132,6 +138,7 @@ def value_range(
     """
     days = [first + timedelta(days=n) for n in range((last - first).days + 1)]
     rows_on = _rows_on(repos, set(days))
+    declared = declared_by_account(repos)
 
     beginning: dict[int, Decimal] = {}
     for target in accounts:
@@ -151,6 +158,7 @@ def value_range(
                 transactions=rows_on.get((target.account_id, on), []),
                 price_for=repos.prices.newest_on_or_before,
                 staleness_tolerance_days=staleness_tolerance_days,
+                declared=declared.get(target.account_id, ()),
             )
             beginning[target.account_id] = snapshot.ending_market_value
             built.append(snapshot)
@@ -298,6 +306,7 @@ def _rederive(
     days = sorted(by_date)
     accounts = {account.account_id: account for account in repos.accounts.all()}
     rows_on = _rows_on(repos, set(days))
+    declared = declared_by_account(repos)
 
     def visit(on: date) -> list[_Rederived]:
         again: list[_Rederived] = []
@@ -314,6 +323,7 @@ def _rederive(
                 transactions=rows_on.get((account_id, on), []),
                 price_for=_recorded(recorded[snapshot_id]),
                 staleness_tolerance_days=_ANY_STALENESS,
+                declared=declared.get(account_id, ()),
             )
             again.append(_Rederived(account_id, on, kept[snapshot_id], snapshot))
         return again
@@ -403,6 +413,20 @@ def _holdings(repos: Repositories, account_id: int) -> list[Holding]:
             # ADR 0038: a short leg is held negatively, so it is valued so.
             holdings.append(Holding(instrument, leg.signed_quantity))
     return holdings
+
+
+def declared_by_account(repos: Repositories) -> dict[int, list[Transaction]]:
+    """Each account's distributions entitled before they are paid. ADR 0040 §13.2.
+
+    From the effective ledger, so a reversed dividend accrues nothing. Read
+    whole, not as of a date: a distribution is dated its pay-date, and the
+    snapshots between its ex-date and that date are the ones that accrue it.
+    """
+    declared: dict[int, list[Transaction]] = {}
+    for txn in effective_ledger(repos.transactions.in_ledger_order()):
+        if txn.accrues_from is not None:
+            declared.setdefault(txn.account_id, []).append(txn)
+    return declared
 
 
 def _rows_on(repos: Repositories, days: set[date]) -> dict[tuple[int, date], list[Transaction]]:
