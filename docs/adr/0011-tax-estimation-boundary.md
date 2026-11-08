@@ -6,7 +6,8 @@
 
 ## Context
 
-Accounts track P&L **net of tax** (bootstrap §4.2), with liability estimated on
+Accounts track P&L **net of tax** (`CLAUDE.md`, "Domain glossary"), with
+liability estimated on
 realized gains using the holding period at disposition and the account's
 effective-dated rate schedule. The owner files real taxes. `CLAUDE.md` invariant
 10 forbids stubs that pretend to work, and invariant 9 requires failing loudly on

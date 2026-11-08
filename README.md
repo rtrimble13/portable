@@ -23,6 +23,7 @@ failure mode**, worse than a crash and worse than a missing feature. When
 | `pert` | Performance, attribution, risk-adjusted returns | **partly built**: `pert twr` (ADR 0040); the rest is milestone `v0.2` |
 | `po` | Portfolio optimization (wraps [`rtrimble13/po`](https://github.com/rtrimble13/po)) | stub — milestone `v0.3` |
 | `risky` | Risk and scenario analysis | stub — milestone `v0.4` |
+| `portable` | Commands shared by the family: `portable config show` | stub — milestone `v0.2` ([#38](https://github.com/rtrimble13/portable/issues/38)) |
 
 Each is standalone. No CLI imports another; shared logic lives in
 `portable_core`.

@@ -1,8 +1,7 @@
 # CLAUDE.md — Working Agreement for `portable`
 
 Read this before touching anything in this repository. It is the standing context for
-every agent session here. The one-time build instructions live in
-`portable_bootstrap_prompt.md`; this file is what stays true afterward.
+every agent session here.
 
 ---
 
@@ -24,6 +23,7 @@ When in doubt, refuse and explain.
 | `pert` | Performance, attribution, risk-adjusted returns | **partly built** — `pert twr` (ADR 0040); the rest is milestone `v0.2` |
 | `po` | Portfolio optimization (wraps `rtrimble13/po`) | stub — see milestone `v0.3` |
 | `risky` | Risk and scenario analysis | stub — see milestone `v0.4` |
+| `portable` | Commands shared by the family: `portable config show` | stub — see issue #38, milestone `v0.2` |
 
 **Keep this table current.** If you promote a CLI from stub to built, update it here in
 the same commit.
@@ -370,8 +370,8 @@ test that fails without your change.
 
 ## Reference
 
-- `docs/adr/` — **read this before redesigning anything.** The decisions the
-  bootstrap left open, each with its reasoning:
+- `docs/adr/` — **read this before redesigning anything.** The design
+  decisions, each with its reasoning:
 
   | ADR | Decision |
   |---|---|

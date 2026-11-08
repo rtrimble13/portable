@@ -16,7 +16,7 @@ from typing import Final
 #: The standard footer. Carried by every command that emits a return, and by
 #: every ``pert`` report in every output format. In ``--format json`` this is an
 #: envelope *field* (``disclaimer``), never a rendered string, so a consumer
-#: cannot drop it without noticing (bootstrap §6.2).
+#: cannot drop it without noticing (``CLAUDE.md``, "Output").
 GIPS_DISCLAIMER: Final[str] = (
     "Returns are calculated using methodology modelled on the Global Investment "
     "Performance Standards (2020 edition), published by CFA Institute. This is not a "

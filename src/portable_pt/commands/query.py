@@ -1,6 +1,6 @@
 """Composable history querying, and the read-only SQL escape hatch.
 
-Treated as a headline feature, not an afterthought (bootstrap §7.1). Every
+Treated as a headline feature, not an afterthought. Every
 query respects ``--as-of`` and returns state **as it was known on that date**,
 which is what the append-only ledger buys.
 """

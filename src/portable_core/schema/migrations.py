@@ -1,6 +1,6 @@
 """Numbered, checksummed, forward-compatible migrations.
 
-Rules, from the bootstrap (§5) and `CLAUDE.md`:
+Rules:
 
 * Migrations are numbered and **never renumbered or edited once applied**. The
   checksum is what makes that enforceable rather than merely asked for. The

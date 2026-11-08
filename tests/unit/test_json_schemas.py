@@ -1,8 +1,7 @@
 """Every published JSON Schema is valid, and real command output validates.
 
-Bootstrap §6.6: "Publish JSON Schema documents for every command's
-`--format json` output under `schemas/`, versioned, and validate outputs
-against them in tests."
+`CLAUDE.md` invariant 8: `--format json` output is schema-stable, versioned,
+and validated against `schemas/` in CI.
 
 Validating a hand-written example would prove nothing. These run the real
 commands against the real fixture portfolio and validate what actually comes

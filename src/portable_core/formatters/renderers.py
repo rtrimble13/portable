@@ -1,7 +1,7 @@
 """The four output formats.
 
 Every command supports all four. Structured results go to **stdout**; logs
-and progress go to **stderr** (bootstrap §3.5) -- which is what makes
+and progress go to **stderr** (`CLAUDE.md` invariant 8) -- which is what makes
 ``pt holdings --format json | jq`` work while ``-v`` is on.
 
 A result's warnings travel with it where the format can carry them: the JSON

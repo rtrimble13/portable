@@ -1,7 +1,8 @@
 """Accept global flags after the subcommand as well as before it.
 
-The bootstrap requires that **every** command support ``--format``, ``--as-of``,
-``--source``, ``--offline``, ``-v/-vv``, ``--quiet`` and ``--no-color`` (§7.2).
+**Every** command supports ``--format``, ``--as-of``, ``--source``,
+``--offline``, ``-v/-vv``, ``--quiet`` and ``--no-color`` (``CLAUDE.md``,
+"CLI shape").
 Click parses group-level options only *before* the subcommand, so
 ``pt holdings --format json`` -- which is what a person types, and what an agent
 generates -- fails with "No such option".

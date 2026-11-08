@@ -140,7 +140,7 @@ def resolve_dsn(explicit: str | None = None) -> str | None:
     ``PORTABLE_FAFNIR_DSN``, else None: `duk` then reads its own configuration.
     The value is a secret -- it carries a password -- so it travels in the
     child's environment only, and is never logged or put in an error
-    (bootstrap §6.3).
+    (``docs/architecture.md`` §6, ``docs/market-data.md``).
     """
     if explicit:
         return explicit

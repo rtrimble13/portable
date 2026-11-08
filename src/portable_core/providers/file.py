@@ -1,6 +1,6 @@
 """The file provider: local CSV and JSON with a documented schema.
 
-**A first-class citizen, not a test double** (bootstrap §6.4). It is how
+**A first-class citizen, not a test double** (`docs/market-data.md`). It is how
 benchmarks get into a portfolio at all -- see the note on ``BENCHMARK`` below --
 how the examples run with no warehouse, and how anybody without a Postgres
 instance uses `portable` fully.

@@ -1,6 +1,6 @@
 """Lint rule: no binary floating point in any money path.
 
-``CLAUDE.md`` invariant 1 and bootstrap §3.2. Prices, quantities, amounts, and
+``CLAUDE.md`` invariant 1. Prices, quantities, amounts, and
 rates are :class:`decimal.Decimal` in Python and canonical decimal ``TEXT`` in
 SQLite. A ``float`` in a money path does not fail — it produces a number that is
 wrong in the seventeenth decimal place, and then wrong in the second after ten

@@ -9,7 +9,6 @@
 | Anchored edition | Global Investment Performance Standards, **2020 edition** (Firms; Asset Owners) |
 | Posture | **GIPS-modelled methodology. No claim of GIPS compliance, now or later, is made or implied.** See §4 and §9. |
 | Applies to | `portable_core` (valuation, cash-flow, and return paths), `pt` (`value`, `mark`, `cash-flows`, `holdings`, `pnl`), and all of `pert` (v0.2) |
-| Supersedes | The one-line GIPS note in `portable_bootstrap_prompt.md` §4.7 |
 | Author | Research pass, 27 August 2026 |
 
 ---
@@ -291,7 +290,7 @@ Recommendation **2.B.1 / 22.B.1 (B)** goes further: value on the date of **all**
 2. Accrue dividends on the **ex-date**, with cash arriving on the pay-date. `portable` already records both; the accrual must feed the valuation snapshot, not just the ledger.
 3. Classify withholding taxes as reclaimable or non-reclaimable, accrue the reclaimable portion, and deduct the non-reclaimable portion from return.
 **Data model** — `valuation_snapshot.accrued_income` (already specified). Add `transaction.withholding_reclaimable` (nullable Decimal) alongside the existing taxes-withheld field.
-**Test** — `test_accrued_interest_in_market_value` (bond bought between coupons — already scenario 5 in the bootstrap's integration list; extend it to assert the snapshot, not just the ledger); `test_dividend_accrues_on_ex_date`: a dividend with ex-date inside the period and pay-date after it must appear in ending market value.
+**Test** — `test_accrued_interest_in_market_value` (bond bought between coupons — already scenario 5 in `tests/integration/test_scenarios.py`; extend it to assert the snapshot, not just the ledger); `test_dividend_accrues_on_ex_date`: a dividend with ex-date inside the period and pay-date after it must appear in ending market value.
 
 ---
 
@@ -837,7 +836,7 @@ The disclosure requirements are the largest block in GIPS (Firms 4.C.1–4.C.48;
 
 > **1.A.10 (A)** — must not describe a client's performance as "calculated in accordance with the Global Investment Performance Standards," except where a compliant firm reports to its own current clients.
 
-**A finding worth flagging.** `portable_bootstrap_prompt.md` §4.7 and the `pert` backlog both use the phrase **"GIPS-consistent methodology."** That phrasing is, by name, the construction 1.A.9 prohibits. The prohibition is addressed to firms, and `portable`'s owner is not a firm, so no rule is being broken — but the phrase is prohibited *precisely because CFA Institute judges it misleading*, and a tool built to this standard should not adopt the one form of words the standard singles out. This is a case where the design document is wrong and should be changed.
+**A finding worth flagging.** The `pert` backlog, as first written, used the phrase **"GIPS-consistent methodology."** That phrasing is, by name, the construction 1.A.9 prohibits. The prohibition is addressed to firms, and `portable`'s owner is not a firm, so no rule is being broken — but the phrase is prohibited *precisely because CFA Institute judges it misleading*, and a tool built to this standard should not adopt the one form of words the standard singles out. This was a case where the backlog was wrong and had to change; it has since been reworded.
 
 **Recommended replacement wording**, for `docs/`, the README, and every report footer:
 
@@ -917,7 +916,7 @@ What `pert` v0.2 must satisfy before it emits a return:
 
 **Three things to do before `pert` work begins**, in priority order:
 
-1. **`PORT-GIPS-J05`** — the compliance-language lint, plus correcting "GIPS-consistent" in `portable_bootstrap_prompt.md`, `CLAUDE.md`, and the `pert` backlog issues. Cheapest item here, and the one that prevents a claim shipping.
+1. **`PORT-GIPS-J05`** — the compliance-language lint, plus correcting "GIPS-consistent" in `CLAUDE.md` and the `pert` backlog issues. Cheapest item here, and the one that prevents a claim shipping.
 2. **`PORT-GIPS-D01`** — the `fee_class` schema change and migration. Retrofitting a fee taxonomy after returns exist means restating every published number.
 3. **`PORT-GIPS-B02`** — audit `pt cash-flows --external-only` against the classification matrix and move the classification into a single service function. Everything in §6.B and §6.C consumes it; if it is wrong, every return is wrong in a way that looks entirely plausible.
 

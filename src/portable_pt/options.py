@@ -1,6 +1,6 @@
 """Shared Typer options, defined once.
 
-Every `pt` command accepts the same global flags (bootstrap §7.2). Defining
+Every `pt` command accepts the same global flags (`CLAUDE.md`, "CLI shape"). Defining
 them here rather than per command means they cannot drift, and means adding one
 is a single edit rather than fifty.
 """
