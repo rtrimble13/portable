@@ -1,7 +1,7 @@
 # ADR 0037 — Wash sales are detected in replay, across every account
 
-- **Status:** Proposed. The owner answers the open questions and approves schema 11 before any code is written
-- **Date:** 2026-11-06
+- **Status:** Accepted (owner, 2026-11-08), with the recommended answer to each open question, and schema 11 approved. Not yet implemented. The primary-text check of the citations under Consequences is still open, and is a condition of merging the implementation
+- **Date:** 2026-11-06; accepted 2026-11-08
 - **Milestone:** v0.2, issue 27 (P0)
 - **Governs:** `CLAUDE.md` "Wash sales cross accounts", invariants 3, 9; `docs/tax-methodology.md`
 - **Amends:** [ADR 0011](0011-tax-estimation-boundary.md). Wash sales move from *refused* to *computed exactly*, for what this ADR detects
@@ -74,7 +74,8 @@ Five things make it harder than it sounds:
      across symbol changes. Any other instrument is matched only once it is
      declared substantially identical (decision 8).
    - **Accounts:** every account in the file is taken to be the taxpayer's
-     or their spouse's (open question 5).
+     or their spouse's (answer 5). A file holding anyone else's account
+     needs a declared account scope first, which is a later ADR.
 3. **Matching order.** The unit is a disposition: one sold lot's part of a
    sale. Lots sold together can carry different losses per share and
    different holding periods. Only dispositions at a loss are matched.
@@ -126,6 +127,9 @@ Five things make it harder than it sounds:
      - the sale's transaction and the sold lot's key identify the
        disposition.
    - **Only derived lots split.** No ledger row changes.
+   - **A designation that a later split divided is refused** until its
+     meaning is recorded, once and by key, in ADR 0036's `lot_designation`
+     table (answer 2). Only a back-dated row can cause this.
    - **The `wash_sale` table.** A new derived table records each pairing:
      the disposition, the replacement lot's key, the quantity, the amount
      disallowed, whether it went into basis, and the days absorbed. It goes
@@ -167,11 +171,14 @@ Five things make it harder than it sounds:
    - **Candidates.** `pt tax wash-candidates` lists, for each loss sale,
      what is in its window but not matched automatically, across accounts,
      so nothing is invisible:
-     - every acquisition of a *different* instrument;
-     - every option on the same underlying, which the statute names;
+     - every acquisition of a *different* instrument, whatever its asset
+       class (answer 4);
+     - every option on the same underlying, which the statute names. Options
+       are candidates only in this version (answer 3);
      - every lot decision 7 holds back.
 
-     Candidates are proposed, never applied.
+     Candidates are proposed, never applied. The list can be filtered by
+     instrument type for reading, and is complete without the filter.
 9. **A purchase that changes a past tax year says so.** A January buy that
    disallows a December loss restates that year's figures. That is the law,
    not an error. The buy's result warns with the year and the amount.
@@ -190,56 +197,35 @@ Five things make it harder than it sounds:
     - short sales, and the purchases that close them (§1091(e));
     - acquisitions outside this portfolio, such as an account not in the
       file;
-    - a replacement disposed of before the loss sale (open question 1).
+    - a replacement disposed of before the loss sale (answer 1). The
+      pairing is reported for manual handling, and that year's report is
+      marked incomplete.
 
-## Open questions for the owner
+## Owner's answers (2026-11-08)
 
-Each has a recommendation. The ADR is accepted once each is answered.
+The owner accepted the recommended answer to each question. They are
+folded into the decisions above.
 
-1. **A replacement sold before the loss sale.** Example: shares are bought 10
-   days before a loss sale, then sold before it. The acquisition is in the
-   window, but the basis it would carry is already gone.
-   - (a) Report the pairing for manual handling and mark the year
-     incomplete.
-   - (b) Apply the deferral to that replacement's own sale, restating it.
-
-   **Recommended: (a).** Under (b), the restated sale can itself become a
-   loss that washes against the very shares the loss sale disposed of. That is a
-   circular case the regulation does not resolve, and a guess would be a
-   silently wrong number.
-2. **A designation naming a lot that a later split divided.** A sale written
-   before the split designates `@1234:10`. The lot is now `1234` and
-   `1234~5678.901`. Only a back-dated row can cause this, because replay
-   splits the lot before any later designation is written.
-   - (a) Refuse until what the designation means is recorded.
-   - (b) Relieve the parts in a fixed order.
-
-   **Recommended: (a).** Record the meaning once, by key, in ADR 0036's
-   `lot_designation` table, decided the way old designations are. The two
-   parts carry different bases and holding periods, so a fixed order is a
-   guess at which shares the owner meant.
-3. **Options.**
-   - (a) Candidates only, as above.
-   - (b) Match a long call on the same underlying automatically, for as many
-     shares as it controls, with the deferral going into the option's basis.
-
-   **Recommended: (a) for this version.** Matching long calls alone would be
-   partial, because the statute reaches other contracts to acquire. Whether
-   a given option is substantially identical is a judgement, like decision
-   8's.
-4. **Candidate scope.**
-   - (a) Every different-instrument acquisition in the window: complete, and
-     noisy.
-   - (b) Only those in the same asset class.
-
-   **Recommended: (a), with a filter for reading it.** `instrument.asset_class`
-   is optional free text, so (b) would hide every candidate whose class is
-   blank.
-5. **Whose accounts are in the file.** Decision 2 lets a purchase in any
-   account wash a loss in any taxable one, which is right for the taxpayer
-   and their spouse. Can a file of yours hold anyone else's account, such as
-   a child's custodial account or a trust? If so, accounts need a declared
-   scope, which this ADR does not include.
+1. **A replacement sold before the loss sale:** (a). The pairing is
+   reported for manual handling and the year is marked incomplete. Applying
+   the deferral to the replacement's own sale can make that sale a loss
+   that washes against the very shares the loss sale disposed of. That
+   circular case is one the regulation does not resolve (decision 11).
+2. **A designation naming a lot that a later split divided:** (a). It is
+   refused until its meaning is recorded in `lot_designation`. The two
+   parts carry different bases and holding periods, so a fixed order would
+   guess at which shares were meant (decision 6).
+3. **Options:** (a). Candidates only in this version. Matching long calls
+   alone would be partial, and whether an option is substantially identical
+   is a judgement (decision 8).
+4. **Candidate scope:** (a). Every different-instrument acquisition, with a
+   filter for reading. `instrument.asset_class` is optional free text, so
+   scoping by it would hide every candidate whose class is blank
+   (decision 8).
+5. **Whose accounts are in the file:** this question carried no
+   recommendation. Decision 2's assumption stands: every account is the
+   taxpayer's or their spouse's. A file holding anyone else's account needs
+   a declared scope before this lands, and that is a later ADR.
 
 ## Consequences
 
@@ -255,10 +241,13 @@ Each has a recommendation. The ADR is accepted once each is answered.
   erased it, so a loss on an assigned covered call would have been invisible
   to detection built in replay.
 - **Tax-loss harvesting** in `po` (v0.3) can be built on decision 8's table.
-- **Citations still to verify.** The verification standard of
-  `docs/gips-standard.md` applies here too. These points were checked only
-  against secondary sources in this session, and are to be read in primary
-  text before this ADR is accepted:
+- **Citations still to verify, before the implementation is merged.** The
+  verification standard of `docs/gips-standard.md` applies here too. These
+  points were checked only against secondary sources. The primary texts
+  could not be fetched: ecfr.gov, uscode.house.gov, irs.gov and
+  law.cornell.edu are all outside the network policy of the sessions that
+  wrote and accepted this ADR. Each is to be read in primary text, and any
+  decision it contradicts amended by the next ADR:
   - §1091(a)'s "by purchase or by an exchange";
   - §1.1091-1's order rules;
   - §1223(3) on overlapping periods (decision 5);
