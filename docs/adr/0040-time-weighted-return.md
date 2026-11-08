@@ -1,6 +1,6 @@
 # ADR 0040 — Time-weighted return: daily sub-periods from stored snapshots, Modified Dietz across gaps
 
-- **Status:** Accepted (owner, 2026-11-08), with the recommended answers to questions 1, 3 and 4. To question 2 the owner holds individual coupon bonds. Accrued interest (§13.1) turned out to need a bond model the code lacks, proposed in [ADR 0041](0041-bonds-at-face-with-accrued-interest.md); until it lands, §12's bond refusal stands
+- **Status:** Accepted (owner, 2026-11-08), with the recommended answers to questions 1, 3 and 4. Implemented: `portable_core/services/returns.py`, `portable_core/domain/returns.py`, `pert twr`, `schemas/twr-1.0.json`; §13's prerequisites and ADR 0041 first. To question 2 the owner holds individual coupon bonds. Accrued interest (§13.1) turned out to need a bond model the code lacks, proposed in [ADR 0041](0041-bonds-at-face-with-accrued-interest.md); until it lands, §12's bond refusal stands
 - **Date:** 2026-11-08; accepted 2026-11-08
 - **Milestone:** v0.2, issue 2 (P0)
 - **Governs:** `PORT-GIPS-A03`, `A06`, `B01`–`B07`, `D01`, `D04`, `D05`; `CLAUDE.md` "TWR vs. MWR", "External cash flow classification is level-dependent", "Do not annualize sub-one-year returns"

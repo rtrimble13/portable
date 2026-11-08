@@ -29,7 +29,13 @@ from portable_core.providers import (
 )
 from portable_core.schema import migrations as M
 
-__all__ = ["CommandContext", "GlobalOptions", "build_context"]
+__all__ = [
+    "CommandContext",
+    "GlobalOptions",
+    "build_context",
+    "make_options",
+    "resolve_date",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,6 +248,53 @@ def build_context(
         connection=connection,
         repos=repos,
     )
+
+
+def make_options(
+    *,
+    port: Path | None = None,
+    output_format: str = "table",
+    as_of: str | None = None,
+    source: str | None = None,
+    offline: bool = False,
+    dry_run: bool = False,
+    yes: bool = False,
+    verbose: int = 0,
+    quiet: bool = False,
+    no_color: bool = False,
+) -> GlobalOptions:
+    """The global flags as parsed text, checked: what every CLI's callback builds."""
+    try:
+        fmt = OutputFormat(output_format)
+    except ValueError as exc:
+        raise UsageError(
+            f"unknown output format {output_format!r}",
+            remedy="Choose one of: table, json, markdown, csv.",
+            value=output_format,
+        ) from exc
+    return GlobalOptions(
+        port=port,
+        output_format=fmt,
+        as_of=parse_date(as_of, what="--as-of"),
+        source=source,
+        offline=offline,
+        dry_run=dry_run,
+        yes=yes,
+        verbose=verbose,
+        quiet=quiet,
+        no_color=no_color,
+    )
+
+
+def resolve_date(value: str | None, ctx: CommandContext, *, what: str = "--date") -> date:
+    """A date from the command line, defaulting to the context's ``as_of``.
+
+    Never to ``today`` directly: ``as_of`` was already defaulted explicitly at
+    context-build time, and reaching for the clock again would reintroduce the
+    hidden dependency `CLAUDE.md` invariant 6 forbids.
+    """
+    parsed = parse_date(value, what=what)
+    return parsed if parsed is not None else ctx.as_of
 
 
 def parse_date(value: str | None, *, what: str = "date") -> date | None:

@@ -17,6 +17,7 @@ Two disciplines apply throughout:
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -886,6 +887,21 @@ class TransactionRepository(_Repository):
             (on.isoformat(),),
         ).fetchone()
         return bool(row["later"])
+
+    def first_activity_date(self, account_id: int) -> date | None:
+        """The account's earliest ledger row on either side, or ``None``.
+
+        A transfer is one row filed under the account it left; the account it
+        reached has no row of its own. A return that started an account at
+        its own first row would miss the capital a transfer brought it
+        (ADR 0040 §2).
+        """
+        row = self.con.execute(
+            'SELECT MIN(trade_date) AS d FROM "transaction" '
+            "WHERE account_id = ? OR counter_account_id = ?",
+            (account_id, account_id),
+        ).fetchone()
+        return None if row is None or row["d"] is None else date.fromisoformat(row["d"])
 
     def first_trade_date(self, account_id: int) -> date | None:
         """The account's earliest ledger row, or ``None`` for an account with none.
@@ -2072,6 +2088,37 @@ class ValuationRepository(_Repository):
                 "ORDER BY s.snapshot_date, s.account_id, i.symbol"
             )
         ]
+
+    def series(
+        self, account_ids: Sequence[int], first: date, last: date
+    ) -> dict[tuple[int, date], ValuationSnapshot]:
+        """Stored snapshots of *account_ids* from *first* to *last*, whole.
+
+        Each with the prices it recorded and its flows at both levels: what a
+        return is computed from (ADR 0040 §2), read exactly as stored.
+        """
+        if not account_ids:
+            return {}
+        marks = ", ".join("?" for _ in account_ids)
+        found: dict[tuple[int, date], ValuationSnapshot] = {}
+        for row in self.con.execute(
+            f"SELECT * FROM valuation_snapshot WHERE account_id IN ({marks}) "  # noqa: S608 -- placeholders only
+            "AND snapshot_date BETWEEN ? AND ? ORDER BY snapshot_date, account_id",
+            (*account_ids, first.isoformat(), last.isoformat()),
+        ).fetchall():
+            snapshot_id = int(row["snapshot_id"])
+            flows = tuple(
+                mappers.to_cash_flow(flow)
+                for flow in self.con.execute(
+                    "SELECT * FROM snapshot_flow WHERE snapshot_id = ? ORDER BY flow_id",
+                    (snapshot_id,),
+                )
+            )
+            snapshot = mappers.to_snapshot(
+                row, prices=tuple(self.recorded_prices(snapshot_id)), flows=flows
+            )
+            found[(snapshot.account_id, snapshot.snapshot_date)] = snapshot
+        return found
 
     def snapshot(self, account_id: int, on: date) -> sqlite3.Row | None:
         row = self.con.execute(

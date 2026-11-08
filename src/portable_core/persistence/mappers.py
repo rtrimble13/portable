@@ -25,6 +25,7 @@ from portable_core.domain.enums import (
     DesignationStatus,
     ExerciseStyle,
     FeeClass,
+    FlowLevel,
     HoldingPeriod,
     InstrumentType,
     LegRole,
@@ -43,6 +44,7 @@ from portable_core.domain.models import (
     BasisAdjustment,
     Benchmark,
     BondDetail,
+    CashFlow,
     CorporateAction,
     Instrument,
     InstrumentEquivalence,
@@ -56,9 +58,11 @@ from portable_core.domain.models import (
     PriceAcceptance,
     RealizedGain,
     ReturnPolicy,
+    SnapshotPrice,
     StatementPosition,
     TaxRateSchedule,
     Transaction,
+    ValuationSnapshot,
     WashSale,
 )
 
@@ -66,6 +70,7 @@ __all__ = [
     "to_account",
     "to_basis_adjustment",
     "to_benchmark",
+    "to_cash_flow",
     "to_corporate_action",
     "to_date",
     "to_decimal",
@@ -78,6 +83,7 @@ __all__ = [
     "to_price",
     "to_realized_gain",
     "to_return_policy",
+    "to_snapshot",
     "to_tax_rate_schedule",
     "to_transaction",
     "to_wash_sale",
@@ -470,6 +476,50 @@ def to_corporate_action(row: sqlite3.Row) -> CorporateAction:
         source=str(row["source"]),
         provider_ref=row["provider_ref"],
         applied_txn_id=row["applied_txn_id"],
+    )
+
+
+def to_cash_flow(row: sqlite3.Row) -> CashFlow:
+    """One stored ``snapshot_flow`` row, at the level it records."""
+    return CashFlow(
+        txn_id=int(row["txn_id"]),
+        account_id=int(row["account_id"]),
+        flow_date=to_date(row["flow_date"]),
+        amount=to_decimal(row["amount"]),
+        is_large=to_bool(row["is_large"]),
+        is_in_kind=to_bool(row["is_in_kind"]),
+        level=FlowLevel(row["level"]),
+    )
+
+
+def to_snapshot(
+    row: sqlite3.Row,
+    *,
+    prices: tuple[SnapshotPrice, ...] = (),
+    flows: tuple[CashFlow, ...] = (),
+) -> ValuationSnapshot:
+    """One stored ``valuation_snapshot`` row, with what it recorded."""
+    return ValuationSnapshot(
+        snapshot_id=int(row["snapshot_id"]),
+        account_id=int(row["account_id"]),
+        snapshot_date=to_date(row["snapshot_date"]),
+        beginning_market_value=to_decimal(row["beginning_market_value"]),
+        ending_market_value=to_decimal(row["ending_market_value"]),
+        securities_value=to_decimal(row["securities_value"]),
+        cash_balance=to_decimal(row["cash_balance"]),
+        margin_loan=to_decimal(row["margin_loan"]),
+        accrued_interest=to_decimal(row["accrued_interest"]),
+        accrued_dividends=to_decimal(row["accrued_dividends"]),
+        accrued_income=to_decimal(row["accrued_income"]),
+        external_flow_account=to_decimal(row["external_flow_account"]),
+        external_flow_portfolio=to_decimal(row["external_flow_portfolio"]),
+        income_amount=to_decimal(row["income_amount"]),
+        fees_amount=to_decimal(row["fees_amount"]),
+        level5_market_value=to_decimal(row["level5_market_value"]),
+        is_complete=to_bool(row["is_complete"]),
+        uses_estimates=to_bool(row["uses_estimates"]),
+        prices=prices,
+        flows=flows,
     )
 
 

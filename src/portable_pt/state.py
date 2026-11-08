@@ -10,9 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from portable_core.cli.context import CommandContext, GlobalOptions, build_context, parse_date
-from portable_core.errors import UsageError
-from portable_core.formatters import OutputFormat
+from portable_core.cli.context import CommandContext, GlobalOptions, build_context, make_options
 
 __all__ = [
     "close_opened",
@@ -46,19 +44,10 @@ def set_options(
 ) -> GlobalOptions:
     """Record the global flags parsed by the Typer callback."""
     global _OPTIONS
-    try:
-        fmt = OutputFormat(output_format)
-    except ValueError as exc:
-        raise UsageError(
-            f"unknown output format {output_format!r}",
-            remedy="Choose one of: table, json, markdown, csv.",
-            value=output_format,
-        ) from exc
-
-    _OPTIONS = GlobalOptions(
+    _OPTIONS = make_options(
         port=port,
-        output_format=fmt,
-        as_of=parse_date(as_of, what="--as-of"),
+        output_format=output_format,
+        as_of=as_of,
         source=source,
         offline=offline,
         dry_run=dry_run,

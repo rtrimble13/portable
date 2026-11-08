@@ -1,15 +1,15 @@
-"""`pert` -- Performance, attribution, and risk-adjusted returns.
+"""`pert` -- performance measurement, from the snapshots `pt value` stores.
 
-**Not implemented.** This package is a deliberate stub for milestone `v0.2`.
-It exists so the command exists, reports honestly that it does not work yet, and
-points at the issues that specify it.
+**Partly built.** `pert twr` computes the time-weighted return (ADR 0040):
+daily sub-periods from stored, checked valuation snapshots, Modified Dietz
+across a gap of unpriced days, every return basis from the stored fee
+classes, the method recorded per sub-period. It reads and never writes.
 
-`CLAUDE.md` invariant 10: a `NotImplementedError` with a link to its issue is
-honest; a function that returns zero, an empty list, or a plausible-looking
-default is a landmine that will surface as a wrong number months later. There
-are no such functions here.
-
-See `docs/roadmap.md` and the `area:pert` issues on the milestone.
+The rest of milestone `v0.2` -- money-weighted returns, multi-period
+reporting, benchmarks, risk, attribution, the tearsheet -- is not built, and
+`pert` offers no command for it rather than one that returns a plausible
+default (`CLAUDE.md` invariant 10). See `docs/roadmap.md` and the `area:pert`
+issues.
 """
 
 from __future__ import annotations

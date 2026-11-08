@@ -46,6 +46,7 @@ __all__ = [
     "store",
     "value_range",
     "verify",
+    "verify_between",
 ]
 
 ZERO = Decimal("0.00")
@@ -211,14 +212,32 @@ def verify(repos: Repositories) -> list[str]:
       ``PORT-GIPS-A09`` exists for: the snapshot used a figure that has since
       changed, and has to be valued again so the change can be reported.
     """
+    return _problems(repos, None)
+
+
+def verify_between(
+    repos: Repositories, account_ids: set[int], first: date, last: date
+) -> list[str]:
+    """:func:`verify`, for the snapshots of *account_ids* from *first* to *last*.
+
+    What a return checks before it uses them (ADR 0040 §2): the same two
+    checks, on the days it reads and no others.
+    """
+    return _problems(
+        repos, lambda account_id, on: account_id in account_ids and first <= on <= last
+    )
+
+
+def _problems(repos: Repositories, wanted: Callable[[int, date], bool] | None) -> list[str]:
     names = {account.account_id: account.name for account in repos.accounts.all()}
     problems = [
         f"{names.get(account_id)} {on.isoformat()}: recorded {symbol} at {recorded}, "
         f"and its price row now says {current} -- {_REVALUE.format(on=on.isoformat())}"
         for account_id, on, symbol, recorded, current in repos.valuations.superseded_prices()
+        if wanted is None or wanted(account_id, on)
     ]
 
-    for item in _rederive(repos):
+    for item in _rederive(repos, wanted):
         again = repos.valuations.record_of(item.again)
         differing = [field for field in item.kept if item.kept[field] != again[field]]
         if differing:

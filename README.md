@@ -20,7 +20,7 @@ failure mode**, worse than a crash and worse than a missing feature. When
 | CLI | Purpose | Status |
 |---|---|---|
 | **`pt`** | Portfolio and account definition, transactions, history | **built** (v0.1) |
-| `pert` | Performance, attribution, risk-adjusted returns | stub — milestone `v0.2` |
+| `pert` | Performance, attribution, risk-adjusted returns | **partly built**: `pert twr` (ADR 0040); the rest is milestone `v0.2` |
 | `po` | Portfolio optimization (wraps [`rtrimble13/po`](https://github.com/rtrimble13/po)) | stub — milestone `v0.3` |
 | `risky` | Risk and scenario analysis | stub — milestone `v0.4` |
 

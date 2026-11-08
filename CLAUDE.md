@@ -21,7 +21,7 @@ When in doubt, refuse and explain.
 | CLI | Purpose | Status |
 |---|---|---|
 | `pt` | Portfolio and account definition, transactions, history | **built** |
-| `pert` | Performance, attribution, risk-adjusted returns | stub — see milestone `v0.2` |
+| `pert` | Performance, attribution, risk-adjusted returns | **partly built** — `pert twr` (ADR 0040); the rest is milestone `v0.2` |
 | `po` | Portfolio optimization (wraps `rtrimble13/po`) | stub — see milestone `v0.3` |
 | `risky` | Risk and scenario analysis | stub — see milestone `v0.4` |
 

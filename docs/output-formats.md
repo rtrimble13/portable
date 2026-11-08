@@ -76,6 +76,12 @@ footnote at the end of a formatted block can be lost by accident.
 Removing the statement of what wash-sale detection does not cover therefore
 breaks CI rather than a filing.
 
+`pert twr` requires a non-empty disclaimer in its schema too (`twr-1.0`,
+ADR 0040). Each of its four returns names its method, basis and period. Its
+`is_annualized` is fixed `false`, and `is_supplemental` is `true` for
+`net_of_all_costs` and for no other basis. A consumer cannot take a
+supplemental figure for a GIPS basis without the schema noticing.
+
 ### Errors are JSON too
 
 Under `--format json` a failure writes a well-formed envelope to **stdout** and

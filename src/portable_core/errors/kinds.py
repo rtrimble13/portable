@@ -141,6 +141,16 @@ E_REPLAY_MISMATCH: Final = "PT-E-REPLAY-MISMATCH"
 #: A stored valuation snapshot that no longer re-derives from the ledger and
 #: the prices it recorded. The remedy is `pt value`, not `pt rebuild` (ADR 0024).
 E_SNAPSHOT_STALE: Final = "PT-E-SNAPSHOT-STALE"
+#: ADR 0040 §2. A day a return needs has no stored valuation snapshot.
+E_SNAPSHOT_MISSING: Final = "PT-E-SNAPSHOT-MISSING"
+#: ADR 0040 §4. A sub-period whose denominator is not positive.
+E_RETURN_UNDEFINED: Final = "PT-E-RETURN-UNDEFINED"
+#: ADR 0031, ADR 0040. An unresolved statement line blocks returns from its date.
+E_RETURN_BLOCKED: Final = "PT-E-RETURN-BLOCKED"
+#: ADR 0040 §12. A trade for cash in an instrument valued at zero.
+E_RETURN_UNPRICED_TRADE: Final = "PT-E-RETURN-UNPRICED-TRADE"
+#: ADR 0040 §8, PORT-GIPS-D05. A cash fee classed as a fund's embedded expense.
+E_FEE_EMBEDDED_IN_CASH: Final = "PT-E-FEE-EMBEDDED-IN-CASH"
 #: An effective-dated config row that would change a figure already recorded,
 #: offered without `--restate` (ADR 0025).
 E_RESTATES_HISTORY: Final = "PT-E-RESTATES-HISTORY"
@@ -171,6 +181,8 @@ E_GIPS_ANNUALIZE_SUB_YEAR: Final = "PT-E-GIPS-ANNUALIZE-SUB-YEAR"
 E_GIPS_MWR_ALONE: Final = "PT-E-GIPS-MWR-ALONE"
 E_GIPS_ADJUSTED_PRICE: Final = "PT-E-GIPS-ADJUSTED-PRICE"
 E_GIPS_THEORETICAL_LINK: Final = "PT-E-GIPS-THEORETICAL-LINK"
+#: ADR 0040 §6, PORT-GIPS-A03, B03. A gap Modified Dietz may not bridge.
+E_GIPS_VALUATION_GAP: Final = "PT-E-GIPS-VALUATION-GAP"
 
 #: Every code above, for `pt introspect` and for the uniqueness test.
 ERROR_CODES: Final[tuple[str, ...]] = (
@@ -216,6 +228,11 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_INVARIANT_BROKEN,
     E_REPLAY_MISMATCH,
     E_SNAPSHOT_STALE,
+    E_SNAPSHOT_MISSING,
+    E_RETURN_UNDEFINED,
+    E_RETURN_BLOCKED,
+    E_RETURN_UNPRICED_TRADE,
+    E_FEE_EMBEDDED_IN_CASH,
     E_RESTATES_HISTORY,
     E_PRICE_MISSING,
     E_PRICE_STALE,
@@ -236,4 +253,5 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_GIPS_MWR_ALONE,
     E_GIPS_ADJUSTED_PRICE,
     E_GIPS_THEORETICAL_LINK,
+    E_GIPS_VALUATION_GAP,
 )

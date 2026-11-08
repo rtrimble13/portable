@@ -124,7 +124,7 @@ funds and delisted symbols, which benchmark — are the owner's to answer first.
 
 Then:
 
-1. **Daily time-weighted return engine** — chain-linked sub-period returns from
+1. **Daily time-weighted return engine** — *done*: `pert twr`. Chain-linked sub-period returns from
    `valuation_snapshot`, Modified Dietz as the gap-day fallback, method recorded
    on every result. `PORT-GIPS-B01`–`B07`. Designed in
    [ADR 0040](adr/0040-time-weighted-return.md), accepted: three snapshot

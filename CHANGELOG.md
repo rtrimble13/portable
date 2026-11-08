@@ -16,6 +16,45 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`pert twr`: the time-weighted return** (ADR 0040, accepted by the
+  owner). `pert` stops being a stub. It reads the snapshots `pt value`
+  stored, checks each one first, and writes nothing.
+  - **One formula.** Modified Dietz in calendar days, with an inflow counted
+    at the start of its day and an outflow at the end. Over one day that is
+    the exact daily return, so the funding day and a full withdrawal are both
+    defined. Across days that cannot be valued, it is the gap fallback
+    `PORT-GIPS-B06` permits. The method of every sub-period is on the result
+    (`PORT-GIPS-B05`), and the sub-periods link geometrically in a fixed
+    34-digit Decimal context (`PORT-GIPS-B04`).
+  - **Levels.** `--account` gives account level; the default is the
+    portfolio, where a transfer between the owner's accounts is no flow at
+    all (`PORT-GIPS-B02`). An account funded only by a transfer starts on
+    that transfer.
+  - **Bases.** Net-of-fees leads. Net-of-external-costs-only and
+    gross-of-fees sit beside it, shown once when equal, and net of all costs
+    is labelled supplemental (`PORT-GIPS-D01`). Each fee a basis does not
+    deduct is undone as an outflow at the end of its day, read from its
+    stored class. Margin interest is deducted at every basis whatever its
+    class. A cash fee classed as a fund's embedded expense is refused
+    (`PT-E-FEE-EMBEDDED-IN-CASH`, `PORT-GIPS-D05`).
+  - **Refusals, never a plausible number:**
+    - a day with no stored snapshot (`PT-E-SNAPSHOT-MISSING`, naming the
+      `pt value` that fills it);
+    - a snapshot that no longer re-derives (`PT-E-SNAPSHOT-STALE`);
+    - no return policy in force (`PT-E-GIPS-NO-FLOW-POLICY`);
+    - a gap across a month end or a large flow (`PT-E-GIPS-VALUATION-GAP`);
+    - an unresolved statement line (`PT-E-RETURN-BLOCKED`, ADR 0031);
+    - a cash trade in an instrument valued at zero
+      (`PT-E-RETURN-UNPRICED-TRADE`);
+    - a denominator that is not positive (`PT-E-RETURN-UNDEFINED`).
+  - **Output.** JSON validates against `schemas/twr-1.0.json`, with the
+    disclaimer as an envelope field. Returns are cumulative and never
+    annualized. The notes say whether the large-flow threshold bound, which
+    fees each basis deducts, and what was estimated, stale, at level 5 or
+    valued at zero. `--daily` emits every sub-period.
+- `portable_core.cli` gains `make_options` and `resolve_date`, which `pt`
+  and `pert` now share.
+
 - **Bonds are held at face, priced by their quote basis, and carry their
   accrued interest** (ADR 0041, accepted by the owner). Before, the stored
   quote basis was never read and every bond was valued at price × quantity.
@@ -466,6 +505,11 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **`PORT-GIPS-D01`'s acceptance tests say "for the sub-period it is charged
+  in".** A fee a basis undoes leaves that sub-period's return unchanged, exactly;
+  later sub-periods are measured on the capital actually left (ADR 0040 §8,
+  amended). The data-model lines of `B05`, `D01` and `H08` no longer describe a
+  `return_result` table: results are computed on demand (ADR 0040 §10).
 - **BREAKING for a file that holds bonds:** a bond's quantity is now its
   face amount, and its price is read through its quote basis (ADR 0041). A
   bond entered under the old reading, as a number of bonds priced per bond
