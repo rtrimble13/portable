@@ -27,6 +27,7 @@ from portable_core.domain.enums import (
     DesignationStatus,
     ExerciseStyle,
     FeeClass,
+    FlowLevel,
     HoldingPeriod,
     InstrumentType,
     LegRole,
@@ -38,6 +39,7 @@ from portable_core.domain.enums import (
     TransactionSource,
     TransactionType,
     ValuationBasis,
+    WashSaleStatus,
 )
 
 # ── Portfolio and accounts ───────────────────────────────────────────────────
@@ -172,6 +174,30 @@ class BondDetail:
     def is_zero_coupon(self) -> bool:
         return self.coupon_frequency == 0
 
+    def value_of(self, quantity: Decimal, price: Decimal) -> Decimal:
+        """What *quantity* of face is worth at *price*, unrounded. ADR 0041 §1.
+
+        Quantity is face amount, as a custodian reports it. ``percent_of_par``
+        prices per 100 of face; ``price_per_bond`` per bond of ``face_value``.
+        """
+        if self.quote_basis == "percent_of_par":
+            return quantity * price / Decimal(100)
+        if self.quote_basis == "price_per_bond":
+            return quantity * price / self.face_value
+        raise ValueError(f"unhandled bond quote basis: {self.quote_basis!r}")
+
+    def price_of(self, quantity: Decimal, value: Decimal) -> Decimal:
+        """The price at which *quantity* of face is worth *value*: the inverse."""
+        if self.quote_basis == "percent_of_par":
+            return value * Decimal(100) / quantity
+        if self.quote_basis == "price_per_bond":
+            return value * self.face_value / quantity
+        raise ValueError(f"unhandled bond quote basis: {self.quote_basis!r}")
+
+    def is_whole_denomination(self, quantity: Decimal) -> bool:
+        """Whether *quantity* of face is a whole number of bonds of ``face_value``."""
+        return self.face_value > 0 and quantity % self.face_value == 0
+
 
 @dataclass(frozen=True, slots=True)
 class Instrument:
@@ -218,6 +244,23 @@ class Instrument:
         if self.option is not None:
             return self.option.multiplier
         return Decimal(1)
+
+    def value_of(self, quantity: Decimal, price: Decimal) -> Decimal:
+        """What *quantity* is worth at *price*, unrounded: the one product.
+
+        Every place a price is multiplied by a quantity goes through here, so
+        a bond's quote basis (ADR 0041 §1) cannot be forgotten at one of them.
+        The caller rounds, at its own boundary (ADR 0005).
+        """
+        if self.bond is not None:
+            return self.bond.value_of(quantity, price)
+        return price * quantity * self.contract_size
+
+    def price_of(self, quantity: Decimal, value: Decimal) -> Decimal:
+        """The price at which *quantity* is worth *value*: :meth:`value_of` inverted."""
+        if self.bond is not None:
+            return self.bond.price_of(quantity, value)
+        return value / (quantity * self.contract_size)
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,6 +327,23 @@ class PriceAcceptance:
 # ── Ledger ───────────────────────────────────────────────────────────────────
 
 
+#: Income accrued from its entitlement date to its pay-date (PORT-GIPS-A06).
+#: A coupon's entitlement date is the scheduled coupon date it pays, held in
+#: ``ex_date``: between the two it is a receivable, and the bond accrues the
+#: next period from its schedule (ADR 0041 §3). Interest on cash is
+#: recognised when paid, which A06 permits.
+ACCRUED_FROM_EX_DATE: frozenset[TransactionType] = frozenset(
+    {
+        TransactionType.COUPON,
+        TransactionType.DIVIDEND,
+        TransactionType.DIVIDEND_REINVEST,
+        TransactionType.RETURN_OF_CAPITAL,
+        TransactionType.CAPITAL_GAIN_LT,
+        TransactionType.CAPITAL_GAIN_ST,
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class Transaction:
     """An immutable ledger event.
@@ -313,6 +373,10 @@ class Transaction:
     #: PORT-GIPS-D01. NULL where a fee is present is an error, enforced by the
     #: schema so it binds every writer.
     fee_class: FeeClass | None = None
+    #: ADR 0041 §2. The interest accrued to settlement that a bond trade pays
+    #: or receives, signed like cash. In ``net_cash_effect``; never in basis
+    #: or proceeds -- it is a receivable bought or sold, not the bond.
+    accrued_interest: Decimal | None = None
     position_id: int | None = None
     #: The other side of a transfer. ONE transaction with two sides, so that
     #: portfolio-level netting is structural rather than a matching heuristic
@@ -372,6 +436,28 @@ class Transaction:
         """The ledger's total order. See the class docstring."""
         return (self.trade_date, self.seq, self.txn_id)
 
+    @property
+    def accrues_from(self) -> date | None:
+        """The ex-date, when this row is income accrued before it is paid.
+
+        A distribution is entitled on its ex-date and paid on its pay-date,
+        the row's trade date. Between the two it is a receivable in market
+        value (``PORT-GIPS-A06``, ADR 0040 §13.2), so a snapshot dated before
+        the row depends on it. None for every other row, and for one whose
+        ex-date is its pay-date. A coupon's ex-date is the scheduled date it
+        pays (ADR 0041 §3).
+        """
+        if self.txn_type not in ACCRUED_FROM_EX_DATE:
+            return None
+        if self.ex_date is None or self.ex_date >= self.trade_date:
+            return None
+        return self.ex_date
+
+    @property
+    def values_from(self) -> date:
+        """The first snapshot date this row changes: its ex-date if it accrues."""
+        return self.accrues_from or self.trade_date
+
 
 # ── Positions and lots ───────────────────────────────────────────────────────
 
@@ -386,6 +472,8 @@ class PositionLeg:
     role: LegRole
     #: +1 long, -1 short.
     sign: int
+    #: Unsigned, as its lots' quantities are (invariant 5). The direction is
+    #: `sign`; :attr:`signed_quantity` combines them.
     quantity: Decimal
     opened_date: date
     closed_date: date | None = None
@@ -393,6 +481,15 @@ class PositionLeg:
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)
+
+    @property
+    def signed_quantity(self) -> Decimal:
+        """The quantity with its direction: negative for a short leg. ADR 0038.
+
+        Everything that values or compares a holding reads this. Reading
+        :attr:`quantity` there counted a short position as an asset.
+        """
+        return Decimal(0) - self.quantity if self.sign < 0 else self.quantity
 
 
 @dataclass(frozen=True, slots=True)
@@ -556,9 +653,15 @@ class LotDisposition:
     days_held: int
     relief_method: ReliefMethod
     allocated_fees: Decimal = Decimal("0.00")
-    #: v0.2. Until wash-sale detection lands this is always None, and the tax
-    #: report says on its face that it does not account for wash sales.
+    #: ADR 0037. The part of this loss a wash sale disallows, deferred into a
+    #: taxable replacement or lost to a sheltered one. None when no
+    #: replacement disallows any of it.
     wash_sale_deferred: Decimal | None = None
+
+    @property
+    def allowed_gain(self) -> Decimal:
+        """The gain the estimate is taken on: the loss less what is disallowed."""
+        return self.realized_gain + (self.wash_sale_deferred or Decimal("0.00"))
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)
@@ -599,9 +702,53 @@ class RealizedGain:
     #: provenance cannot disclose one without going back for the other, and the
     #: one that gets skipped is always the provenance.
     basis_source: BasisSource = BasisSource.DERIVED
+    #: ADR 0037. The Form 8949 adjustment, code W: the part of a loss a wash
+    #: sale disallows. Zero when none does. `gain` stays proceeds less basis.
+    wash_sale_disallowed: Decimal = Decimal("0.00")
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)
+
+    @property
+    def allowed_gain(self) -> Decimal:
+        """The gain after the wash-sale adjustment: what is reported as taxed."""
+        return self.gain + self.wash_sale_disallowed
+
+
+@dataclass(frozen=True, slots=True)
+class WashSale:
+    """One pairing of a sold lot's loss with the shares that disallow it. ADR 0037.
+
+    Derived, by replay. The sold lot and the replacement are named by their
+    lineage keys (ADR 0036), which no rebuild changes.
+    """
+
+    disposition_id: int
+    txn_id: int
+    account_id: int
+    sold_lot_key: str
+    sale_date: date
+    replacement_lot_key: str
+    replacement_date: date
+    quantity: Decimal
+    disallowed: Decimal
+    status: WashSaleStatus
+    days_absorbed: int
+    wash_sale_id: int | None = None
+
+    def __post_init__(self) -> None:
+        check_decimal_fields(self)
+
+
+@dataclass(frozen=True, slots=True)
+class InstrumentEquivalence:
+    """Two instruments the owner declared substantially identical. ADR 0037."""
+
+    instrument_a_id: int
+    instrument_b_id: int
+    reason: str
+    created_at: str
+    equivalence_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -680,6 +827,10 @@ class CashFlow:
     amount: Decimal
     is_large: bool = False
     is_in_kind: bool = False
+    #: The level the flow is external at (ADR 0007). A snapshot records both:
+    #: the time-weighted return times each flow by its sign, so a portfolio
+    #: return needs the portfolio's flows one by one, not their sum (ADR 0040).
+    level: FlowLevel = FlowLevel.ACCOUNT
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)

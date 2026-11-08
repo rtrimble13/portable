@@ -124,9 +124,12 @@ funds and delisted symbols, which benchmark — are the owner's to answer first.
 
 Then:
 
-1. **Daily time-weighted return engine** — chain-linked sub-period returns from
+1. **Daily time-weighted return engine** — *done*: `pert twr`. Chain-linked sub-period returns from
    `valuation_snapshot`, Modified Dietz as the gap-day fallback, method recorded
-   on every result. `PORT-GIPS-B01`–`B07`. Note the 2020 provisions specify the
+   on every result. `PORT-GIPS-B01`–`B07`. Designed in
+   [ADR 0040](adr/0040-time-weighted-return.md), accepted: three snapshot
+   prerequisites in `pt` come first (accrued interest, dividends accrued
+   from the ex-date, the day's income and fees). Note the 2020 provisions specify the
    required *outcome* and never name a method: cite the archived 2011 Guidance
    Statement on Calculation Methodology for the formula, not a provision number.
 2. **Money-weighted return (XIRR)** — annualized since-inception, daily external
@@ -153,8 +156,10 @@ Then:
 9. **Tearsheet** — modelled on a GIPS Asset Owner Report, with a generated
    disclosure block.
 
-**Also v0.2, and P0:** wash-sale detection. Until it lands, `pt tax` states on
-its face that it does not account for wash sales.
+**Also v0.2, and P0:** wash-sale detection. Built in ADR 0037: losses paired
+with replacements across every account, in replay. Not detected, and listed on
+every tax report: options, undeclared substantially identical securities,
+in-kind lots and short sales.
 
 ---
 

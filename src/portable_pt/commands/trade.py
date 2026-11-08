@@ -76,6 +76,7 @@ def _trade(
     note: str | None,
     ref: str | None,
     settlement: str | None,
+    accrued_interest: str | None = None,
 ) -> None:
     def action() -> CommandResult:
         ctx = state.with_portfolio()
@@ -112,6 +113,11 @@ def _trade(
                 settlement_date=resolve_date(settlement, ctx, what="--settlement")
                 if settlement
                 else None,
+                accrued_interest=(
+                    money_arg(accrued_interest, what="--accrued-interest")
+                    if accrued_interest is not None
+                    else None
+                ),
                 note=note,
                 external_ref=ref,
             )
@@ -131,7 +137,7 @@ def _trade(
             **result.data,
             "txn_id": committed.transaction.txn_id,
         }
-        warnings = result.warnings
+        warnings = (*result.warnings, *committed.notices)
         if committed.rebuilt:
             # A back-dated entry sorts before rows already applied, so derived
             # state was replayed from the ledger rather than extended. Worth
@@ -215,13 +221,21 @@ def _plan_result(
     txn_type: TransactionType, symbol: str, plan: TradePlan, portfolio: str | None
 ) -> CommandResult:
     table = None
+    # ADR 0038. A short lot holds what the short sale received, so a cover
+    # relieves proceeds, and its own cost is the basis. Labelling the relieved
+    # credit "basis" would be the inversion that fix removed, in the output.
+    covering = txn_type is TransactionType.BUY_TO_COVER
     if plan.relief_plan is not None:
         table = Table(
             columns=(
                 Column("lot_id", "Lot", ColumnKind.INTEGER),
-                Column("open_date", "Acquired", ColumnKind.DATE),
+                Column("open_date", "Opened" if covering else "Acquired", ColumnKind.DATE),
                 Column("quantity", "Qty", ColumnKind.QUANTITY),
-                Column("basis", "Basis Relieved", ColumnKind.MONEY),
+                Column(
+                    "basis",
+                    "Proceeds Relieved" if covering else "Basis Relieved",
+                    ColumnKind.MONEY,
+                ),
                 Column("holding_period", "Holding", ColumnKind.TEXT),
                 Column("days_held", "Days", ColumnKind.INTEGER),
             ),
@@ -254,10 +268,17 @@ def _plan_result(
             "fees": plan.intent.fees,
             "commissions": plan.intent.commissions,
             "net_cash_effect": plan.net_cash_effect,
+            "accrued_interest": plan.transaction.accrued_interest,
             "trade_date": plan.intent.trade_date.isoformat(),
             "account": plan.intent.account.name,
             **(
                 {
+                    "short_proceeds_relieved": plan.relief_plan.total_basis,
+                    "cost_basis": -plan.net_cash_effect,
+                    "relief_method": str(plan.relief_plan.method),
+                }
+                if plan.relief_plan and covering
+                else {
                     "cost_basis_relieved": plan.relief_plan.total_basis,
                     "relief_method": str(plan.relief_plan.method),
                 }
@@ -296,6 +317,17 @@ def make_trade_command(txn_type: TransactionType, help_text: str) -> Callable[..
         note: Annotated[str | None, typer.Option("--note")] = None,
         ref: RefOpt = None,
         settlement: Annotated[str | None, typer.Option("--settlement")] = None,
+        accrued_interest: Annotated[
+            str | None,
+            typer.Option(
+                "--accrued-interest",
+                help=(
+                    "A bond trade only, and required on one: the interest accrued to "
+                    "settlement, as the confirm states it. Paid on a buy, received on a "
+                    "sale; not basis and not proceeds (ADR 0041)."
+                ),
+            ),
+        ] = None,
     ) -> None:
         _trade(
             txn_type,
@@ -314,6 +346,7 @@ def make_trade_command(txn_type: TransactionType, help_text: str) -> Callable[..
             note=note,
             ref=ref,
             settlement=settlement,
+            accrued_interest=accrued_interest,
         )
 
     command.__doc__ = help_text

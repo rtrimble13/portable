@@ -786,3 +786,23 @@ def test_migration_0009_keeps_every_config_row_and_admits_a_correction(
             "created_at) VALUES ('2024-01-01', 'amount', '1', 'x')"
         )
     con.close()
+
+
+def test_migration_0012_adds_accrued_interest_and_keeps_the_ledger_sealed(
+    tmp_path: Path,
+) -> None:
+    """ADR 0041 §2. Additive: every row as it was, the new column empty, and
+    the append-only triggers still binding it as they bind every column."""
+    con = _at(tmp_path / "p.port", 11)
+    _seed(con)
+    before = [tuple(r) for r in con.execute('SELECT * FROM "transaction" ORDER BY txn_id')]
+
+    M._apply(con, next(m for m in M.available_migrations() if m.version == 12))
+
+    assert M.schema_version(con) == 12
+    after = [tuple(r) for r in con.execute('SELECT * FROM "transaction" ORDER BY txn_id')]
+    assert [row[:-1] for row in after] == before, "every row, every column, as it was"
+    assert all(row[-1] is None for row in after)
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        con.execute("UPDATE \"transaction\" SET accrued_interest = '1.00' WHERE txn_id = 1")
+    con.close()

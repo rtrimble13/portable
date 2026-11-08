@@ -193,10 +193,11 @@ pt tax --year 2025
 ```
 
 Read the disclaimer at the bottom. It is not boilerplate: it says what the
-estimate does not model, and it says plainly that **this report does not account
-for wash sales**. That matters because the 30-day window spans *all* of your
-accounts, including IRAs. Detection lands in v0.2; until then the report says so
-on its face and you cannot turn it off.
+estimate does not model, and it says what **wash-sale detection does not cover**.
+That matters because the 30-day window spans *all* of your accounts, including
+IRAs. Wash sales are applied for the same instrument and for instruments you
+declare substantially identical. The report lists what it does not detect, on its
+face, and you cannot turn that off.
 
 ---
 
@@ -320,8 +321,8 @@ pt --port examples/sample.port lot list --as-of 2025-06-30
 ```
 
 `examples/sample.port` is generated, not hand-made — `make fixtures` rebuilds
-it. One hundred transactions across three accounts and five years, including a
-split, a spinoff, a covered call written and assigned, a bond bought between
+it. A hundred and one transactions across three accounts and five years, including a
+split, a spinoff, a covered call written and left to expire, a bond bought between
 coupons, a large cash flow, an inter-account transfer, a reversed trade, and a
 mid-history tax rate change.
 

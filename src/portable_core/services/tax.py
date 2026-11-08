@@ -7,7 +7,8 @@ ADR 0011 draws the line this module lives on, and the line is the point:
 * **Estimated** -- the liability itself, computed as gain times the account's
   effective-dated rate for the holding period at disposition. Deliberately
   naive, and labelled.
-* **Refused** -- a missing rate schedule, and anything wash-sale-dependent.
+* **Refused** -- a missing rate schedule. Wash sales are applied as ADR 0037
+  decides, and what they do not cover is stated on every report.
 
 The estimate does **not** model bracket progressivity, the capital-loss
 limitation or its carryforward, the $3,000 ordinary offset, qualified-dividend
@@ -25,13 +26,18 @@ from decimal import Decimal
 from typing import Final
 
 from portable_core.decimals import money_context, quantize_money
-from portable_core.disclaimer import TAX_DISCLAIMER
-from portable_core.domain.enums import AccountType, BasisSource, HoldingPeriod
+from portable_core.disclaimer import (
+    TAX_DISCLAIMER,
+    WASH_SALES_DETECTED,
+    WASH_SALES_NOT_DETECTED,
+)
+from portable_core.domain.enums import AccountType, BasisSource, HoldingPeriod, WashSaleStatus
 from portable_core.domain.models import (
     Account,
     LotDisposition,
     RealizedGain,
     TaxRateSchedule,
+    WashSale,
 )
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import E_TAX_NO_RATE_SCHEDULE
@@ -116,8 +122,17 @@ class TaxSummary:
     non_taxable_accounts: tuple[str, ...] = ()
     #: Always present. Not suppressible. ADR 0011.
     disclaimer: str = TAX_DISCLAIMER
-    #: True while wash-sale detection is unimplemented (v0.2).
-    excludes_wash_sales: bool = True
+    #: ADR 0037. What wash-sale detection covered, and what it did not. Both
+    #: always present: the second is the statement a report must not drop.
+    wash_sales_detected: tuple[str, ...] = WASH_SALES_DETECTED
+    wash_sales_not_detected: tuple[str, ...] = WASH_SALES_NOT_DETECTED
+    #: Losses disallowed in the year, and the part of them lost for good to a
+    #: sheltered replacement (Rev. Rul. 2008-5).
+    wash_sale_disallowed: Decimal = ZERO
+    wash_sale_permanent: Decimal = ZERO
+    #: Pairings whose replacement was disposed of before the loss sale. Not
+    #: applied to any figure; the year is incomplete while any is listed.
+    wash_sales_manual: tuple[WashSale, ...] = ()
     #: Every rung of ADR 0017's ladder present in the period, with what rests
     #: on it. A report where every basis is exact and one where a sixth is
     #: reconstructed must not look identical, because the reader's next action
@@ -144,8 +159,12 @@ class TaxSummary:
         disclosed as incomplete, never rendered as though it were whole.
         `CLAUDE.md`'s rule that blank and zero must never mean the same thing,
         one level up.
+
+        False too while a wash-sale pairing is reported for manual handling
+        (ADR 0037, answer 1): the loss it concerns is in the totals as allowed,
+        and may not be.
         """
-        return not self.unreportable
+        return not self.unreportable and not self.wash_sales_manual
 
     @property
     def approximate_basis(self) -> Decimal:
@@ -235,6 +254,7 @@ class TaxEngine:
                 cost_basis=disposition.cost_basis_relieved,
                 gain=disposition.realized_gain,
                 is_taxable=False,
+                wash_sale_disallowed=disposition.wash_sale_deferred or ZERO,
             )
 
         schedule = self.rate_in_force(
@@ -253,7 +273,9 @@ class TaxEngine:
             # `portable` cannot see the capital-loss limitation or any
             # carryforward (ADR 0011).
             rate = federal + schedule.state + schedule.niit
-            estimated = quantize_money(disposition.realized_gain * rate)
+            # ADR 0037: on the ALLOWED gain. A loss a wash sale disallows is
+            # not a deduction this year, whatever becomes of it later.
+            estimated = quantize_money(disposition.allowed_gain * rate)
 
         return RealizedGain(
             disposition_id=disposition.disposition_id,
@@ -266,6 +288,7 @@ class TaxEngine:
             cost_basis=disposition.cost_basis_relieved,
             gain=disposition.realized_gain,
             is_taxable=True,
+            wash_sale_disallowed=disposition.wash_sale_deferred or ZERO,
             rate_id=schedule.rate_id,
             federal_rate=federal,
             state_rate=schedule.state,
@@ -279,6 +302,7 @@ class TaxEngine:
         tax_year: int,
         *,
         non_taxable_accounts: tuple[str, ...] = (),
+        wash_sales: tuple[WashSale, ...] = (),
     ) -> TaxSummary:
         """Aggregate realized gains into a Schedule-D-shaped summary.
 
@@ -303,11 +327,14 @@ class TaxEngine:
         in_year = reportable
 
         with money_context():
+            # ADR 0037: the allowed gain, as Schedule D totals column (h).
             short_gain = sum(
-                (g.gain for g in in_year if g.holding_period is HoldingPeriod.SHORT), ZERO
+                (g.allowed_gain for g in in_year if g.holding_period is HoldingPeriod.SHORT),
+                ZERO,
             )
             long_gain = sum(
-                (g.gain for g in in_year if g.holding_period is HoldingPeriod.LONG), ZERO
+                (g.allowed_gain for g in in_year if g.holding_period is HoldingPeriod.LONG),
+                ZERO,
             )
             short_tax = sum(
                 (
@@ -327,6 +354,18 @@ class TaxEngine:
             )
             proceeds = sum((g.proceeds for g in in_year), ZERO)
             basis = sum((g.cost_basis for g in in_year), ZERO)
+            # ADR 0037. What wash sales disallowed in the reported totals, and
+            # the part a sheltered replacement took for good.
+            disallowed = sum((g.wash_sale_disallowed for g in in_year), ZERO)
+            reported = {g.disposition_id for g in in_year}
+            permanent = sum(
+                (
+                    w.disallowed
+                    for w in wash_sales
+                    if w.status is WashSaleStatus.PERMANENT and w.disposition_id in reported
+                ),
+                ZERO,
+            )
 
         return TaxSummary(
             tax_year=tax_year,
@@ -355,6 +394,9 @@ class TaxEngine:
                 )
                 for g in unreportable
             ),
+            wash_sale_disallowed=disallowed,
+            wash_sale_permanent=permanent,
+            wash_sales_manual=tuple(w for w in wash_sales if w.status is WashSaleStatus.MANUAL),
         )
 
     @staticmethod

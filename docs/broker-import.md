@@ -231,6 +231,15 @@ and the tax through the same services a typed command uses, so every refusal
 that guards hand entry guards an import too rather than an importer growing a
 second, laxer path into the ledger.
 
+**A bond trade states its accrued interest** in `accrued_interest`: the
+interest accrued to settlement, as the confirm gives it, paid on a buy and
+received on a sale (ADR 0041). It is required on a coupon bond, as it is from
+the command line. A bond's `quantity` is its face amount and its `price` is
+read through the instrument's quote basis. Bonds are added by hand, because
+identity through `duk` does not classify them. The activity mapping grammar
+has no accrued-interest field yet, so a bond trade from a custodian export is
+refused at the batch until the row states it.
+
 **Format version 1 carries trades, cash and income** — the types with a service
 behind them. Corporate actions and the options lifecycle are refused by name
 rather than half-supported: they need position context a typed command gathers
@@ -657,8 +666,12 @@ An import is accepted when it reconciles, not when it parses.
    nothing (a sweep redemption) is shown, not a break. A break with the lots
    agreeing is a basis the custodian adjusted and the activity export never
    showed — a distribution reclassified as return of capital is the usual
-   one — and is the owner's to record with `pt income roc`, not the importer's
-   to infer.
+   one — and is the owner's to record, not the importer's to infer. The
+   distribution's cash is usually already in the ledger as a dividend, so a
+   reclassification is two rows: `pt trade reverse` on the dividend, and
+   `pt income roc` with its ex-date and pay-date, which reduces the basis of
+   the shares held before the ex-date (ADR 0039). Recording the return of
+   capital alone would count the cash twice.
 3. `pt validate` passes — which, after ADR 0016, means stored derived state
    actually equals replayed state.
 4. `pt export` → `pt import` → `pt export` is byte-identical.
@@ -718,7 +731,9 @@ at the end.
 
 **Open.**
 
-- **Wash sales are not detected** until `v0.2`; `pt tax` says so on its face.
+- **Wash sales** are detected across accounts (ADR 0037). Lots seeded from a
+  custodian's basis are listed as candidates, not matched, because that basis may
+  already carry the custodian's own adjustment.
 
 ---
 

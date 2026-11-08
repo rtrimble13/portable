@@ -1,0 +1,24 @@
+-- The accrued interest a bond trade exchanges. ADR 0041 §2, accepted by the
+-- owner on 2026-11-08.
+--
+-- A buyer between coupons pays the seller the interest accrued to
+-- settlement; a seller receives it. That is not basis and not proceeds
+-- (CLAUDE.md, "Accrued interest is part of market value"): it is a
+-- receivable bought or sold, which the next coupon repays. The ledger had
+-- nowhere to put it. A buy's cash debit came up short by it, the coupon
+-- that repaid it was counted as income in full, and a snapshot accruing
+-- interest would have read the purchase as a gain.
+--
+-- Signed like cash: negative paid, positive received. Stated as the
+-- custodian's confirm gives it, never computed: it runs to settlement, which
+-- differs by market and date. Required on a buy or sale of a coupon bond,
+-- refused on anything else; the trading service says so, because the rule
+-- depends on the instrument and a CHECK here cannot see it.
+--
+-- Additive: a nullable column. No rebuild, and the append-only triggers are
+-- untouched. No existing row is a bond trade that stated one.
+
+-- Interest accrued to settlement and exchanged with a bond trade, signed
+-- like cash: negative paid, positive received. In net_cash_effect; never in
+-- basis or proceeds (ADR 0041).
+ALTER TABLE "transaction" ADD COLUMN accrued_interest TEXT;  -- decimal

@@ -178,6 +178,9 @@ class BatchRow:
     fee_class: FeeClass | None = None
     taxes_withheld: Decimal = ZERO
     withholding_reclaimable: Decimal | None = None
+    #: ADR 0041 §2, on a bond trade only: the interest accrued to settlement it
+    #: exchanged, as the confirm states it. A magnitude; the side is the trade's.
+    accrued_interest: Decimal | None = None
     counter_account: str | None = None
     #: How a closing trade relieves lots. Stated in the batch rather than left
     #: to the account default, because ADR 0017 §2a solved the seeded basis
@@ -346,6 +349,7 @@ def _row_json(row: BatchRow) -> dict[str, Any]:
         "fee_class": str(row.fee_class) if row.fee_class else None,
         "taxes_withheld": _text(row.taxes_withheld) if row.taxes_withheld else None,
         "withholding_reclaimable": _text(row.withholding_reclaimable),
+        "accrued_interest": _text(row.accrued_interest),
         "counter_account": row.counter_account,
         "relief_method": str(row.relief_method) if row.relief_method else None,
         "lots": [
@@ -522,6 +526,9 @@ def _row(raw: Any, index: int) -> BatchRow:
             raw.get("withholding_reclaimable"),
             index=index,
             field_name="withholding_reclaimable",
+        ),
+        accrued_interest=_decimal(
+            raw.get("accrued_interest"), index=index, field_name="accrued_interest"
         ),
         counter_account=raw.get("counter_account") or None,
         ex_date=_date(raw.get("ex_date"), index=index, field_name="ex_date"),
@@ -752,6 +759,7 @@ class BatchImporter:
                 relief_method=ReliefMethod.SPEC if selection else row.relief_method,
                 lot_selection=selection,
                 settlement_date=row.settlement_date,
+                accrued_interest=row.accrued_interest,
                 note=row.note,
                 external_ref=row.external_ref,
                 source=TransactionSource.IMPORT,

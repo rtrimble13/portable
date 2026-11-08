@@ -91,6 +91,10 @@ E_INSTRUMENT_NOT_FOUND: Final = "PT-E-INSTRUMENT-NOT-FOUND"
 E_INSTRUMENT_AMBIGUOUS: Final = "PT-E-INSTRUMENT-AMBIGUOUS"
 E_POSITION_NOT_FOUND: Final = "PT-E-POSITION-NOT-FOUND"
 E_POSITION_CLOSED: Final = "PT-E-POSITION-CLOSED"
+#: ADR 0038. Opening one direction in an account that holds the other: a
+#: short sale against a long holding (a constructive sale, IRC §1259), or a
+#: buy against a short one (a cover).
+E_POSITION_DIRECTION: Final = "PT-E-POSITION-DIRECTION"
 
 E_LOT_UNMATCHED: Final = "PT-E-LOT-UNMATCHED"
 E_LOT_INSUFFICIENT: Final = "PT-E-LOT-INSUFFICIENT"
@@ -98,8 +102,31 @@ E_LOT_SELECTION_INVALID: Final = "PT-E-LOT-SELECTION-INVALID"
 #: ADR 0036. A designation written before schema 10 names lot ids, and its
 #: meaning has not been recorded or not yet decided by the owner.
 E_LOT_DESIGNATION_UNRESOLVED: Final = "PT-E-LOT-DESIGNATION-UNRESOLVED"
+#: ADR 0037, answer 2. A designation written before a wash-sale split divided
+#: the lot it names: which of the parts was meant is the owner's to say.
+E_LOT_DESIGNATION_DIVIDED: Final = "PT-E-LOT-DESIGNATION-DIVIDED"
 #: ADR 0036. A recorded designation is decided once and never changed.
 E_DESIGNATION_IMMUTABLE: Final = "PT-E-DESIGNATION-IMMUTABLE"
+#: ADR 0038. An option event `portable` cannot yet treat correctly, refused
+#: rather than approximated: a long put's exercise.
+E_OPTION_UNSUPPORTED: Final = "PT-E-OPTION-UNSUPPORTED"
+#: ADR 0041. A short position in a bond, which nothing here models.
+E_BOND_UNSUPPORTED: Final = "PT-E-BOND-UNSUPPORTED"
+#: ADR 0041 §1. A bond quantity that is not a whole number of bonds.
+E_BOND_DENOMINATION: Final = "PT-E-BOND-DENOMINATION"
+#: ADR 0041 §2. A bond trade that does not state the accrued interest it exchanges.
+E_ACCRUED_INTEREST_REQUIRED: Final = "PT-E-ACCRUED-INTEREST-REQUIRED"
+#: ADR 0041 §3. A bond whose accrued interest cannot be computed on a date.
+E_ACCRUAL_UNAVAILABLE: Final = "PT-E-ACCRUAL-UNAVAILABLE"
+#: ADR 0041 §3. A coupon a bond was held for, which no ledger row records.
+E_COUPON_UNRECORDED: Final = "PT-E-COUPON-UNRECORDED"
+#: ADR 0038. An option lifecycle row whose shape replay cannot derive from:
+#: an assignment recorded on the underlier, as rows were before ADR 0038.
+E_OPTION_ROW_INVALID: Final = "PT-E-OPTION-ROW-INVALID"
+#: ADR 0039. A return of capital whose entitled shares cannot be settled from
+#: the ledger: none held before its ex-date, or some disposed of between its
+#: ex-date and its pay-date.
+E_ROC_ENTITLEMENT: Final = "PT-E-ROC-ENTITLEMENT"
 E_TAX_METHOD_CONFLICT: Final = "PT-E-TAX-METHOD-CONFLICT"
 E_TAX_NO_RATE_SCHEDULE: Final = "PT-E-TAX-NO-RATE-SCHEDULE"
 
@@ -114,6 +141,16 @@ E_REPLAY_MISMATCH: Final = "PT-E-REPLAY-MISMATCH"
 #: A stored valuation snapshot that no longer re-derives from the ledger and
 #: the prices it recorded. The remedy is `pt value`, not `pt rebuild` (ADR 0024).
 E_SNAPSHOT_STALE: Final = "PT-E-SNAPSHOT-STALE"
+#: ADR 0040 §2. A day a return needs has no stored valuation snapshot.
+E_SNAPSHOT_MISSING: Final = "PT-E-SNAPSHOT-MISSING"
+#: ADR 0040 §4. A sub-period whose denominator is not positive.
+E_RETURN_UNDEFINED: Final = "PT-E-RETURN-UNDEFINED"
+#: ADR 0031, ADR 0040. An unresolved statement line blocks returns from its date.
+E_RETURN_BLOCKED: Final = "PT-E-RETURN-BLOCKED"
+#: ADR 0040 §12. A trade for cash in an instrument valued at zero.
+E_RETURN_UNPRICED_TRADE: Final = "PT-E-RETURN-UNPRICED-TRADE"
+#: ADR 0040 §8, PORT-GIPS-D05. A cash fee classed as a fund's embedded expense.
+E_FEE_EMBEDDED_IN_CASH: Final = "PT-E-FEE-EMBEDDED-IN-CASH"
 #: An effective-dated config row that would change a figure already recorded,
 #: offered without `--restate` (ADR 0025).
 E_RESTATES_HISTORY: Final = "PT-E-RESTATES-HISTORY"
@@ -144,6 +181,8 @@ E_GIPS_ANNUALIZE_SUB_YEAR: Final = "PT-E-GIPS-ANNUALIZE-SUB-YEAR"
 E_GIPS_MWR_ALONE: Final = "PT-E-GIPS-MWR-ALONE"
 E_GIPS_ADJUSTED_PRICE: Final = "PT-E-GIPS-ADJUSTED-PRICE"
 E_GIPS_THEORETICAL_LINK: Final = "PT-E-GIPS-THEORETICAL-LINK"
+#: ADR 0040 §6, PORT-GIPS-A03, B03. A gap Modified Dietz may not bridge.
+E_GIPS_VALUATION_GAP: Final = "PT-E-GIPS-VALUATION-GAP"
 
 #: Every code above, for `pt introspect` and for the uniqueness test.
 ERROR_CODES: Final[tuple[str, ...]] = (
@@ -163,11 +202,21 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_INSTRUMENT_AMBIGUOUS,
     E_POSITION_NOT_FOUND,
     E_POSITION_CLOSED,
+    E_POSITION_DIRECTION,
     E_LOT_UNMATCHED,
     E_LOT_INSUFFICIENT,
     E_LOT_SELECTION_INVALID,
     E_LOT_DESIGNATION_UNRESOLVED,
+    E_LOT_DESIGNATION_DIVIDED,
     E_DESIGNATION_IMMUTABLE,
+    E_OPTION_UNSUPPORTED,
+    E_BOND_UNSUPPORTED,
+    E_BOND_DENOMINATION,
+    E_ACCRUED_INTEREST_REQUIRED,
+    E_ACCRUAL_UNAVAILABLE,
+    E_COUPON_UNRECORDED,
+    E_OPTION_ROW_INVALID,
+    E_ROC_ENTITLEMENT,
     E_TAX_METHOD_CONFLICT,
     E_TAX_NO_RATE_SCHEDULE,
     E_CASH_INSUFFICIENT,
@@ -179,6 +228,11 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_INVARIANT_BROKEN,
     E_REPLAY_MISMATCH,
     E_SNAPSHOT_STALE,
+    E_SNAPSHOT_MISSING,
+    E_RETURN_UNDEFINED,
+    E_RETURN_BLOCKED,
+    E_RETURN_UNPRICED_TRADE,
+    E_FEE_EMBEDDED_IN_CASH,
     E_RESTATES_HISTORY,
     E_PRICE_MISSING,
     E_PRICE_STALE,
@@ -199,4 +253,5 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_GIPS_MWR_ALONE,
     E_GIPS_ADJUSTED_PRICE,
     E_GIPS_THEORETICAL_LINK,
+    E_GIPS_VALUATION_GAP,
 )

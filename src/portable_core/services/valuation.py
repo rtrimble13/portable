@@ -24,13 +24,14 @@ What is deliberate rather than incidental:
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
 
 from portable_core.decimals import money_context, quantize_money
-from portable_core.domain.dates import accrual_fraction
-from portable_core.domain.enums import CashTreatment, FlowLevel
+from portable_core.domain import bonds
+from portable_core.domain.enums import CashTreatment, FlowClassification, FlowLevel
 from portable_core.domain.models import (
     Account,
     CashFlow,
@@ -42,10 +43,15 @@ from portable_core.domain.models import (
     ValuationSnapshot,
 )
 from portable_core.errors import DataUnavailableError
-from portable_core.errors.kinds import E_PRICE_MISSING, E_PRICE_STALE
+from portable_core.errors.kinds import (
+    E_ACCRUAL_UNAVAILABLE,
+    E_COUPON_UNRECORDED,
+    E_PRICE_MISSING,
+    E_PRICE_STALE,
+)
 from portable_core.services import cash_flow
 
-__all__ = ["Holding", "ValuationEngine"]
+__all__ = ["Holding", "ValuationEngine", "is_accruing", "receivable"]
 
 ZERO = Decimal("0.00")
 
@@ -56,11 +62,30 @@ class Holding:
 
     instrument: Instrument
     quantity: Decimal
-    #: For bonds: the last coupon paid on or before the valuation date, and the
-    #: next one due. Needed for accrued interest, which is part of market
-    #: value.
-    last_coupon_date: date | None = None
-    next_coupon_date: date | None = None
+    #: For a bond: the date its earliest open lot arrived in the account --
+    #: the opening row's date, not the lot's holding-period start, which an
+    #: in-kind lot carries back to the original purchase. A coupon dated after
+    #: it was paid to this account (ADR 0041 §3).
+    held_since: date | None = None
+
+
+def is_accruing(txn: Transaction, as_of: date) -> bool:
+    """Entitled by *as_of* and not yet paid: a receivable on that date."""
+    entitled = txn.accrues_from
+    return entitled is not None and entitled <= as_of < txn.trade_date
+
+
+def receivable(txn: Transaction) -> Decimal:
+    """What an accruing distribution will bring: gross, less tax withheld.
+
+    Withholding is known at the ex-date and never arrives, so accruing the
+    gross would put it in value until the pay-date and take it out then.
+    Reclaimable withholding is recovered later, if at all, and is not
+    accrued here (ADR 0040 §10 discloses it). A reinvested distribution
+    withholds nothing and brings its gross, in units.
+    """
+    with money_context():
+        return quantize_money((txn.gross_amount or ZERO) - txn.taxes_withheld)
 
 
 #: The source a snapshot records for a holding nothing quotes (ADR 0028).
@@ -152,7 +177,7 @@ class ValuationEngine:
 
         with money_context():
             market_value = quantize_money(
-                price.price * holding.quantity * holding.instrument.contract_size
+                holding.instrument.value_of(holding.quantity, price.price)
             )
 
         return SnapshotPrice(
@@ -182,20 +207,71 @@ class ValuationEngine:
         Accrual for interest-bearing instruments is *required* under
         Firms 2.A.10 / AO 22.A.7 -- not merely recommended, which is the
         asymmetry with dividends worth keeping straight.
+
+        Accrued from the bond's coupon schedule to the valuation date
+        (``PORT-GIPS-A05``), on its face amount (ADR 0041 §3).
+
+        Raises:
+            DataUnavailableError: the date is in a first coupon period whose
+                start is not stored (``PT-E-ACCRUAL-UNAVAILABLE``). Nothing is
+                guessed: the snapshot is incomplete.
         """
         bond = holding.instrument.bond
-        if bond is None or bond.is_zero_coupon:
+        if bond is None:
             return ZERO
-        if holding.last_coupon_date is None or holding.next_coupon_date is None:
-            return ZERO
+        try:
+            return quantize_money(bonds.accrued_interest(bond, holding.quantity, as_of))
+        except bonds.OddFirstPeriod as odd:
+            raise DataUnavailableError(
+                f"cannot accrue interest on {holding.instrument.symbol} on "
+                f"{as_of.isoformat()}: {odd}",
+                code=E_ACCRUAL_UNAVAILABLE,
+                remedy=(
+                    "A first coupon period accrues from the bond's dated date, which "
+                    "portable does not store. Value the account from the first coupon "
+                    "on, or after the bond is gone."
+                ),
+                symbol=holding.instrument.symbol,
+                as_of=as_of.isoformat(),
+            ) from None
 
-        fraction = accrual_fraction(
-            holding.last_coupon_date, as_of, holding.next_coupon_date, bond.day_count
+    @staticmethod
+    def require_coupons_recorded(
+        holding: Holding, as_of: date, recorded: Collection[date]
+    ) -> None:
+        """The last scheduled coupon, if this account held the bond for it, is in the ledger.
+
+        A coupon is a receivable from its scheduled date until it is paid, and
+        it is in value as the row that records it (ADR 0041 §3). A coupon the
+        account was owed and that no row records is a missing ledger row, not a
+        market move: valued without it, the day reads as a loss of the coupon.
+        So the snapshot is incomplete until the row is entered, and entering it
+        removes the snapshots from the coupon date for valuing again.
+
+        Raises:
+            DataUnavailableError: ``PT-E-COUPON-UNRECORDED``.
+        """
+        bond = holding.instrument.bond
+        if bond is None or bond.is_zero_coupon or holding.held_since is None:
+            return
+        try:
+            period = bonds.coupon_period(bond, as_of)
+        except bonds.OddFirstPeriod:
+            return
+        if period is None or period.last <= holding.held_since or period.last in recorded:
+            return
+        raise DataUnavailableError(
+            f"the {period.last.isoformat()} coupon on {holding.instrument.symbol} is not "
+            "recorded",
+            code=E_COUPON_UNRECORDED,
+            remedy=(
+                f"Record it with `pt income coupon {holding.instrument.symbol} --pay-date "
+                "DATE --amount X`, as the custodian paid it. Entering it removes the "
+                "snapshots from the coupon date, to be valued again."
+            ),
+            symbol=holding.instrument.symbol,
+            coupon_date=period.last.isoformat(),
         )
-        with money_context():
-            annual = bond.face_value * bond.coupon_rate * holding.quantity
-            period = annual / Decimal(bond.coupon_frequency)
-            return quantize_money(period * fraction)
 
     @staticmethod
     def accrued_dividends(
@@ -214,19 +290,16 @@ class ValuationEngine:
         Note this is a **recommendation** (Firms 2.B.3), not a requirement, and
         must not be described as one. `portable` adopts it because the
         alternative moves return between periods for no reason.
+
+        *declared* is the account's income rows, from the ledger as it now
+        stands: a row is dated its pay-date, after the snapshot that accrues
+        it, so derived state at the snapshot's date does not hold it
+        (ADR 0040 §13.2). The amount accrued is what will arrive, gross less
+        tax withheld; see :func:`receivable`.
         """
         with money_context():
             return quantize_money(
-                sum(
-                    (
-                        t.gross_amount or ZERO
-                        for t in declared
-                        if t.ex_date is not None
-                        and t.ex_date <= as_of
-                        and (t.pay_date is None or t.pay_date > as_of)
-                    ),
-                    ZERO,
-                )
+                sum((receivable(t) for t in declared if is_accruing(t, as_of)), ZERO)
             )
 
     # ── snapshots ────────────────────────────────────────────────────────────
@@ -244,8 +317,6 @@ class ValuationEngine:
         beginning_market_value: Decimal = ZERO,
         transactions: list[Transaction] | None = None,
         policy: ReturnPolicy | None = None,
-        income_amount: Decimal = ZERO,
-        fees_amount: Decimal = ZERO,
         incomplete_symbols: tuple[str, ...] = (),
     ) -> ValuationSnapshot:
         """Assemble the snapshot for one account on one date.
@@ -284,6 +355,9 @@ class ValuationEngine:
             portfolio_value=beginning_market_value or ending,
         )
 
+        income_amount, fees_amount = self._income_and_fees(
+            transactions or [], as_of, account_id=account.account_id
+        )
         with money_context():
             account_flow = quantize_money(
                 sum((f.amount for f in flows[FlowLevel.ACCOUNT]), ZERO)
@@ -311,7 +385,7 @@ class ValuationEngine:
             is_complete=not incomplete_symbols,
             uses_estimates=any(p.is_estimate for p in priced),
             prices=tuple(priced),
-            flows=tuple(flows[FlowLevel.ACCOUNT]),
+            flows=(*flows[FlowLevel.ACCOUNT], *flows[FlowLevel.PORTFOLIO]),
         )
 
     @staticmethod
@@ -355,9 +429,38 @@ class ValuationEngine:
                             else False
                         ),
                         is_in_kind=classified.is_in_kind,
+                        level=level,
                     )
                 )
         return result
+
+    @staticmethod
+    def _income_and_fees(
+        transactions: list[Transaction], as_of: date, *, account_id: int
+    ) -> tuple[Decimal, Decimal]:
+        """The account's income paid and fees charged on *as_of*. ADR 0040 §13.3.
+
+        Informational, so that a stored zero means zero rather than "not
+        computed". Income is gross of withholding, on the day it is paid --
+        what the instrument paid, as ``gross_amount`` records it. Fees are
+        every row's ``fees + commissions``, whatever their class; margin
+        interest is a financing cost and carries neither. A transfer filed
+        here from the account it left is the other account's to charge.
+
+        Which return bases a fee reduces is answered from its class, by the
+        return engine, never from this total (``PORT-GIPS-D01``).
+        """
+        income = ZERO
+        fees = ZERO
+        with money_context():
+            for txn in transactions:
+                if txn.trade_date != as_of or txn.account_id != account_id:
+                    continue
+                classified = cash_flow.classify(txn, FlowLevel.ACCOUNT)
+                if classified.classification is FlowClassification.INCOME:
+                    income += txn.gross_amount or ZERO
+                fees += txn.fees + txn.commissions
+            return quantize_money(income), quantize_money(fees)
 
     @staticmethod
     def level5_percentage(snapshot: ValuationSnapshot) -> Decimal:

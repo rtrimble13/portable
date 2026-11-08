@@ -16,6 +16,147 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`pert twr`: the time-weighted return** (ADR 0040, accepted by the
+  owner). `pert` stops being a stub. It reads the snapshots `pt value`
+  stored, checks each one first, and writes nothing.
+  - **One formula.** Modified Dietz in calendar days, with an inflow counted
+    at the start of its day and an outflow at the end. Over one day that is
+    the exact daily return, so the funding day and a full withdrawal are both
+    defined. Across days that cannot be valued, it is the gap fallback
+    `PORT-GIPS-B06` permits. The method of every sub-period is on the result
+    (`PORT-GIPS-B05`), and the sub-periods link geometrically in a fixed
+    34-digit Decimal context (`PORT-GIPS-B04`).
+  - **Levels.** `--account` gives account level; the default is the
+    portfolio, where a transfer between the owner's accounts is no flow at
+    all (`PORT-GIPS-B02`). An account funded only by a transfer starts on
+    that transfer.
+  - **Bases.** Net-of-fees leads. Net-of-external-costs-only and
+    gross-of-fees sit beside it, shown once when equal, and net of all costs
+    is labelled supplemental (`PORT-GIPS-D01`). Each fee a basis does not
+    deduct is undone as an outflow at the end of its day, read from its
+    stored class. Margin interest is deducted at every basis whatever its
+    class. A cash fee classed as a fund's embedded expense is refused
+    (`PT-E-FEE-EMBEDDED-IN-CASH`, `PORT-GIPS-D05`).
+  - **Refusals, never a plausible number:**
+    - a day with no stored snapshot (`PT-E-SNAPSHOT-MISSING`, naming the
+      `pt value` that fills it);
+    - a snapshot that no longer re-derives (`PT-E-SNAPSHOT-STALE`);
+    - no return policy in force (`PT-E-GIPS-NO-FLOW-POLICY`);
+    - a gap across a month end or a large flow (`PT-E-GIPS-VALUATION-GAP`);
+    - an unresolved statement line (`PT-E-RETURN-BLOCKED`, ADR 0031);
+    - a cash trade in an instrument valued at zero
+      (`PT-E-RETURN-UNPRICED-TRADE`);
+    - a denominator that is not positive (`PT-E-RETURN-UNDEFINED`).
+  - **Output.** JSON validates against `schemas/twr-1.0.json`, with the
+    disclaimer as an envelope field. Returns are cumulative and never
+    annualized. The notes say whether the large-flow threshold bound, which
+    fees each basis deducts, and what was estimated, stale, at level 5 or
+    valued at zero. `--daily` emits every sub-period.
+- `portable_core.cli` gains `make_options` and `resolve_date`, which `pt`
+  and `pert` now share.
+- `pert` writes UTF-8 whatever the console's code page, as `pt` does
+  (`portable_core.cli.streams`). A report's disclaimer carries a `®`, which a
+  cp1252 console would otherwise write as a byte no UTF-8 reader accepts.
+
+- **Bonds are held at face, priced by their quote basis, and carry their
+  accrued interest** (ADR 0041, accepted by the owner). Before, the stored
+  quote basis was never read and every bond was valued at price × quantity.
+  A bond quoted at 99.50 percent of par was valued at 99.50 per unit of
+  quantity, whatever the unit was.
+  - **Quantity is face amount**, as custodians report it.
+    `Instrument.value_of` is the one product of a price and a quantity, used
+    by valuation, trades, replay, P&L and price acceptance. A bond quantity
+    that is not whole bonds is refused (`PT-E-BOND-DENOMINATION`).
+    `pt instrument add` takes `--quote-basis` and `--first-coupon`.
+  - **A bond trade states its accrued interest.** `--accrued-interest` on
+    `pt buy` and `pt sell`, and an `accrued_interest` column in the batch
+    format, are required on a coupon bond (`PT-E-ACCRUED-INTEREST-REQUIRED`).
+    The amount moves cash and is neither basis nor proceeds. With a
+    settlement date, a stated figure is checked against the one computed to
+    settlement. A short bond is refused (`PT-E-BOND-UNSUPPORTED`).
+  - **Snapshots accrue a bond's interest to their date**, from the schedule
+    stepped back from maturity. ACT/ACT is actual days over the coupon
+    period's actual days. A coupon is entitled on its scheduled date and is a
+    receivable until it is paid. `pt income coupon` records that date, by
+    default or with `--coupon-date`. A coupon the account was owed and that
+    no row records makes the snapshot incomplete (`PT-E-COUPON-UNRECORDED`).
+    So does a date inside a first coupon period, which starts from a dated
+    date that is not stored (`PT-E-ACCRUAL-UNAVAILABLE`).
+  - **The tax report says what it does not compute for bonds** in any year
+    one was held: premium amortization, market discount, OID, and coupon
+    interest with the purchased accrued interest that reduces it. This
+    appears in the footnotes and in a `bonds` field, null otherwise.
+  - **The sample fixture's bond** is now $50,000 of face at 101.24 percent
+    of par. It pays the 565.92 of accrued interest its purchase owed, and
+    every coupon it was owed through 2025-11-15. Before, it was 50 bonds at
+    a per-bond price under a percent-of-par label, held two of nine coupons,
+    and dated a first coupon that would have made 2021 an odd period.
+  - Not built: an `accrued_interest` field in the activity mapping grammar.
+    A bond trade from a custodian export is refused at the batch until it
+    states one.
+
+- **Snapshots record what the time-weighted return will read** (ADR 0040
+  §13, accepted by the owner). Stored snapshots made before this re-derive
+  differently, so `pt validate` names them, and `pt value` over their dates
+  values them again.
+  - **Dividends accrue from the ex-date** (`PORT-GIPS-A06`). A distribution
+    entitled and not yet paid is a receivable in ending value, at what will
+    arrive: gross less tax withheld. This covers dividends, reinvested
+    dividends, return of capital and capital-gain distributions. Before, the
+    price fell on the ex-date and the cash came on the pay-date, so a period
+    boundary between the two moved return from one period into the next.
+  - **Entering a distribution removes the stored snapshots from its
+    ex-date**, not its pay-date, because those are the snapshots that accrue
+    it.
+  - **`income_amount` and `fees_amount` are filled.** They hold the day's
+    income paid, gross of withholding, and its fees and commissions. They
+    were always `0.00`, which read as zero. Margin interest is a financing
+    cost and counts in neither.
+  - **Flows are stored at both levels.** `snapshot_flow` held account-level
+    flows only. A portfolio-level return weights each flow by its own sign,
+    which the day's portfolio total cannot give back.
+
+- **Wash sales are detected, across every account** (ADR 0037, accepted by
+  the owner with the recommended answers).
+  - **Matching.** Replay pairs each loss on a long lot in a taxable account
+    with replacement shares acquired within 30 days before or after it. A
+    replacement is a buy, a reinvestment, units taken, or stock acquired by an
+    option, in any account. Pairing happens when the later of the two rows is
+    applied, so a rebuild and a live entry agree.
+  - **Deferral.** The disallowed loss goes into the replacement's basis, and
+    the replacement's holding period absorbs the sold shares'. A replacement
+    in a sheltered account loses the loss for good (Rev. Rul. 2008-5), and
+    its purchase says so.
+  - **Lot keys.** Matched shares become their own lot, keyed
+    `<replacement>~<sale>.<sold lot>`, so nothing is renumbered.
+  - **Manual handling.** A replacement disposed of before the loss sale is
+    reported for manual handling, and its year is marked incomplete.
+  - **Notices.** A purchase that restates a past year says which year.
+- **A designation that a later wash-sale split divided is refused**
+  (`PT-E-LOT-DESIGNATION-DIVIDED`, ADR 0037 answer 2). The owner chose the
+  reversal route: the row is reversed and entered again against the lots as
+  they now stand. Only a back-dated loss sale can cause this, and its own
+  result now says so. Every back-dated entry now reports the rows its
+  rebuild could not apply, rather than leaving them for `pt validate`.
+- **`pt validate` and `pt migrate` name a reconstructed or estimated block**
+  beside a replacement replay deferred a loss into (ADR 0037, decision 7).
+  The custodian's stated basis may already include that deferral; its lot
+  detail says whether it does.
+- **`pt reconcile --realized` labels a break that is a deferral from another
+  account** (ADR 0037, decision 7). A custodian adjusts a replacement's
+  basis only for a loss in the same account. Where a break equals the
+  deferral the sold shares carry from a loss elsewhere, the line says so in
+  a new `note`. It is still a break.
+- **`pt instrument equivalent A B --reason`** declares two instruments
+  substantially identical, and `pt instrument equivalents` lists every
+  declaration. `portable` never infers it. A declaration applies to every
+  pairing, and one that changes a recorded gain is refused unless
+  `--restate` (ADR 0025).
+- **`pt tax wash-candidates`** lists, for each loss in a year, what is in its
+  window but not matched automatically: other instruments, options on the
+  same underlying, and lots transferred in or seeded from a custodian.
+  Proposed, never applied; `--type` filters it for reading.
+
 - **`pt instrument correct-symbol`: a symbol recorded in error is corrected,
   not renamed** (ADR 0034). Every period of the instrument's symbol history
   that carried the wrong ticker carries the right one, with no period opened
@@ -309,6 +450,21 @@ Two rules specific to this repository:
 
 ### Schema
 
+- **`schema_version` 11 → 12**, migration `0012_bond_accrued_interest`
+  (ADR 0041, accepted by the owner). It adds one nullable column,
+  `transaction.accrued_interest`: the interest accrued to settlement that a
+  bond trade pays or receives, signed like cash. The column is additive, with
+  no rebuild, and the append-only triggers bind it as they bind every column.
+  `pt migrate` applies it; no existing row changes.
+- **`schema_version` 10 → 11**, migration `0011_wash_sales` (ADR 0037).
+  - `lot_disposition` and `realized_gain` are recreated empty for
+    `pt migrate` to rebuild. The gain gains `wash_sale_disallowed`, the
+    Form 8949 code W adjustment, and the disposition's `wash_sale_deferred`
+    now holds what its name says.
+  - A new derived table, `wash_sale`, records each pairing.
+  - A new reference table, `instrument_equivalence`, records the pairs
+    declared substantially identical. `pt export` carries it.
+  - Valuation snapshots are kept.
 - **`schema_version` 9 → 10**, migration `0010_lot_lineage_keys` (ADR 0036).
   `lot` is recreated with `lot_key`, a lot's lineage (`NOT NULL UNIQUE`), and
   derived state is cleared for `pt migrate` to rebuild. Valuation snapshots
@@ -351,6 +507,52 @@ Two rules specific to this repository:
   preserved and nothing else moves.
 
 ### Changed
+
+- **`PORT-GIPS-D01`'s acceptance tests say "for the sub-period it is charged
+  in".** A fee a basis undoes leaves that sub-period's return unchanged, exactly;
+  later sub-periods are measured on the capital actually left (ADR 0040 §8,
+  amended). The data-model lines of `B05`, `D01` and `H08` no longer describe a
+  `return_result` table: results are computed on demand (ADR 0040 §10).
+- **BREAKING for a file that holds bonds:** a bond's quantity is now its
+  face amount, and its price is read through its quote basis (ADR 0041). A
+  bond entered under the old reading, as a number of bonds priced per bond
+  under the default `percent_of_par`, values a hundredth of what it should,
+  and its stored snapshots no longer re-derive; `pt validate` names them.
+  Reverse such rows and enter them again at face. The owner's file holds no
+  bonds.
+- **`pt tax` reports wash sales (schema `tax-2.0`).**
+  - Totals are the allowed gains: Schedule D's column (h).
+  - Each disposition carries `wash_sale_disallowed` and `allowed_gain`.
+  - `data.wash_sales` states what was detected, what was not, the total
+    disallowed and the part disallowed permanently, and any pairings left
+    for manual handling.
+  - `excludes_wash_sales` is gone. The disclaimer now says precisely what is
+    not detected.
+  - `pt tax` became a group. With no subcommand it is still the report.
+- **`pt pnl` counts a deferred loss once.** Its realized P&L adds back a loss
+  a wash sale deferred into a replacement's basis, because that loss is now
+  in the replacement's unrealized P&L. A loss lost to a sheltered
+  replacement stays realized: it is a real loss.
+
+- **Option lifecycle rows are recorded on the option** (ADR 0038).
+  - `option_assignment`, `option_exercise` and `option_expiration` rows name
+    the option, with contracts as their quantity and the strike as their
+    price. An exercise was a `buy` of the stock before.
+  - An assignment recorded on the underlying stock, the old shape, is
+    refused by replay with `PT-E-OPTION-ROW-INVALID`, and `pt validate`
+    reports it as unreplayable. It is to be reversed and entered again.
+  - `pt option assign` and `pt option exercise` report `net_cash_effect`.
+    For a put, assignment reports `strike_cost` and `stock_basis` in place
+    of `strike_proceeds` and `total_proceeds`.
+  - `pt option expire` refuses a date before the expiry, and reports each
+    disposition it produced.
+- **`pt cover` reports `short_proceeds_relieved` and `cost_basis`** in place of
+  `cost_basis_relieved`. The relieved figure is what the short sale received,
+  so calling it basis restated the inversion this release fixes.
+- **`pt validate` checks two more things** (ADR 0038):
+  - a short sale stored as paying cash, or a cover as receiving it;
+  - an option still open after its expiry, which an unrecorded expiration
+    leaves, and so does an exercise recorded before this release.
 
 - **fafnir is read through `duk` alone** (ADR 0032, decided by the owner;
   completes ADR 0029). The ticker history and security master
@@ -478,6 +680,65 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **A return of capital never reduced basis** (ADR 0039).
+  - What happened: `pt income roc` recorded the cash, and replay stopped at
+    the row because it carries no quantity. The engine function that
+    reduces basis had no caller. 200.00 returned on shares bought for
+    5,000.00 left the basis at 5,000.00, and the later sale's gain was
+    200.00 too small.
+  - What replay does now: it reduces the basis of the shares in the account
+    before the ex-date, on the pay-date, with the total allocated by
+    quantity. A lot's part beyond its basis is capital gain at the lot's
+    own holding period.
+  - What is refused: shares disposed of between the ex-date and the
+    pay-date, and a return of capital with none held, with
+    `PT-E-ROC-ENTITLEMENT`.
+  - `pt income roc` takes `--ex-date`.
+  - Any file with a return-of-capital row reports a replay mismatch until
+    `pt rebuild`, which restates the later gains. The sample portfolio's VTI
+    lots change accordingly.
+  - `docs/broker-import.md` §9 said to record a reclassified distribution
+    with `pt income roc` alone, which counts its cash twice when it was
+    already a dividend. It now says to reverse the dividend first.
+- **Short sales were booked as purchases** (ADR 0038). Cash was wrong on both
+  trades:
+  - `pt short` and imported short sales debited cash instead of receiving
+    it, and covers credited cash instead of paying it.
+  - A short lot's basis added the commission rather than deducting it.
+
+  The gain was inverted: shorting 100 at 100.00 and covering at 80.00
+  reported a short-term **loss** of 2,000.00 rather than a gain. A short
+  position was also valued as an asset. Now:
+  - a short sale receives its gross less costs;
+  - the cover's disposition reports the short sale's credit as proceeds and
+    the cover's cost as basis, which is Form 8949's shape;
+  - a short leg is valued, held in `pt holdings` and `pt position list`, and
+    reconciled as a negative quantity.
+
+  A cover now relieves short lots only, and a sale long ones. A short sale
+  against a long holding (a constructive sale, IRC §1259) and a buy against
+  a short one are refused with `PT-E-POSITION-DIRECTION`. Every written
+  option is a short sale and inherited all of this.
+- **`pt rebuild` erased every option assignment, expiration and exercise**
+  (ADR 0038). The commands derived their effects themselves, and replay had
+  no branch for their rows, so `pt validate` failed straight after each one.
+  After a covered call was assigned, a rebuild deleted 2,420.00 of long-term
+  gain and reopened the 100 shares. Every back-dated entry, reversal and
+  `--incremental` import rebuilds (ADR 0016). Each event is now one ledger row
+  on the option, and replay derives the option's side and the stock's.
+- **Exercising a call charged its premium to cash a second time and left it
+  out of the stock's basis.** Assignment likewise credited the premium again.
+  The premium entered cash when the option was opened; at the event, cash is
+  the strike alone, and the premium is in the stock's basis or proceeds.
+- **Exercising a long put bought stock.** It is now refused with
+  `PT-E-OPTION-UNSUPPORTED`. Buying a put can restart the stock's holding
+  period (IRC §1233(b)), and which case applies is not recorded. A written
+  put's assignment, refused before by accident, now buys the stock at the
+  strike with the premium deducted from its basis.
+- **The sample portfolio's covered call never closed.** Its docstring said it
+  was assigned, but no row recorded it, and it stayed open past its 2024-01-19
+  expiry. The generator now records it expiring worthless, which is what
+  AAPL's close below the strike that day means.
 - **The `portable` command failed with `ModuleNotFoundError` on every run.**
   `pyproject.toml` has declared `portable = "portable_core.cli.portable_cmd:main"`
   since the scaffold, and the module never existed, so every install created

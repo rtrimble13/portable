@@ -25,6 +25,7 @@ from portable_core.domain.enums import (
     DesignationStatus,
     ExerciseStyle,
     FeeClass,
+    FlowLevel,
     HoldingPeriod,
     InstrumentType,
     LegRole,
@@ -36,14 +37,17 @@ from portable_core.domain.enums import (
     TransactionSource,
     TransactionType,
     ValuationBasis,
+    WashSaleStatus,
 )
 from portable_core.domain.models import (
     Account,
     BasisAdjustment,
     Benchmark,
     BondDetail,
+    CashFlow,
     CorporateAction,
     Instrument,
+    InstrumentEquivalence,
     Lot,
     LotDesignation,
     LotDisposition,
@@ -54,28 +58,35 @@ from portable_core.domain.models import (
     PriceAcceptance,
     RealizedGain,
     ReturnPolicy,
+    SnapshotPrice,
     StatementPosition,
     TaxRateSchedule,
     Transaction,
+    ValuationSnapshot,
+    WashSale,
 )
 
 __all__ = [
     "to_account",
     "to_basis_adjustment",
     "to_benchmark",
+    "to_cash_flow",
     "to_corporate_action",
     "to_date",
     "to_decimal",
     "to_disposition",
     "to_instrument",
+    "to_instrument_equivalence",
     "to_lot",
     "to_position",
     "to_position_leg",
     "to_price",
     "to_realized_gain",
     "to_return_policy",
+    "to_snapshot",
     "to_tax_rate_schedule",
     "to_transaction",
+    "to_wash_sale",
 ]
 
 
@@ -267,6 +278,7 @@ def to_transaction(row: sqlite3.Row) -> Transaction:
         commissions=to_decimal(row["commissions"]),
         taxes_withheld=to_decimal(row["taxes_withheld"]),
         withholding_reclaimable=to_optional_decimal(row["withholding_reclaimable"]),
+        accrued_interest=to_optional_decimal(row["accrued_interest"]),
         fee_class=FeeClass(row["fee_class"]) if row["fee_class"] else None,
         position_id=row["position_id"],
         counter_account_id=row["counter_account_id"],
@@ -414,6 +426,34 @@ def to_realized_gain(row: sqlite3.Row) -> RealizedGain:
         # would be a claim, so the absence is handled by the caller supplying
         # the column rather than by guessing here.
         basis_source=BasisSource(row["basis_source"]),
+        wash_sale_disallowed=to_decimal(row["wash_sale_disallowed"]),
+    )
+
+
+def to_wash_sale(row: sqlite3.Row) -> WashSale:
+    return WashSale(
+        disposition_id=int(row["disposition_id"]),
+        txn_id=int(row["txn_id"]),
+        account_id=int(row["account_id"]),
+        sold_lot_key=str(row["sold_lot_key"]),
+        sale_date=to_date(row["sale_date"]),
+        replacement_lot_key=str(row["replacement_lot_key"]),
+        replacement_date=to_date(row["replacement_date"]),
+        quantity=to_decimal(row["quantity"]),
+        disallowed=to_decimal(row["disallowed"]),
+        status=WashSaleStatus(row["status"]),
+        days_absorbed=int(row["days_absorbed"]),
+        wash_sale_id=int(row["wash_sale_id"]),
+    )
+
+
+def to_instrument_equivalence(row: sqlite3.Row) -> InstrumentEquivalence:
+    return InstrumentEquivalence(
+        instrument_a_id=int(row["instrument_a_id"]),
+        instrument_b_id=int(row["instrument_b_id"]),
+        reason=str(row["reason"]),
+        created_at=str(row["created_at"]),
+        equivalence_id=int(row["equivalence_id"]),
     )
 
 
@@ -436,6 +476,50 @@ def to_corporate_action(row: sqlite3.Row) -> CorporateAction:
         source=str(row["source"]),
         provider_ref=row["provider_ref"],
         applied_txn_id=row["applied_txn_id"],
+    )
+
+
+def to_cash_flow(row: sqlite3.Row) -> CashFlow:
+    """One stored ``snapshot_flow`` row, at the level it records."""
+    return CashFlow(
+        txn_id=int(row["txn_id"]),
+        account_id=int(row["account_id"]),
+        flow_date=to_date(row["flow_date"]),
+        amount=to_decimal(row["amount"]),
+        is_large=to_bool(row["is_large"]),
+        is_in_kind=to_bool(row["is_in_kind"]),
+        level=FlowLevel(row["level"]),
+    )
+
+
+def to_snapshot(
+    row: sqlite3.Row,
+    *,
+    prices: tuple[SnapshotPrice, ...] = (),
+    flows: tuple[CashFlow, ...] = (),
+) -> ValuationSnapshot:
+    """One stored ``valuation_snapshot`` row, with what it recorded."""
+    return ValuationSnapshot(
+        snapshot_id=int(row["snapshot_id"]),
+        account_id=int(row["account_id"]),
+        snapshot_date=to_date(row["snapshot_date"]),
+        beginning_market_value=to_decimal(row["beginning_market_value"]),
+        ending_market_value=to_decimal(row["ending_market_value"]),
+        securities_value=to_decimal(row["securities_value"]),
+        cash_balance=to_decimal(row["cash_balance"]),
+        margin_loan=to_decimal(row["margin_loan"]),
+        accrued_interest=to_decimal(row["accrued_interest"]),
+        accrued_dividends=to_decimal(row["accrued_dividends"]),
+        accrued_income=to_decimal(row["accrued_income"]),
+        external_flow_account=to_decimal(row["external_flow_account"]),
+        external_flow_portfolio=to_decimal(row["external_flow_portfolio"]),
+        income_amount=to_decimal(row["income_amount"]),
+        fees_amount=to_decimal(row["fees_amount"]),
+        level5_market_value=to_decimal(row["level5_market_value"]),
+        is_complete=to_bool(row["is_complete"]),
+        uses_estimates=to_bool(row["uses_estimates"]),
+        prices=prices,
+        flows=flows,
     )
 
 

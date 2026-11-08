@@ -22,7 +22,8 @@ authoritative.
 | Lot selection under a relief method | ✓ | | |
 | Basis adjustments | ✓ | | |
 | Tax liability | | ✓ | |
-| Wash sales | | | ✗ until v0.2 |
+| Wash sales, for identical and declared instruments | ✓ | | |
+| Wash sales through options, undeclared securities, short sales | | | ✗ listed, not applied |
 | Bracket progressivity, carryforwards, AMT | | | ✗ |
 
 **Exact** means every input is a ledger fact and the arithmetic is defined.
@@ -156,25 +157,83 @@ acquired, so a spinoff from a five-year-old lot is long-term on day one.
 **Reduces basis; it is not income.** Once basis reaches zero the excess becomes
 capital gain, recognised immediately — there is no negative basis.
 
+[ADR 0039](adr/0039-return-of-capital-reduces-basis-in-replay.md) sets out how
+replay applies it:
+
+- **Entitlement is fixed on the ex-date.** The shares in the account before
+  that day are the ones whose basis is reduced. Shares bought on or after it
+  are not.
+- **The reduction is applied on the pay-date**, when the capital came back.
+- **The total is allocated by quantity** across the entitled lots, by largest
+  remainder, so the parts sum exactly to what was paid.
+- **The excess is recorded as a capital gain** on the pay-date, at the lot's
+  own holding period. It is a disposition of no units, with the excess as
+  proceeds and no basis, so every report that shows a gain shows it. The
+  holding period is never reset.
+- **Shares disposed of between the ex-date and the pay-date are refused**
+  (`PT-E-ROC-ENTITLEMENT`). They were entitled, but their basis is gone, and
+  what their part reduces instead is not `portable`'s to decide.
+
 Note the separate question this does *not* answer: for **performance** purposes
 return of capital is also not an external cash flow. Both facts are true, they
 are about different things, and conflating them gets both wrong.
+
+### Short sales
+
+[ADR 0038](adr/0038-short-sales-and-the-option-lifecycle.md).
+
+- **Cash.** A short sale **receives** its gross less costs, and a cover
+  **pays** its gross plus costs.
+- **The lot.** A short lot holds what the sale received.
+- **The disposition.** At the cover, that credit is the **proceeds** and what
+  the cover paid is the **cost basis**, which is Form 8949's shape for a short
+  sale. The gain is short-term whatever the dates.
+- **Value.** A short position is valued, and shown in `pt holdings`, as a
+  negative quantity and a negative market value. Its basis is shown negative
+  beside it, so value less basis is the unrealized P&L in either direction.
+
+A closing trade relieves lots of its own direction only: a cover never
+consumes a long lot, and a sale never a short one. A short sale in an account
+holding the instrument long is refused, because it is a constructive sale
+(IRC §1259) that `portable` does not record. A buy against a short position is
+refused as well: it is a cover, made with `pt cover`.
 
 ### Option premium
 
 The rule depends on how the option resolves, and getting it wrong both
 double-counts the premium and applies the wrong rate.
 
-| Event | Where the premium goes |
-|---|---|
-| Long call **exercised** | Into the acquired stock's **basis** |
-| Written call **assigned** | Into the stock sale's **proceeds** |
-| Written option **expires worthless** | **Short-term gain**, however long it was open |
-| Long option expires worthless | Loss of the premium, at its own holding period |
+| Event | Where the premium goes | Cash at the event |
+|---|---|---|
+| Long call **exercised** | Into the acquired stock's **basis** | the strike plus costs |
+| Written call **assigned** | Into the stock sale's **proceeds** | the strike less costs |
+| Written put **assigned** | Out of the acquired stock's **basis** | the strike plus costs |
+| Written option **expires worthless** | **Short-term gain**, however long it was open | none |
+| Long option expires worthless | Loss of the premium, at its own holding period | none |
+| Long put **exercised** | **Refused** (`PT-E-OPTION-UNSUPPORTED`) | — |
+
+The premium is what was actually received or paid when the option was opened,
+net of that trade's costs. It entered cash then, so it never enters cash
+again at the event.
 
 An option that resolves into stock produces **no independent P&L**. The stock's
-own holding period governs the disposition — which is why a covered call
+own holding period governs the disposition. That is why a covered call
 assigned against a two-year-old position is a long-term gain, premium included.
+Stock acquired by an exercise or an assignment is held from that date.
+
+**Exercising a long put is refused.** Buying a put on stock held a year or
+less is treated as a short sale (IRC §1233(b)), which can restart the stock's
+holding period. Married puts are excepted. `portable` does not record which
+case applies, so it refuses rather than guess.
+
+Each event is one ledger row on the option, and replay derives its effects,
+so a rebuild reproduces it exactly.
+
+**Not handled**, and not to be assumed handled:
+- straddles (§1092);
+- a covered call that is not "qualified", which suspends the stock's holding
+  period (§1092(f));
+- payments in lieu of dividends on a short position.
 
 ### Commissions and fees
 
@@ -187,6 +246,31 @@ Allocation across lots uses **largest remainder**, so the parts sum exactly to
 the whole. Rounding each lot's share independently loses or invents a cent, and
 that cent becomes a basis error, then a realized-gain error, then a wrong tax
 figure.
+
+### Bonds: accrued interest, and what is not computed
+
+[ADR 0041](adr/0041-bonds-at-face-with-accrued-interest.md). A bond's quantity
+is its face amount, and its price is read through its quote basis, so basis
+and proceeds are `face × price / 100` for a bond quoted percent of par.
+
+- **Accrued interest paid on a purchase is not basis.** The buyer pays the
+  seller the interest accrued to settlement. That is a receivable bought, and
+  the next coupon repays it. The trade row records it in `accrued_interest`,
+  and it moves cash and nothing else. For tax it reduces the interest income
+  of the coupon that repays it.
+- **Accrued interest received on a sale is interest income, not proceeds.**
+  The gain is `face × price / 100 − basis`, with the accrued interest outside
+  it.
+- **Not computed:**
+  - bond premium amortization (IRC §171);
+  - market discount (IRC §1276);
+  - original issue discount;
+  - coupon interest itself, and the purchased accrued interest that reduces
+    it.
+
+  Each changes basis or income, so a gain on a bond is reported without
+  them. Every `pt tax` report in a year a bond was held says so, in its
+  footnotes and in its `bonds` field.
 
 ---
 
@@ -247,7 +331,11 @@ Each of these stops the command rather than producing a number.
 |---|---|---|
 | No lot matches a closing trade | `PT-E-LOT-UNMATCHED` | A zero basis by default would overstate the gain by the entire proceeds. `--force-zero-basis` lets a human decide, and records the decision on the lot's adjustment log. |
 | Closing more than is held | `PT-E-LOT-INSUFFICIENT` | A short position is opened with `pt short`, not by overselling. |
+| A short sale against a long holding, or a buy against a short one | `PT-E-POSITION-DIRECTION` | The first is a constructive sale (IRC §1259) `portable` does not record; the second is a cover (ADR 0038). |
+| A return of capital on shares disposed of between its ex-date and pay-date, or with none held | `PT-E-ROC-ENTITLEMENT` | The disposed shares' part has no basis left to reduce, and where it goes instead is not decided (ADR 0039). |
+| Exercising a long put | `PT-E-OPTION-UNSUPPORTED` | The put may have restarted the stock's holding period (IRC §1233(b)), and which case applies is not recorded. |
 | Spec-ID that does not add up | `PT-E-LOT-SELECTION-INVALID` | Topping up from another lot changes the tax treatment silently. |
+| A sale entered before a wash-sale split divided the lot it names | `PT-E-LOT-DESIGNATION-DIVIDED` | The parts carry different bases and holding periods; which was meant is the owner's to say, by reversing and re-entering it (ADR 0037). |
 | A sale recorded before schema 10 whose lots are not settled | `PT-E-LOT-DESIGNATION-UNRESOLVED` | Reading its lot ids as numbered today is the defect that re-pointed sales (ADR 0036). |
 | Average cost mixed with spec-ID | `PT-E-TAX-METHOD-CONFLICT` | Either resolution restates basis on shares already sold. |
 | No rate schedule in force | `PT-E-TAX-NO-RATE-SCHEDULE` | A defaulted zero produces a plausible number that is wrong. |
@@ -297,17 +385,67 @@ For the affected years the custodian's 1099-B is the authority and always was.
 What `portable` must not do is print a number that looks like a tax figure and
 is the gain since an arbitrary cutover instead.
 
-## Wash sales — not implemented
+## Wash sales
 
-**`pt tax` does not account for wash sales.** Detection is deferred to v0.2
-(backlog, P0), and until it lands every tax output says so on its face, in every
-format, as an envelope field that a consumer cannot drop without noticing.
+[ADR 0037](adr/0037-wash-sales.md). IRC §1091 disallows a loss on stock or
+securities when substantially identical ones are acquired within 30 days
+before or after the sale. **The window spans every account in the portfolio,
+IRAs included.** Replay pairs each loss with its replacements when the later
+of the two rows is applied, so a rebuild and a live entry agree.
 
-This is stated prominently rather than in a footnote because of what wash sales
-are: **the 30-day window spans *all* of the taxpayer's accounts, including
-IRAs**, and covers substantially identical securities and options. A tax report
-that quietly omitted them would be wrong in a way that looks entirely normal —
-the "silently wrong number" failure mode by definition.
+**What is matched:**
+
+- **Loss sales:** a loss on a long lot in a taxable account, by a sale, an
+  expiration, or the stock a written call delivers.
+- **Replacements**, in any account:
+  - a buy;
+  - a reinvested dividend;
+  - a distribution taken in units;
+  - stock acquired by an option.
+
+  The law has no de minimis, so a small reinvestment disallows its share of
+  a loss.
+- **Instruments:** the same instrument, or one declared substantially
+  identical with `pt instrument equivalent`. `portable` never infers it.
+
+**Matching order:** losses are matched in ledger order, and within one sale
+the earliest-acquired sold lot first. Replacement shares are matched in
+order of acquisition. Each replacement share washes at most one sold share,
+and only that share of the loss is disallowed. Shares bought in one purchase
+are not each other's replacement.
+
+**What a pairing does:**
+
+| Replacement in | Loss | Replacement's basis | Holding period |
+|---|---|---|---|
+| A taxable account | Disallowed (Form 8949 code W) | Increased by the disallowed loss | Absorbs the sold shares' period, counting no day twice |
+| A sheltered account | Disallowed **permanently** | Unchanged (Rev. Rul. 2008-5) | Unchanged |
+| Disposed of before the loss sale | Reported for manual handling | — | — |
+
+The matched shares become their own lot, keyed
+`<replacement>~<sale>.<sold lot>`, so no other lot is renumbered. A sale
+entered before a split divided the lot it designates is refused
+(`PT-E-LOT-DESIGNATION-DIVIDED`). It is reversed and entered again, naming
+the parts as they now stand. A reconstructed block beside a deferral is
+named by `pt validate`, since the custodian's basis may already include it. A purchase
+in January that disallows a December loss restates December's year. The
+purchase's own result says so, and so does a sheltered replacement.
+
+**Not detected, and said so in every tax output:**
+
+- securities not declared substantially identical, which
+  `pt tax wash-candidates` lists;
+- options and contracts to acquire, listed but not applied;
+- lots transferred in or seeded with a custodian-stated basis, which may
+  already carry the custodian's own adjustment;
+- short sales (§1091(e));
+- acquisitions outside this portfolio, such as an account not in the file.
+
+Every account in the file is taken to be the taxpayer's or their spouse's.
+
+§1091, §1223, Treas. Reg. §1.1091-1 and §1.1223-1, and Rev. Rul. 2008-5 were
+read in primary text, and Example 2 of §1.1091-1 is reproduced to the cent by a
+test. Rev. Rul. 56-602 was read only as quoted (ADR 0037).
 
 ---
 

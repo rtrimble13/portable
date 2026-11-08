@@ -27,7 +27,7 @@ from portable_core.persistence.connection import (
 )
 from portable_core.persistence.repositories import Repositories
 from portable_core.schema import migrations as M
-from portable_core.services import designations, snapshots
+from portable_core.services import designations, snapshots, wash_sales
 from portable_core.services.replay import ReplayEngine, derived_state_digests
 from portable_pt import state
 from portable_pt.commands._shared import dispatch
@@ -289,7 +289,12 @@ def migrate(
         return CommandResult(
             command="migrate",
             data=data,
-            warnings=_recovery_warnings(recovery) + (outcome.warnings if outcome else ()),
+            warnings=(
+                _recovery_warnings(recovery)
+                + (outcome.warnings if outcome else ())
+                # ADR 0037, decision 7: said on the rebuild after migrating.
+                + (wash_sales.custodian_overlaps(repos) if outcome else ())
+            ),
             portfolio=ctx.portfolio_name(),
         )
 
@@ -334,6 +339,12 @@ def validate(
             problems.append(("cash conservation", problem))
         for problem in engine.check_leg_invariants():
             problems.append(("leg quantity", problem))
+        # ADR 0038. Rows stored under the short-sale sign the planner used to
+        # get wrong, and options the book still holds after they expired.
+        for problem in engine.check_short_sale_cash():
+            problems.append(("short sale", problem))
+        for problem in engine.check_options_past_expiry(ctx.as_of):
+            problems.append(("option expiry", problem))
 
         # ADR 0036. A designation by lot id is read only through the meaning
         # recorded for it, because the ids themselves are renumbered by every
@@ -419,6 +430,9 @@ def validate(
         for problem in stale:
             problems.append(("valuation", problem))
 
+        # ADR 0037, decision 7. A warning, not a problem: whether the custodian's
+        # figure included the deferral is a fact only its lot detail holds.
+        warnings.extend(wash_sales.custodian_overlaps(repos))
         if not repos.policies.all():
             warnings.append(
                 "no return_policy row: pert will refuse to compute returns until one "

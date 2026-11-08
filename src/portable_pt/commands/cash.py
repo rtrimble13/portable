@@ -279,7 +279,9 @@ def _income(
             txn_type,
             gross,
             pay,
-            ex_date=ex,
+            # Unstated, the service decides: the pay-date for a distribution,
+            # the scheduled coupon date for a coupon (ADR 0041 §3).
+            ex_date=ex if ex_date else None,
             taxes_withheld=(
                 money_arg(withheld, what="--withheld") if withheld else Decimal("0.00")
             ),
@@ -299,7 +301,7 @@ def _income(
             "account": found.name,
             "type": str(txn_type),
             "amount": quantize_money(gross),
-            "ex_date": ex.isoformat(),
+            "ex_date": txn.ex_date.isoformat() if txn.ex_date else None,
             "pay_date": pay.isoformat(),
             "qualified": qualified,
         }
@@ -318,11 +320,12 @@ def _income(
             from dataclasses import replace
 
             rebuilt = service.replay.apply_or_rebuild(replace(txn, txn_id=txn_id))
+            notices = service.replay.wash.notices_for(txn_id)
 
         return CommandResult(
             command=f"income {txn_type}",
             data={**payload, "txn_id": txn_id, **({"rebuilt": True} if rebuilt else {})},
-            warnings=(_BACKDATED,) if rebuilt else (),
+            warnings=(*notices, *((_BACKDATED,) if rebuilt else ())),
             portfolio=ctx.portfolio_name(),
         )
 
@@ -440,18 +443,33 @@ def coupon(
     account: Annotated[str, typer.Option("--account", "-a")],
     amount: Annotated[str, typer.Option("--amount")],
     pay_date: Annotated[str | None, typer.Option("--pay-date")] = None,
+    coupon_date: Annotated[
+        str | None,
+        typer.Option(
+            "--coupon-date",
+            help=(
+                "The scheduled coupon date this pays. Default: the bond's last "
+                "scheduled coupon on or before the pay-date."
+            ),
+        ),
+    ] = None,
     note: Annotated[str | None, typer.Option("--note")] = None,
     ref: RefOpt = None,
     withheld: WithheldOpt = None,
     reclaimable: ReclaimableOpt = None,
 ) -> None:
-    """Record a bond coupon. Income -- never an external cash flow."""
+    """Record a bond coupon. Income -- never an external cash flow.
+
+    Entitled on its scheduled coupon date and a receivable in value until it
+    is paid (ADR 0041 §3). A coupon the bond was held for that is not
+    recorded makes every valuation after it incomplete: it is a missing row.
+    """
     _income(
         TransactionType.COUPON,
         symbol,
         account,
         amount,
-        ex_date=None,
+        ex_date=coupon_date,
         pay_date=pay_date,
         qualified=None,
         note=note,
@@ -465,8 +483,18 @@ def coupon(
 def roc(
     symbol: Annotated[str, typer.Argument()],
     account: Annotated[str, typer.Option("--account", "-a")],
-    amount: Annotated[str, typer.Option("--amount")],
-    pay_date: Annotated[str | None, typer.Option("--pay-date")] = None,
+    amount: Annotated[str, typer.Option("--amount", help="Total cash received.")],
+    ex_date: Annotated[
+        str | None,
+        typer.Option(
+            "--ex-date",
+            help="Entitlement date: the shares held before it are the ones whose "
+            "basis is reduced. Defaults to the pay-date.",
+        ),
+    ] = None,
+    pay_date: Annotated[
+        str | None, typer.Option("--pay-date", help="When the cash arrived.")
+    ] = None,
     note: Annotated[str | None, typer.Option("--note")] = None,
     ref: RefOpt = None,
 ) -> None:
@@ -476,13 +504,19 @@ def roc(
     basis and is not income, and once basis reaches zero the excess is capital
     gain. For **performance** it is not an external cash flow. Conflating them
     gets both wrong.
+
+    The shares held in the account before the ex-date are entitled, and their
+    basis is reduced on the pay-date, the total allocated across their lots by
+    quantity (ADR 0039). A lot's part beyond its basis is capital gain on the
+    pay-date, at the lot's own holding period. Shares sold between the two
+    dates are refused: their basis is already gone.
     """
     _income(
         TransactionType.RETURN_OF_CAPITAL,
         symbol,
         account,
         amount,
-        ex_date=None,
+        ex_date=ex_date,
         pay_date=pay_date,
         qualified=None,
         note=note,

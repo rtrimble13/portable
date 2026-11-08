@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rtrimble13/portable/schemas/twr-1.0.json",
+  "title": "pert twr",
+  "description": "The time-weighted return, cumulative, at every return basis (ADR 0040).\n\nThe disclaimer is required and non-empty: every return carries it (docs/gips-standard.md §9.3). Every return names its method, basis and period, and none is annualized (PORT-GIPS-B07). The flow timing and the count of sub-periods by method travel with the number (PORT-GIPS-B05).",
+  "allOf": [{ "$ref": "envelope-1.0.json" }],
+  "type": "object",
+  "required": ["disclaimer"],
+  "properties": {
+    "command": { "const": "twr" },
+    "disclaimer": { "type": "string", "minLength": 1 },
+    "data": {
+      "type": "object",
+      "required": [
+        "level",
+        "account",
+        "method",
+        "flow_timing",
+        "period",
+        "returns",
+        "gross_equals_net_of_external_costs_only",
+        "subperiods",
+        "disclosures"
+      ],
+      "properties": {
+        "level": { "enum": ["account", "portfolio"] },
+        "account": { "type": ["string", "null"] },
+        "method": { "const": "twr" },
+        "flow_timing": { "type": "string", "minLength": 1 },
+        "period": {
+          "type": "object",
+          "required": ["requested_start", "start", "end", "inception", "days", "is_annualized"],
+          "properties": {
+            "requested_start": { "$ref": "#/$defs/date" },
+            "start": { "$ref": "#/$defs/date" },
+            "end": { "$ref": "#/$defs/date" },
+            "inception": { "$ref": "#/$defs/date" },
+            "days": { "type": "integer", "minimum": 1 },
+            "is_annualized": { "const": false }
+          }
+        },
+        "returns": {
+          "description": "In presentation order: net-of-fees first (AO 24.A.1.b). net_of_all_costs is supplemental information and says so.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "required": [
+              "value", "method", "basis", "period_start", "period_end",
+              "period_days", "is_annualized", "is_supplemental"
+            ],
+            "properties": {
+              "value": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+              "method": { "const": "twr" },
+              "basis": {
+                "enum": [
+                  "net_of_fees",
+                  "net_of_external_costs_only",
+                  "gross_of_fees",
+                  "net_of_all_costs"
+                ]
+              },
+              "period_start": { "$ref": "#/$defs/date" },
+              "period_end": { "$ref": "#/$defs/date" },
+              "period_days": { "type": "integer", "minimum": 1 },
+              "is_annualized": { "const": false },
+              "is_supplemental": { "type": "boolean" }
+            },
+            "if": { "properties": { "basis": { "const": "net_of_all_costs" } } },
+            "then": { "properties": { "is_supplemental": { "const": true } } },
+            "else": { "properties": { "is_supplemental": { "const": false } } }
+          }
+        },
+        "gross_equals_net_of_external_costs_only": { "type": "boolean" },
+        "subperiods": {
+          "type": "object",
+          "required": ["daily", "modified_dietz", "idle_days"],
+          "properties": {
+            "daily": { "type": "integer", "minimum": 0 },
+            "modified_dietz": { "type": "integer", "minimum": 0 },
+            "idle_days": { "type": "array", "items": { "$ref": "#/$defs/date" } }
+          }
+        },
+        "disclosures": {
+          "type": "object",
+          "required": [
+            "large_flow_days",
+            "estimated_days",
+            "stale_price_days",
+            "level5_value",
+            "level5_share",
+            "unpriced_holdings",
+            "margin_interest_deducted_at_every_basis",
+            "reclaimable_withholding_not_accrued",
+            "notes"
+          ],
+          "properties": {
+            "large_flow_days": { "type": "array", "items": { "$ref": "#/$defs/date" } },
+            "estimated_days": { "type": "array", "items": { "$ref": "#/$defs/date" } },
+            "stale_price_days": { "type": "array", "items": { "$ref": "#/$defs/date" } },
+            "level5_value": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+            "level5_share": {
+              "anyOf": [{ "$ref": "envelope-1.0.json#/$defs/decimal" }, { "type": "null" }],
+              "description": "Null when the ending value is zero: no share is defined, and zero would say one is."
+            },
+            "unpriced_holdings": { "type": "array", "items": { "type": "string" } },
+            "margin_interest_deducted_at_every_basis": { "type": "boolean" },
+            "reclaimable_withholding_not_accrued": { "type": "boolean" },
+            "notes": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+          }
+        },
+        "series": {
+          "description": "With --daily: every sub-period, with its method and its return at each basis.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["after", "through", "method", "beginning_value", "ending_value", "flows", "returns"],
+            "properties": {
+              "after": { "$ref": "#/$defs/date" },
+              "through": { "$ref": "#/$defs/date" },
+              "method": { "enum": ["daily", "modified_dietz"] },
+              "beginning_value": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+              "ending_value": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+              "flows": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["date", "amount", "is_large"],
+                  "properties": {
+                    "date": { "$ref": "#/$defs/date" },
+                    "amount": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+                    "is_large": { "type": "boolean" }
+                  }
+                }
+              },
+              "returns": {
+                "type": "object",
+                "additionalProperties": { "$ref": "envelope-1.0.json#/$defs/decimal" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+  }
+}

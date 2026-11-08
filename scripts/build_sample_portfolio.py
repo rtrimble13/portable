@@ -11,8 +11,9 @@ every path that is easy to get wrong:
 * a **split** mid-holding-period, followed by a sale, so the holding period
   can be checked not to have reset;
 * a **spinoff** with an explicit fair-market-value allocation;
-* a **covered call** written and assigned, so the premium can be checked to
-  land in the stock's proceeds;
+* a **covered call** written and left to expire worthless, so the premium can
+  be checked to be short-term gain however long it was open, and the written
+  option's cash to be a receipt (ADR 0038);
 * a **bond bought between coupons**, so accrued interest can be checked to be
   part of market value;
 * a **large cash flow**, and an **inter-account transfer**, so the
@@ -374,7 +375,7 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
                     maturity_date=date(2030, 5, 15),
                     day_count=DayCount.ACT_ACT,
                     face_value=D("1000"),
-                    first_coupon_date=date(2021, 11, 15),
+                    quote_basis="percent_of_par",
                 ),
             )
         )
@@ -428,21 +429,41 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
         _buy(repos, ira, vti, date(2021, 1, 12), "600", "197.11")
         _buy(repos, roth, aapl, date(2021, 1, 12), "150", "128.10")
         _buy(repos, taxable, acme, date(2021, 3, 15), "500", "42.30")
-        _buy(repos, taxable, treasury, date(2021, 8, 20), "50", "1012.40")
-
-        # Bought between coupons: accrued interest is part of market value and
-        # is NOT basis (PORT-GIPS-A06).
+        # $50,000 of face at 101.24 percent of par, bought between coupons.
+        # The seller is paid the interest accrued from the 05-15 coupon to
+        # settlement on 08-21: 1,062.50 x 98 / 184 = 565.92. That is cash, and
+        # NOT basis (ADR 0041, PORT-GIPS-A06).
         _txn(
             repos,
             account_id=taxable,
-            trade_date=date(2021, 11, 15),
-            txn_type=TransactionType.COUPON,
+            trade_date=date(2021, 8, 20),
+            settlement_date=date(2021, 8, 21),
+            txn_type=TransactionType.BUY,
             instrument_id=treasury,
-            gross_amount=D("1062.50"),
-            pay_date=date(2021, 11, 15),
-            net_cash_effect=D("1062.50"),
-            note="Semi-annual coupon.",
+            quantity=D("50000"),
+            price=D("101.24"),
+            gross_amount=D("50620.00"),
+            fees=D("1.00"),
+            fee_class=FeeClass.TRANSACTION_COST,
+            accrued_interest=D("-565.92"),
+            net_cash_effect=D("-51186.92"),
         )
+        # Every coupon it was owed, each paid on its scheduled date. An
+        # unrecorded one would leave every valuation after it incomplete.
+        for paid in [date(year, month, 15) for year in range(2021, 2026) for month in (5, 11)]:
+            if date(2021, 11, 15) <= paid <= date(2025, 11, 15):
+                _txn(
+                    repos,
+                    account_id=taxable,
+                    trade_date=paid,
+                    txn_type=TransactionType.COUPON,
+                    instrument_id=treasury,
+                    gross_amount=D("1062.50"),
+                    ex_date=paid,
+                    pay_date=paid,
+                    net_cash_effect=D("1062.50"),
+                    note="Semi-annual coupon.",
+                )
 
         for ex, pay, amount in [
             (date(2021, 2, 5), date(2021, 2, 11), "82.00"),
@@ -524,8 +545,8 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
         ]:
             _dividend(repos, taxable, aapl, ex, pay, amount)
 
-        # A covered call written against the AAPL position, then assigned.
-        # The premium must land in the stock's PROCEEDS, not as separate P&L.
+        # A covered call written against the AAPL position. Writing it RECEIVES
+        # the premium, less the commission (ADR 0038).
         _txn(
             repos,
             account_id=taxable,
@@ -541,7 +562,22 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
             note="Covered call written against the AAPL position.",
         )
 
-        # ── 2024: a split, and a spinoff ─────────────────────────────────────
+        # ── 2024: the call expires, a split, and a spinoff ───────────────────
+        # AAPL closed below the 200 strike on the expiry date, so the call
+        # lapses: its 844.35 premium is short-term gain, however long it was
+        # open. The row is an event on the option; replay derives the rest.
+        _txn(
+            repos,
+            account_id=taxable,
+            trade_date=date(2024, 1, 19),
+            txn_type=TransactionType.OPTION_EXPIRATION,
+            instrument_id=covered_call,
+            quantity=D("1"),
+            net_cash_effect=ZERO,
+            source=TransactionSource.DERIVED,
+            note="expired worthless",
+        )
+
         # 100 ACME becomes 200; total basis unchanged, holding period NOT reset.
         # Each corporate action is TWO records: the ledger entry saying it
         # happened, and the corporate_action row carrying the parameters. The
@@ -625,17 +661,6 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
             repos, taxable, aapl, date(2025, 5, 20), "100", "211.26", method=ReliefMethod.FIFO
         )
         _sell(repos, ira, vti, date(2025, 6, 10), "150", "289.11", method=ReliefMethod.FIFO)
-
-        _txn(
-            repos,
-            account_id=taxable,
-            trade_date=date(2025, 5, 15),
-            txn_type=TransactionType.COUPON,
-            instrument_id=treasury,
-            gross_amount=D("1062.50"),
-            pay_date=date(2025, 5, 15),
-            net_cash_effect=D("1062.50"),
-        )
 
         _txn(
             repos,
@@ -769,13 +794,14 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
                 ("2025-12-31", "31.20"),
             ],
             newco: [("2024-12-31", "13.10"), ("2025-06-30", "14.85"), ("2025-12-31", "15.40")],
+            # Percent of par (ADR 0041): 100.82 is 1,008.20 per 1,000 bond.
             treasury: [
-                ("2021-12-31", "1008.20"),
-                ("2022-12-30", "941.50"),
-                ("2023-12-29", "978.30"),
-                ("2024-12-31", "965.10"),
-                ("2025-06-30", "982.75"),
-                ("2025-12-31", "991.40"),
+                ("2021-12-31", "100.82"),
+                ("2022-12-30", "94.15"),
+                ("2023-12-29", "97.83"),
+                ("2024-12-31", "96.51"),
+                ("2025-06-30", "98.275"),
+                ("2025-12-31", "99.14"),
             ],
             covered_call: [("2023-12-29", "9.10")],
         }

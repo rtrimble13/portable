@@ -181,6 +181,10 @@
           "anyOf": [{ "$ref": "#/$defs/decimal" }, { "type": "null" }],
           "description": "Null and zero differ: null says nobody stated a split, zero says none of it is reclaimable (PORT-GIPS-A06)."
         },
+        "accrued_interest": {
+          "anyOf": [{ "$ref": "#/$defs/decimal" }, { "type": "null" }],
+          "description": "ADR 0041, on a bond trade only, and required on one: the interest accrued to settlement it exchanged, as the confirm states it. A magnitude; a buy pays it and a sale receives it. Not basis and not proceeds."
+        },
         "counter_account": {
           "type": ["string", "null"],
           "description": "The other side of a transfer, which is ONE ledger row rather than two so that portfolio-level netting is structural (ADR 0007)."

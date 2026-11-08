@@ -198,7 +198,7 @@ years matter. There are tests on this boundary and they are not to be tidied up.
 
 Commissions and fees · return of capital · stock splits · spinoffs (basis
 allocated by relative fair market value) · mergers · option premium on assignment
-or exercise · and — in v0.2 — wash sales.
+or exercise · wash sales (ADR 0037).
 
 **Corporate actions and holding period is the trap.** A split does **not** reset
 the holding period. A spinoff's new shares **inherit** the original holding
@@ -235,8 +235,9 @@ The ledger covers:
   capital, bond coupon, accrual.
 - **Corporate actions** — forward and reverse split, stock dividend, spinoff,
   merger (cash, stock, or mixed), symbol change, delisting.
-- **Options lifecycle** — exercise, assignment, expiration, and roll as a linked
-  close+open pair.
+- **Options lifecycle** — exercise, assignment, and expiration, each one ledger
+  row on the option from which replay derives the stock's side (ADR 0038). A
+  roll is a cover and a new write, entered as two trades.
 - **Fixed income lifecycle** — coupon, accrual, amortization and accretion, call,
   maturity.
 - **Adjustments** — reversal (pointing at what it reverses) and correction.
@@ -382,5 +383,5 @@ is a lint rule enforcing the language, and the one approved disclaimer is in
 `docs/gips-standard.md` §9.3.
 
 **Nothing here is tax advice**, and this tool is not a substitute for a broker's
-1099-B. Wash-sale detection is deferred to v0.2, and until it lands the tax
-report says so on its face.
+1099-B. Wash sales are detected across every account (ADR 0037), and every tax
+report lists what is not detected.

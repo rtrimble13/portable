@@ -117,7 +117,13 @@ def _policy(port: str, on: str, *extra: str) -> tuple[str, ...]:
 
 
 def _large_flags(port: str) -> list[tuple[object, ...]]:
-    return _query(port, "SELECT flow_date, is_large FROM snapshot_flow ORDER BY flow_date")
+    # Account level: a snapshot records each flow at both levels (ADR 0040),
+    # flagged alike, and one level is what these tests follow.
+    return _query(
+        port,
+        "SELECT flow_date, is_large FROM snapshot_flow WHERE level = 'account' "
+        "ORDER BY flow_date",
+    )
 
 
 def test_port_gips_b03_a_back_dated_policy_is_refused_naming_the_snapshots(

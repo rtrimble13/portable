@@ -8,13 +8,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import date
 from decimal import Decimal
 from typing import Annotated
 
 import typer
 
-from portable_core.cli.context import CommandContext, parse_date
+from portable_core.cli.context import resolve_date
 from portable_core.cli.runner import dry_run_note, run_command
 from portable_core.decimals import from_text
 from portable_core.errors import UsageError
@@ -84,17 +83,6 @@ def dispatch(action: Callable[[], CommandResult]) -> None:
         # not. An open handle keeps the file locked on Windows.
         state.close_opened()
     raise typer.Exit(code)
-
-
-def resolve_date(value: str | None, ctx: CommandContext, *, what: str = "--date") -> date:
-    """A date from the command line, defaulting to the context's ``as_of``.
-
-    Never to ``today`` directly: ``as_of`` was already defaulted explicitly at
-    context-build time, and reaching for the clock again here would reintroduce
-    exactly the hidden dependency `CLAUDE.md` invariant 6 forbids.
-    """
-    parsed = parse_date(value, what=what)
-    return parsed if parsed is not None else ctx.as_of
 
 
 def money_arg(value: str | None, *, what: str) -> Decimal:

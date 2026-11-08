@@ -71,9 +71,16 @@ Carrying it as a named key rather than a rendered string means a consumer who
 drops it has to delete `payload["disclaimer"]`, which shows up in their code. A
 footnote at the end of a formatted block can be lost by accident.
 
-`pt tax` requires a non-empty disclaimer **in the schema**, and pins
-`excludes_wash_sales` as a `const`. Removing the wash-sale statement therefore
+`pt tax` requires a non-empty disclaimer **in the schema**, and a
+`wash_sales.not_detected` list with at least one entry (`tax-2.0`, ADR 0037).
+Removing the statement of what wash-sale detection does not cover therefore
 breaks CI rather than a filing.
+
+`pert twr` requires a non-empty disclaimer in its schema too (`twr-1.0`,
+ADR 0040). Each of its four returns names its method, basis and period. Its
+`is_annualized` is fixed `false`, and `is_supplemental` is `true` for
+`net_of_all_costs` and for no other basis. A consumer cannot take a
+supplemental figure for a GIPS basis without the schema noticing.
 
 ### Errors are JSON too
 

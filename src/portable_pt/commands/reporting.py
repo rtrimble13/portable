@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -12,16 +13,17 @@ from typing import Annotated
 import typer
 
 from portable_core.decimals import from_text, money_context, quantize_money
-from portable_core.disclaimer import TAX_DISCLAIMER
-from portable_core.domain.enums import BasisSource, FlowLevel, TransactionType
+from portable_core.disclaimer import BOND_TAX_NOT_COMPUTED, TAX_DISCLAIMER
+from portable_core.domain.enums import BasisSource, FlowLevel, TransactionType, WashSaleStatus
 from portable_core.domain.import_records import ClosedLotRecord
-from portable_core.domain.models import RealizedGain, ReturnPolicy
+from portable_core.domain.models import RealizedGain, ReturnPolicy, WashSale
 from portable_core.errors import GipsRefusalError, ReconciliationBreakError, ValidationError
 from portable_core.errors.kinds import E_GIPS_NO_FLOW_POLICY, E_RECONCILE_BREAK
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.importers import TabularAdapter
 from portable_core.importers.source import REALIZED
-from portable_core.services import benchmarks, cash_flow, restatement
+from portable_core.persistence.repositories import Repositories
+from portable_core.services import benchmarks, cash_flow, restatement, wash_sales
 from portable_core.services.reconciliation import (
     ExternalHolding,
     RealizedTieLine,
@@ -77,10 +79,16 @@ def holdings(
                                 instrument.instrument_id, ctx.as_of
                             )
                             lots = repos.lots.by_leg(leg.leg_id)
+                            # ADR 0038. A short leg is valued negatively, and
+                            # its lots hold what the short sale received, which
+                            # is shown negative beside it: value less basis is
+                            # then the unrealized P&L in either direction.
                             basis = sum((lot.adjusted_cost_basis for lot in lots), ZERO)
+                            if leg.sign < 0:
+                                basis = ZERO - basis
                             value = (
                                 quantize_money(
-                                    price.price * leg.quantity * instrument.contract_size
+                                    instrument.value_of(leg.signed_quantity, price.price)
                                 )
                                 if price
                                 else None
@@ -101,7 +109,7 @@ def holdings(
                                     "sector": instrument.sector,
                                     "asset_class": instrument.asset_class,
                                     "role": str(leg.role),
-                                    "quantity": leg.quantity,
+                                    "quantity": leg.signed_quantity,
                                     "price": price.price if price else None,
                                     "price_date": (
                                         price.price_date.isoformat() if price else None
@@ -342,7 +350,20 @@ def pnl(
                 estimated_tax = ZERO
                 for gain in reportable:
                     instrument = repos.instruments.get(gain.instrument_id)
-                    realized += gain.gain
+                    # ADR 0037. A loss deferred into a replacement's basis is
+                    # in that lot's unrealized P&L now; counting it here too
+                    # would count it twice. A loss lost to a sheltered
+                    # replacement stays realized: it is a real loss.
+                    deferred = sum(
+                        (
+                            w.disallowed
+                            for w in repos.wash_sales.for_disposition(gain.disposition_id)
+                            if w.status is WashSaleStatus.DEFERRED
+                        ),
+                        ZERO,
+                    )
+                    pnl_gain = gain.gain + deferred
+                    realized += pnl_gain
                     estimated_tax += gain.estimated_tax or ZERO
                     if gain.basis_source is not BasisSource.DERIVED:
                         approximate_basis += gain.cost_basis
@@ -353,10 +374,11 @@ def pnl(
                             "holding_period": str(gain.holding_period),
                             "proceeds": gain.proceeds,
                             "cost_basis": gain.cost_basis,
-                            "gain": gain.gain,
+                            "gain": pnl_gain,
+                            "wash_sale_deferred": deferred,
                             "basis_from": str(gain.basis_source),
                             "estimated_tax": gain.estimated_tax,
-                            "net_of_tax": TaxEngine.net_of_tax(gain.gain, gain.estimated_tax),
+                            "net_of_tax": TaxEngine.net_of_tax(pnl_gain, gain.estimated_tax),
                         }
                     )
 
@@ -381,8 +403,11 @@ def pnl(
                                 continue
                             lots = repos.lots.by_leg(leg.leg_id)
                             basis = sum((lot.adjusted_cost_basis for lot in lots), ZERO)
+                            # ADR 0038: signed as `pt holdings` signs them.
+                            if leg.sign < 0:
+                                basis = ZERO - basis
                             unrealized += (
-                                price.price * leg.quantity * instrument.contract_size - basis
+                                instrument.value_of(leg.signed_quantity, price.price) - basis
                             )
             return _PnlFigures(
                 rows=rows,
@@ -478,10 +503,11 @@ def tax(
 ) -> None:
     """Realized gains by holding period, with estimated liability.
 
-    Schedule-D-shaped. **This is an estimate and not tax advice**, and it does
-    NOT account for wash sales -- the 30-day window spans every account the
-    taxpayer has, including IRAs, and detection is deferred to v0.2. That
-    statement travels with the output in every format and cannot be suppressed.
+    Schedule-D-shaped. **This is an estimate and not tax advice.** Wash sales
+    are applied across every account in the portfolio, IRAs included, for the
+    same instrument and instruments declared substantially identical (ADR
+    0037). What the report does not detect travels with the output in every
+    format and cannot be suppressed.
     """
 
     def action() -> CommandResult:
@@ -493,9 +519,17 @@ def tax(
 
         engine = TaxEngine()
         sheltered = tuple(a.name for a in repos.accounts.all() if not a.is_taxable)
-        summary = engine.summarise(gains, tax_year, non_taxable_accounts=sheltered)
+        washes = tuple(
+            w
+            for w in repos.wash_sales.all(sale_year=tax_year)
+            if account_id is None or w.account_id == account_id
+        )
+        summary = engine.summarise(
+            gains, tax_year, non_taxable_accounts=sheltered, wash_sales=washes
+        )
 
         excluded_ids = {d.disposition_id for d in summary.unreportable}
+        held_bonds = _bonds_held(repos, gains, tax_year)
 
         def _name(gain: RealizedGain) -> tuple[str | None, str | None]:
             instrument = repos.instruments.get(gain.instrument_id)
@@ -519,6 +553,9 @@ def tax(
                     "proceeds": gain.proceeds,
                     "cost_basis": gain.cost_basis,
                     "gain": gain.gain,
+                    # ADR 0037: Form 8949's adjustment, code W, and the result.
+                    "wash_sale_disallowed": gain.wash_sale_disallowed,
+                    "allowed_gain": gain.allowed_gain,
                     "basis_from": str(gain.basis_source),
                     "federal_rate": gain.federal_rate,
                     "state_rate": gain.state_rate,
@@ -555,6 +592,8 @@ def tax(
                     Column("proceeds", "Proceeds", ColumnKind.MONEY),
                     Column("cost_basis", "Basis", ColumnKind.MONEY),
                     Column("gain", "Gain/Loss", ColumnKind.MONEY),
+                    Column("wash_sale_disallowed", "Wash (W)", ColumnKind.MONEY),
+                    Column("allowed_gain", "Allowed", ColumnKind.MONEY),
                     Column("basis_from", "Basis from"),
                     Column("federal_rate", "Fed", ColumnKind.RATE),
                     Column("state_rate", "State", ColumnKind.RATE),
@@ -563,7 +602,20 @@ def tax(
                 ),
                 rows=tuple(rows),
                 title=f"Realized gains, {tax_year}",
-                footnotes=_tax_notes(summary),
+                footnotes=(
+                    *_tax_notes(summary),
+                    *(
+                        (
+                            "Bonds held ("
+                            + ", ".join(held_bonds)
+                            + "): NOT computed -- "
+                            + "; ".join(BOND_TAX_NOT_COMPUTED)
+                            + ".",
+                        )
+                        if held_bonds
+                        else ()
+                    ),
+                ),
             ),
             data={
                 "tax_year": tax_year,
@@ -577,7 +629,15 @@ def tax(
                 "cost_basis": summary.cost_basis,
                 "dispositions": summary.disposition_count,
                 "sheltered_accounts": list(summary.non_taxable_accounts),
-                "excludes_wash_sales": summary.excludes_wash_sales,
+                # ADR 0037. An envelope field, like the disclaimer: a consumer
+                # cannot take the totals without what they do not cover.
+                "wash_sales": {
+                    "detected": list(summary.wash_sales_detected),
+                    "not_detected": list(summary.wash_sales_not_detected),
+                    "disallowed": summary.wash_sale_disallowed,
+                    "permanently_disallowed": summary.wash_sale_permanent,
+                    "manual": [_manual_row(repos, w) for w in summary.wash_sales_manual],
+                },
                 # ADR 0017 §3. Envelope fields, not rendered strings: a
                 # consumer reading --format json must not be able to take the
                 # totals without the qualification attached to them.
@@ -595,7 +655,92 @@ def tax(
                     for p in summary.basis_provenance
                 ],
                 "unreportable": unreportable_rows,
+                # ADR 0041 §4. Null when no bond was held in the year; a list
+                # of what is not computed for them when one was.
+                "bonds": (
+                    {"held": list(held_bonds), "not_computed": list(BOND_TAX_NOT_COMPUTED)}
+                    if held_bonds
+                    else None
+                ),
             },
+            disclaimer=TAX_DISCLAIMER,
+            as_of=ctx.as_of,
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
+def wash_candidates(
+    year: Annotated[int | None, typer.Option("--year")] = None,
+    instrument_type: Annotated[
+        str | None,
+        typer.Option("--type", help="Only candidates of this instrument type, for reading."),
+    ] = None,
+) -> None:
+    """Acquisitions in a loss's wash-sale window that are not matched automatically.
+
+    ADR 0037, decision 8. For each loss realized in the year, across every
+    account: every acquisition of a different instrument, every option on the
+    same underlying, and every lot transferred in or seeded with a custodian's
+    basis. **Proposed, never applied.** A pair that is substantially identical
+    is declared with `pt instrument equivalent`. Complete unless --type narrows
+    it, because asset class is optional free text and would hide what has none.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        tax_year = year or ctx.as_of.year
+        rows: list[dict[str, object]] = []
+        for candidate in wash_sales.candidates(repos, year=tax_year):
+            instrument = repos.instruments.get(candidate.lot.instrument_id)
+            if instrument_type and (
+                instrument is None or str(instrument.instrument_type) != instrument_type
+            ):
+                continue
+            sold = repos.instruments.get(candidate.disposition.instrument_id)
+            loss_account = repos.accounts.get(candidate.disposition.account_id)
+            lot_account = repos.accounts.get(candidate.lot.account_id)
+            rows.append(
+                {
+                    "sale_date": candidate.disposition.disposition_date.isoformat(),
+                    "account": loss_account.name if loss_account else None,
+                    "symbol": sold.symbol if sold else None,
+                    "loss": -candidate.disposition.realized_gain,
+                    "unmatched": candidate.unmatched,
+                    "acquired": candidate.lot.open_date.isoformat(),
+                    "candidate_account": lot_account.name if lot_account else None,
+                    "candidate": instrument.symbol if instrument else None,
+                    "type": str(instrument.instrument_type) if instrument else None,
+                    "quantity": candidate.lot.original_quantity,
+                    "lot_key": candidate.lot.lot_key,
+                    "reason": str(candidate.reason),
+                }
+            )
+        return CommandResult(
+            command="tax wash-candidates",
+            table=Table(
+                columns=(
+                    Column("sale_date", "Sold", ColumnKind.DATE),
+                    Column("account", "Account"),
+                    Column("symbol", "Symbol"),
+                    Column("loss", "Loss", ColumnKind.MONEY),
+                    Column("acquired", "Acquired", ColumnKind.DATE),
+                    Column("candidate_account", "In"),
+                    Column("candidate", "Candidate"),
+                    Column("type", "Type"),
+                    Column("quantity", "Qty", ColumnKind.QUANTITY),
+                    Column("reason", "Why it is listed"),
+                ),
+                rows=tuple(rows),
+                title=f"Wash-sale candidates, {tax_year}",
+                footnotes=(
+                    "Proposed, never applied. Declare a substantially identical pair "
+                    "with `pt instrument equivalent A B --reason ...`.",
+                ),
+            ),
+            data={"tax_year": tax_year, "candidates": len(rows)},
             disclaimer=TAX_DISCLAIMER,
             as_of=ctx.as_of,
             portfolio=ctx.portfolio_name(),
@@ -1030,6 +1175,8 @@ def reconcile(
                     "difference": line.difference,
                     "compared": line.compared,
                     "status": line.status,
+                    # ADR 0037: why a break is a deferral the custodian cannot see.
+                    "note": line.note,
                 }
                 for line in tie.lines
             )
@@ -1043,6 +1190,7 @@ def reconcile(
                     Column("difference", "Difference", ColumnKind.MONEY),
                     Column("compared", "On"),
                     Column("status", "Status"),
+                    Column("note", "Note"),
                 ),
                 rows=tie_rows,
                 title=f"Realized gains against {realized.name}, per sale",
@@ -1100,11 +1248,12 @@ _TRUE = frozenset({"1", "true", "yes", "y", "t"})
 
 def _describe_tie_break(line: RealizedTieLine) -> str:
     head = f"{line.account} {line.identifier} sold {line.disposed.isoformat()}: "
+    tail = f" ({line.note})" if line.note else ""
     if line.theirs_basis is None:
         return head + f"not in the custodian's report, portable gain {line.ours_gain}"
     if line.compared == "gain":
-        return head + f"portable gain {line.ours_gain} vs custodian {line.theirs_gain}"
-    return head + f"portable basis {line.ours_basis} vs custodian {line.theirs_basis}"
+        return head + f"portable gain {line.ours_gain} vs custodian {line.theirs_gain}" + tail
+    return head + f"portable basis {line.ours_basis} vs custodian {line.theirs_basis}" + tail
 
 
 def _read_closed_lots(adapter: Path) -> tuple[ClosedLotRecord, ...]:
@@ -1403,6 +1552,40 @@ def show_policy() -> None:
     dispatch(action)
 
 
+def _manual_row(repos: Repositories, wash: WashSale) -> dict[str, object]:
+    """A wash-sale pairing reported for manual handling, as `pt tax` lists it."""
+    account = repos.accounts.get(wash.account_id)
+    disposition = repos.lots.disposition(wash.disposition_id)
+    instrument = (
+        repos.instruments.get(disposition.instrument_id) if disposition is not None else None
+    )
+    return {
+        "sale_date": wash.sale_date.isoformat(),
+        "account": account.name if account else None,
+        "symbol": instrument.symbol if instrument else None,
+        "sold_lot": wash.sold_lot_key,
+        "replacement_lot": wash.replacement_lot_key,
+        "replacement_date": wash.replacement_date.isoformat(),
+        "quantity": wash.quantity,
+        "disallowed": wash.disallowed,
+    }
+
+
+def _bonds_held(
+    repos: Repositories, gains: Sequence[RealizedGain], tax_year: int
+) -> tuple[str, ...]:
+    """The bonds disposed of, or held at any point, in *tax_year*. ADR 0041 §4."""
+    bonds = {i.instrument_id: i.symbol for i in repos.instruments.all() if i.bond is not None}
+    if not bonds:
+        return ()
+    first, last = date(tax_year, 1, 1), date(tax_year, 12, 31)
+    held = {g.instrument_id for g in gains if g.instrument_id in bonds}
+    for lot in repos.lots.acquired_between(set(bonds), date.min, last):
+        if lot.closed_date is None or lot.closed_date >= first:
+            held.add(lot.instrument_id)
+    return tuple(sorted(bonds[i] for i in held))
+
+
 def _tax_notes(summary: TaxSummary) -> tuple[str, ...]:
     """What the reader has to know before using any figure above.
 
@@ -1431,6 +1614,24 @@ def _tax_notes(summary: TaxSummary) -> tuple[str, ...]:
             f"with proceeds only — a gain measured from an arbitrary date is not "
             f"a gain. For those years the custodian's 1099-B is the authority."
         )
+    if summary.wash_sale_disallowed:
+        notes.append(
+            f"Wash sales disallowed {summary.wash_sale_disallowed} of losses (ADR 0037)"
+            + (
+                f", of which {summary.wash_sale_permanent} is lost for good to a "
+                "replacement in a sheltered account"
+                if summary.wash_sale_permanent
+                else ""
+            )
+            + ". The totals are the allowed gains."
+        )
+    if summary.wash_sales_manual:
+        notes.append(
+            f"INCOMPLETE: {len(summary.wash_sales_manual)} wash-sale pairing(s) are "
+            "reported for manual handling: the replacement was disposed of before "
+            "the loss sale, and the loss stays in the totals as allowed."
+        )
+    notes.append("Wash sales NOT detected: " + "; ".join(summary.wash_sales_not_detected) + ".")
     return tuple(notes)
 
 

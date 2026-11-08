@@ -392,7 +392,7 @@ Getting the transfer row wrong is the classic error: a $100k transfer between th
 **Source** — Firms **2.A.24.g (A)**, **2.A.16 (A)**; Asset Owners **22.A.21.g (A)**, **22.A.13 (A)**.
 **What GIPS says** — the calculation methodology for an individual portfolio must be applied consistently, and performance must be calculated in accordance with the documented calculation policy.
 **What `portable` must do** — The method used for each period is **recorded on the result**, not inferred at render time. A single reported multi-year return may legitimately be chained from daily sub-periods in recent years and monthly Modified Dietz sub-periods in early years; the report must be able to say so.
-**Data model** — `return_result.method` and `return_result.method_by_subperiod` (or a per-subperiod detail table).
+**Data model** — the method, and the method of every sub-period, are recorded on the result object (`TimeWeightedReturn.subperiods`, `SubPeriod.method`). Results are computed on demand from stored snapshots and not stored, so no `return_result` table exists ([ADR 0040](adr/0040-time-weighted-return.md) §10).
 **Test** — `test_method_recorded_per_subperiod`; golden-file test asserting the method footnote renders.
 
 ---
@@ -524,8 +524,8 @@ Margin interest is a **financing cost**, not a fee — GIPS is silent, and `port
 
 For a self-managed portfolio with no external manager, gross-of-fees and net-of-external-costs-only will be **numerically identical**. Report them once, labelled, rather than printing two identical columns.
 
-**Data model** — **schema change, needed before `pert`:** add `fee_class` to the transaction/fee model with the enum above, defaulting to nothing (`NULL` must be an error, not a silent "administrative"). Add a `return_basis` enum to `return_result`. Migration required, per `CLAUDE.md`'s schema-change rules.
-**Test** — `test_fee_classification_exhaustive`: every fee-bearing transaction type in the fixture corpus has a classification; a `NULL` classification fails the build. `test_custody_fee_reduces_net_only`: adding a custody fee must leave the gross-of-fees and net-of-external-costs-only returns unchanged and must reduce the net-of-fees return. `test_other_admin_fee_reduces_no_gips_basis`: a wire fee changes market value but must not change any of the three reported bases — it appears only in the supplemental "net of all costs" figure.
+**Data model** — **schema change, needed before `pert`:** add `fee_class` to the transaction/fee model with the enum above, defaulting to nothing (`NULL` must be an error, not a silent "administrative"). Every return carries its basis (`BasisReturn.basis`, `ReturnValue.basis`); results are not stored ([ADR 0040](adr/0040-time-weighted-return.md) §10). Migration required, per `CLAUDE.md`'s schema-change rules.
+**Test** — `test_fee_classification_exhaustive`: every fee-bearing transaction type in the fixture corpus has a classification; a `NULL` classification fails the build. `test_custody_fee_reduces_net_only`: adding a custody fee must leave the gross-of-fees and net-of-external-costs-only returns of the sub-period it is charged in unchanged, and must reduce the net-of-fees return. `test_other_admin_fee_reduces_no_gips_basis`: a wire fee changes market value but must not change any of the three reported bases for the sub-period it is charged in — it appears only in the supplemental "net of all costs" figure. *Of the sub-period it is charged in*: a later sub-period is measured on the capital actually left, which the fee reduced, so over a longer span a basis that undoes a fee still differs by the return on the fee's amount ([ADR 0040](adr/0040-time-weighted-return.md) §8, amended 2026-11-08).
 
 ---
 
@@ -750,7 +750,7 @@ What a GIPS Asset Owner Report must contain, and therefore what a `pert` tearshe
 **Source** — Asset Owners **24.A.8 (A)**, **24.A.4 (A)**; Firms **4.A.18 (A)**, **4.A.17 (A)**.
 **What GIPS says** — supplemental information must (a) relate directly to the fund or composite, (b) **not contradict or conflict with** required or recommended information, and (c) be **clearly labelled as supplemental information**. A "full gross-of-fees" return — one that adds back embedded pooled-fund fees — must be identified as supplemental (24.A.4). So must theoretical performance (24.C.37) and, for firms, pure gross-of-fees wrap returns (4.A.17).
 **What `portable` must do** — The tearsheet has a structurally distinct supplemental section. Anything `portable` computes that GIPS would not recognise as a return — after-tax returns, model or backtested results, pure gross returns, sleeve returns without allocated cash — lives there, labelled.
-**Data model** — `return_result.is_supplemental` boolean; formatters must render it, not just store it.
+**Data model** — `ReturnValue.is_supplemental`, which the formatter renders ("SUPPLEMENTAL"), not just carries; results are not stored ([ADR 0040](adr/0040-time-weighted-return.md) §10).
 **Test** — `test_supplemental_section_is_labelled`; `test_after_tax_returns_are_supplemental`.
 
 ---
@@ -884,7 +884,7 @@ It also requires that "for each after-tax composite, all input data, calculation
 
 1. After-tax returns are **supplemental information** under `PORT-GIPS-H08`, always labelled.
 2. `pert` backlog item 8 ("After-tax performance… following AIMR/GIPS after-tax guidance") should be **re-scoped** to cite the USIPC standards explicitly, and to note that they are US-specific, voluntary, and last revised fifteen years ago. The phrase "AIMR/GIPS after-tax guidance" points at a lineage that no longer exists as such.
-3. `portable`'s after-tax capability is a genuine differentiator precisely *because* the global standard abandoned this ground. It should be built well and described honestly — and it inherits `CLAUDE.md`'s existing caveats: not tax advice, not a substitute for a 1099-B, and (until the v0.2 backlog item lands) not wash-sale aware.
+3. `portable`'s after-tax capability is a genuine differentiator precisely *because* the global standard abandoned this ground. It should be built well and described honestly — and it inherits `CLAUDE.md`'s existing caveats: not tax advice, not a substitute for a 1099-B, and wash-sale aware only as far as ADR 0037 detects.
 4. After-tax reporting ranked third in practitioner polling at the 2025 GIPS Standards Conference for topics wanted in future guidance. Nothing is in exposure draft. Watch for it; do not wait for it.
 
 ### 7.2 Attribution

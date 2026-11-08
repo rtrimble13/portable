@@ -20,7 +20,7 @@ failure mode**, worse than a crash and worse than a missing feature. When
 | CLI | Purpose | Status |
 |---|---|---|
 | **`pt`** | Portfolio and account definition, transactions, history | **built** (v0.1) |
-| `pert` | Performance, attribution, risk-adjusted returns | stub — milestone `v0.2` |
+| `pert` | Performance, attribution, risk-adjusted returns | **partly built**: `pert twr` (ADR 0040); the rest is milestone `v0.2` |
 | `po` | Portfolio optimization (wraps [`rtrimble13/po`](https://github.com/rtrimble13/po)) | stub — milestone `v0.3` |
 | `risky` | Risk and scenario analysis | stub — milestone `v0.4` |
 | `portable` | Commands shared by the family: `portable config show` | stub — milestone `v0.2` ([#38](https://github.com/rtrimble13/portable/issues/38)) |
@@ -231,8 +231,9 @@ GIPS® is a registered trademark of CFA Institute, which does not endorse this
 tool.
 
 **Nothing in `portable` is tax advice**, and it is not a substitute for a
-broker's 1099-B. Wash-sale detection is deferred to v0.2, and until it lands the
-tax report says so on its face.
+broker's 1099-B. Wash sales are detected across every account in the portfolio
+for the same instrument and instruments declared substantially identical
+(ADR 0037); what is not detected is listed on every tax report.
 
 ---
 

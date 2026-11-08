@@ -111,7 +111,9 @@ def test_a_designated_sale_survives_a_back_dated_buy_and_a_reversal(
     lots = run_pt("--port", port, "lot", "list", "XYZ", "--as-of", "2024-01-31").data["rows"]
     intended = next(row for row in lots if row["open_date"] == "2024-01-20")
     sold = _trade(
-        run_pt, port, "sell", "2024-02-01", "150.00",
+        # More than 30 days after the last buy, so no wash sale (ADR 0037)
+        # disallows the loss whose amount identifies the lot relieved.
+        run_pt, port, "sell", "2024-02-26", "150.00",
         "--method", "spec", "--lots", f"{intended['lot_id']}:10",
     )  # fmt: skip
     shown = run_pt("--port", port, "trade", "show", str(sold["txn_id"])).data
@@ -120,7 +122,7 @@ def test_a_designated_sale_survives_a_back_dated_buy_and_a_reversal(
 
     _trade(run_pt, port, "buy", "2024-01-05", "50.00")  # back-dated: renumbers every lot
     assert _short_term(run_pt, port) == D("-500.00")
-    run_pt("--port", port, "trade", "reverse", str(first["txn_id"]), "--date", "2024-02-05")
+    run_pt("--port", port, "trade", "reverse", str(first["txn_id"]), "--date", "2024-03-01")
     assert _short_term(run_pt, port) == D("-500.00")
     run_pt("--port", port, "validate")
 

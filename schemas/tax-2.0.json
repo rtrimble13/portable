@@ -1,0 +1,280 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rtrimble13/portable/schemas/tax-2.0.json",
+  "title": "pt tax",
+  "description": "Realized gains by holding period with an estimated liability, wash sales applied (ADR 0037).\n\n`disclaimer` is REQUIRED to be a non-empty string, and `wash_sales` is required, with a non-empty `not_detected` list: a tax report that quietly omitted what it does not detect would be the silently-wrong-number failure mode by definition. Supersedes tax-1.0, whose `excludes_wash_sales` const this replaces.",
+  "allOf": [
+    {
+      "$ref": "envelope-1.0.json"
+    }
+  ],
+  "type": "object",
+  "required": [
+    "disclaimer"
+  ],
+  "properties": {
+    "command": {
+      "const": "tax"
+    },
+    "disclaimer": {
+      "type": "string",
+      "minLength": 1
+    },
+    "data": {
+      "type": "object",
+      "required": [
+        "tax_year",
+        "short_term_gain",
+        "long_term_gain",
+        "short_term_tax",
+        "long_term_tax",
+        "is_complete",
+        "basis_provenance",
+        "unreportable",
+        "wash_sales",
+        "rows"
+      ],
+      "properties": {
+        "tax_year": {
+          "type": "integer"
+        },
+        "short_term_gain": {
+          "description": "After wash-sale adjustments: Schedule D's column (h).",
+          "$ref": "envelope-1.0.json#/$defs/decimal"
+        },
+        "long_term_gain": {
+          "description": "After wash-sale adjustments: Schedule D's column (h).",
+          "$ref": "envelope-1.0.json#/$defs/decimal"
+        },
+        "short_term_tax": {
+          "$ref": "envelope-1.0.json#/$defs/decimal"
+        },
+        "long_term_tax": {
+          "$ref": "envelope-1.0.json#/$defs/decimal"
+        },
+        "is_complete": {
+          "type": "boolean",
+          "description": "False when a disposition was excluded from every total above because no cost basis for it can be derived (ADR 0017 §2b), or when a wash-sale pairing is reported for manual handling (ADR 0037). Required, so an incomplete report cannot be read as a whole one."
+        },
+        "approximate_basis": {
+          "description": "Cost basis inside the reported totals that did not come from this portfolio's own ledger.",
+          "$ref": "envelope-1.0.json#/$defs/decimal"
+        },
+        "approximate_basis_share": {
+          "description": "Proportion of reported cost basis resting on a non-derived lot. Measured on basis, not on gain: the basis is the approximate input, and a proportion of a signed total near zero misleads more than it informs. Null when nothing was reported — NOT zero, which would say every basis was exact.",
+          "anyOf": [
+            {
+              "$ref": "envelope-1.0.json#/$defs/decimal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "basis_provenance": {
+          "description": "What rests on each rung of ADR 0017's ladder. A report where every basis is exact and one where a sixth is reconstructed must not look identical.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "basis_source",
+              "dispositions",
+              "proceeds",
+              "cost_basis",
+              "gain"
+            ],
+            "properties": {
+              "basis_source": {
+                "$ref": "#/$defs/basis_source"
+              },
+              "dispositions": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "proceeds": {
+                "$ref": "envelope-1.0.json#/$defs/decimal"
+              },
+              "cost_basis": {
+                "$ref": "envelope-1.0.json#/$defs/decimal"
+              },
+              "gain": {
+                "$ref": "envelope-1.0.json#/$defs/decimal"
+              }
+            }
+          }
+        },
+        "unreportable": {
+          "description": "Dispositions excluded from every total, listed with proceeds only. `cost_basis` and `gain` are REQUIRED to be null: the lot was seeded at cutover market value so cash conservation would close, and the difference between that and the proceeds is the change since an arbitrary date, not a gain. A zero would be read as a figure.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "date",
+              "proceeds",
+              "cost_basis",
+              "gain"
+            ],
+            "properties": {
+              "date": {
+                "type": "string",
+                "format": "date"
+              },
+              "account": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "symbol": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "holding_period": {
+                "type": "string",
+                "enum": [
+                  "short",
+                  "long"
+                ]
+              },
+              "proceeds": {
+                "$ref": "envelope-1.0.json#/$defs/decimal"
+              },
+              "cost_basis": {
+                "type": "null"
+              },
+              "gain": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        "wash_sales": {
+          "description": "What wash-sale detection covered for this year, what it did not, and what it changed (ADR 0037).",
+          "type": "object",
+          "required": [
+            "detected",
+            "not_detected",
+            "disallowed",
+            "permanently_disallowed",
+            "manual"
+          ],
+          "properties": {
+            "detected": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              }
+            },
+            "not_detected": {
+              "description": "Required to be non-empty: what this report does not detect, stated on its face.",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              }
+            },
+            "disallowed": {
+              "description": "Losses disallowed this year: deferred into a replacement's basis, or permanently.",
+              "$ref": "envelope-1.0.json#/$defs/decimal"
+            },
+            "permanently_disallowed": {
+              "description": "The part of `disallowed` lost to a replacement in a sheltered account (Rev. Rul. 2008-5): not added to any basis.",
+              "$ref": "envelope-1.0.json#/$defs/decimal"
+            },
+            "manual": {
+              "description": "Pairings reported for manual handling: the replacement was disposed of before the loss sale. Not applied to any figure above; `is_complete` is false while any is listed.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "sale_date",
+                  "account",
+                  "symbol",
+                  "sold_lot",
+                  "replacement_lot",
+                  "replacement_date",
+                  "quantity",
+                  "disallowed"
+                ],
+                "properties": {
+                  "sale_date": {
+                    "type": "string",
+                    "format": "date"
+                  },
+                  "account": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "symbol": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "sold_lot": {
+                    "type": "string"
+                  },
+                  "replacement_lot": {
+                    "type": "string"
+                  },
+                  "replacement_date": {
+                    "type": "string",
+                    "format": "date"
+                  },
+                  "quantity": {
+                    "$ref": "envelope-1.0.json#/$defs/decimal"
+                  },
+                  "disallowed": {
+                    "$ref": "envelope-1.0.json#/$defs/decimal"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "gain",
+              "wash_sale_disallowed",
+              "allowed_gain"
+            ],
+            "properties": {
+              "gain": {
+                "description": "Proceeds less basis, before any wash-sale adjustment.",
+                "$ref": "envelope-1.0.json#/$defs/decimal"
+              },
+              "wash_sale_disallowed": {
+                "description": "Form 8949 code W adjustment. '0.00' when none.",
+                "$ref": "envelope-1.0.json#/$defs/decimal"
+              },
+              "allowed_gain": {
+                "description": "gain + wash_sale_disallowed.",
+                "$ref": "envelope-1.0.json#/$defs/decimal"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "basis_source": {
+      "type": "string",
+      "enum": [
+        "derived",
+        "reconstructed",
+        "estimated",
+        "unavailable",
+        "custodian_asserted"
+      ]
+    }
+  }
+}

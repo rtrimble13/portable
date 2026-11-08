@@ -165,8 +165,10 @@ An import is accepted when it reconciles, not when it parses (§9). Run
   precision. Not a defect; say so, and give the owner the count.
 - **A realized break with the lots agreeing**: a basis the custodian adjusted
   without a row -- a distribution reclassified as return of capital is the
-  usual one. The owner confirms against the 1099 and records it with
-  `pt income roc`; you never infer it.
+  usual one. The owner confirms against the 1099 and records it: the
+  dividend row that carried the cash is reversed (`pt trade reverse`) and
+  `pt income roc` is entered with its ex-date and pay-date, so the cash is
+  not counted twice (ADR 0039). You never infer it.
 - **A `custodian_only` sale**: a row the history is missing. Find it.
 
 ## 7. Price the history

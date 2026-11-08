@@ -20,7 +20,7 @@ When in doubt, refuse and explain.
 | CLI | Purpose | Status |
 |---|---|---|
 | `pt` | Portfolio and account definition, transactions, history | **built** |
-| `pert` | Performance, attribution, risk-adjusted returns | stub — see milestone `v0.2` |
+| `pert` | Performance, attribution, risk-adjusted returns | **partly built** — `pert twr` (ADR 0040); the rest is milestone `v0.2` |
 | `po` | Portfolio optimization (wraps `rtrimble13/po`) | stub — see milestone `v0.3` |
 | `risky` | Risk and scenario analysis | stub — see milestone `v0.4` |
 | `portable` | Commands shared by the family: `portable config show` | stub — see issue #38, milestone `v0.2` |
@@ -212,6 +212,9 @@ asking for.
 **Accrued interest is part of market value** for bonds. A bond bought between coupons pays
 accrued interest to the seller; that is not basis. Accrual for interest-bearing
 instruments is *required*; accrual for dividends is *recommended* (`PORT-GIPS-A06`).
+A bond's quantity is its **face amount**, its price is read through its quote basis
+(`Instrument.value_of`, never `price × quantity` by hand), and a bond trade states the
+accrued interest it exchanges (ADR 0041).
 
 **External cash flow classification is level-dependent, and it is the easiest way to
 produce a plausible wrong return.** Income — dividends, coupons, reinvestments — is
@@ -261,9 +264,11 @@ for an expense ratio on top of NAV-based returns is a silently wrong number
 (`PORT-GIPS-D05`).
 
 **Wash sales cross accounts.** The 30-day window spans *all* of the taxpayer's accounts,
-including IRAs, and covers substantially identical securities and options. Wash-sale
-detection is deferred to `v0.2` — until then, the tax report must state plainly that it
-does not account for wash sales.
+including IRAs, and covers substantially identical securities and options. Replay pairs
+each loss with its replacements when the later row is applied (ADR 0037). A replacement
+in a sheltered account loses the loss for good; it is not deferred. "Substantially
+identical" is declared, never inferred. Options, undeclared securities, in-kind lots
+and short sales are not detected, and every tax report must state that list plainly.
 
 **Nothing here is tax advice**, and this tool is not a substitute for a broker's 1099-B.
 Reports say so. Separately, **after-tax performance is outside GIPS entirely** — removed at
@@ -405,6 +410,11 @@ test that fails without your change.
   | 0034 | A wrong symbol is corrected, not renamed |
   | 0035 | Every stored stamp is read from an injected clock |
   | 0036 | A lot is designated by its lineage, not by its row number |
+  | 0037 | Wash sales are detected in replay, across every account |
+  | 0038 | A short sale credits cash, and an option resolves in replay |
+  | 0039 | Return of capital reduces basis in replay, entitled on the ex-date |
+  | 0040 | Time-weighted return: daily sub-periods from stored snapshots, Modified Dietz across gaps |
+  | 0041 | A bond is held at face, priced by its quote basis, and carries its accrued interest |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

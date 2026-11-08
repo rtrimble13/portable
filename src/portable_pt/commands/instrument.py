@@ -60,7 +60,29 @@ def add(
     day_count: Annotated[
         str, typer.Option("--day-count", help="30/360 | ACT/ACT | ACT/365 | ACT/360")
     ] = "ACT/ACT",
-    face: Annotated[str, typer.Option("--face")] = "1000",
+    face: Annotated[
+        str, typer.Option("--face", help="A bond's denomination: face per bond.")
+    ] = "1000",
+    quote_basis: Annotated[
+        str,
+        typer.Option(
+            "--quote-basis",
+            help=(
+                "percent_of_par (99.50 per 100 of face) | price_per_bond. A bond's "
+                "quantity is its face amount either way (ADR 0041)."
+            ),
+        ),
+    ] = "percent_of_par",
+    first_coupon: Annotated[
+        str | None,
+        typer.Option(
+            "--first-coupon",
+            help=(
+                "A bond's first coupon date, when its first period is irregular. "
+                "Nothing accrues before it."
+            ),
+        ),
+    ] = None,
     no_market_price: Annotated[
         bool,
         typer.Option(
@@ -118,6 +140,12 @@ def add(
                 maturity_date=resolve_date(maturity, ctx, what="--maturity"),
                 day_count=DayCount(day_count),
                 face_value=from_text(face),
+                first_coupon_date=(
+                    resolve_date(first_coupon, ctx, what="--first-coupon")
+                    if first_coupon
+                    else None
+                ),
+                quote_basis=_quote_basis(quote_basis),
             )
 
         instrument = Instrument(
@@ -198,6 +226,19 @@ def list_instruments(
     dispatch(action)
 
 
+_QUOTE_BASES = ("percent_of_par", "price_per_bond")
+
+
+def _quote_basis(value: str) -> str:
+    if value not in _QUOTE_BASES:
+        raise ValidationError(
+            f"unknown quote basis {value!r}",
+            remedy="percent_of_par prices per 100 of face; price_per_bond per bond.",
+            choices=list(_QUOTE_BASES),
+        )
+    return value
+
+
 @app.command()
 def show(symbol: Annotated[str, typer.Argument()]) -> None:
     """Show one instrument, including its option or bond detail."""
@@ -240,6 +281,10 @@ def show(symbol: Annotated[str, typer.Argument()]) -> None:
                 "maturity_date": bond.maturity_date.isoformat(),
                 "day_count": str(bond.day_count),
                 "face_value": bond.face_value,
+                "quote_basis": bond.quote_basis,
+                "first_coupon_date": (
+                    bond.first_coupon_date.isoformat() if bond.first_coupon_date else None
+                ),
             }
 
         return CommandResult(
@@ -300,6 +345,92 @@ def market_price(
                 "restated": bool(recorded.restated),
             },
             warnings=recorded.restated,
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
+@app.command(name="equivalent")
+def equivalent(
+    first: Annotated[str, typer.Argument(help="One instrument.")],
+    second: Annotated[str, typer.Argument(help="The other.")],
+    reason: Annotated[
+        str, typer.Option("--reason", help="Why they are substantially identical.")
+    ],
+    restate: Annotated[
+        bool, typer.Option("--restate", help="Restate the recorded gains it changes.")
+    ] = False,
+) -> None:
+    """Declare two instruments substantially identical for wash sales.
+
+    ADR 0037. `portable` never infers it: whether two securities are
+    substantially identical is a judgement, and a wrong guess silently allows
+    or disallows a loss. A purchase of either is then matched against a loss on
+    the other, in every account.
+
+    The declaration applies to every past and future pairing. One that changes
+    a recorded gain is refused with PT-E-RESTATES-HISTORY unless --restate
+    (ADR 0025). `pt tax wash-candidates` lists the pairs worth considering.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        one = repos.instruments.resolve(first, on=ctx.as_of)
+        other = repos.instruments.resolve(second, on=ctx.as_of)
+
+        with ctx.write():
+            recorded = restatement.record_equivalence(
+                repos, one, other, reason=reason, restate=restate
+            )
+
+        return CommandResult(
+            command="instrument equivalent",
+            data={
+                "instruments": [one.symbol, other.symbol],
+                "reason": reason,
+                "restated": bool(recorded.restated),
+            },
+            warnings=recorded.restated,
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
+@app.command(name="equivalents")
+def equivalents() -> None:
+    """Every pair declared substantially identical, with its reason (ADR 0037)."""
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        rows: list[dict[str, object]] = []
+        for pair in repos.equivalences.all():
+            a = repos.instruments.get(pair.instrument_a_id)
+            b = repos.instruments.get(pair.instrument_b_id)
+            rows.append(
+                {
+                    "first": a.symbol if a else None,
+                    "second": b.symbol if b else None,
+                    "reason": pair.reason,
+                    "declared": pair.created_at,
+                }
+            )
+        return CommandResult(
+            command="instrument equivalents",
+            table=Table(
+                columns=(
+                    Column("first", "Instrument"),
+                    Column("second", "Substantially identical to"),
+                    Column("reason", "Reason"),
+                    Column("declared", "Declared"),
+                ),
+                rows=tuple(rows),
+                title="Declared substantially identical",
+            ),
+            data={"pairs": len(rows)},
             portfolio=ctx.portfolio_name(),
         )
 
