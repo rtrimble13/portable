@@ -239,6 +239,10 @@ One formatter subsystem, four formats, used by every CLI:
 - **`table`** — Rich, colour-aware, degrades to plain text on a non-TTY or under
   `NO_COLOR`.
 
+All four are written in UTF-8 whatever the console's code page: a CLI's entry
+point calls `portable_core.cli.streams.configure_streams()` before it writes
+anything, so no formatter and no call site has to think about encodings.
+
 Two return-specific rules live in the formatter **so that no call site can bypass
 them**:
 
@@ -307,6 +311,7 @@ requires — at minimum `PT-E-GIPS-NO-FLOW-POLICY` and
 2. Idempotent. Tested in both directions where reversible.
 3. Bump `schema_version`; add a `CHANGELOG.md` entry.
 4. Regenerate `docs/schema.md` (`make docs`).
+   `tests/integration/test_schema_reference.py` fails until you do.
 5. Money/quantity/price/rate columns are `TEXT` with a `-- decimal` comment.
 6. Check in at the phase boundary before you write it. Schema changes are the
    expensive ones to get wrong.

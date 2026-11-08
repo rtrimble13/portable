@@ -328,13 +328,9 @@ def test_no_real_or_numeric_column_exists_anywhere(db: sqlite3.Connection) -> No
 
 def test_every_table_is_documented_in_the_generated_reference() -> None:
     """`make docs` output must cover every table, or the reference is a lie."""
-    import io
-
     from portable_core.schema import docgen
 
-    buffer = io.StringIO()
-    docgen.main(buffer)
-    rendered = buffer.getvalue()
+    rendered = docgen.document()
 
     con = sqlite3.connect(":memory:")
     for statement in M.split_statements(M.available_migrations()[0].sql):
@@ -359,14 +355,11 @@ def test_schema_reference_describes_the_schema_a_migrated_file_has() -> None:
     created. Held to the real database here, so the next rebuild cannot do it
     again (ADR 0022).
     """
-    import io
     import re
 
     from portable_core.schema import docgen
 
-    buffer = io.StringIO()
-    docgen.main(buffer)
-    rendered = buffer.getvalue()
+    rendered = docgen.document()
 
     con = sqlite3.connect(":memory:", isolation_level=None)
     con.row_factory = sqlite3.Row

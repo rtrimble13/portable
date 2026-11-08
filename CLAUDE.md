@@ -292,10 +292,13 @@ answer — non-interactive operation is a requirement, not a nicety.
 when `--format json` is active. Never let a bare exception reach the user.
 
 **Output.** Full precision in `json` and `csv`; formatted in `table` and `markdown`.
-`Decimal` serializes as a string in JSON, never as a float. Explicit `null` — never let
-blank and zero mean the same thing. Every performance report carries the disclaimer from
-`docs/gips-standard.md` §9.3; in `--format json` it is an envelope field, not a rendered
-string, so a consumer cannot drop it without noticing.
+Every format is UTF-8 on every platform: a CLI's entry point calls
+`portable_core.cli.streams.configure_streams()` first, because Windows otherwise
+encodes a piped stdout in cp1252. `Decimal` serializes as a string in JSON, never as
+a float. Explicit `null` — never let blank and zero mean the same thing. Every
+performance report carries the disclaimer from `docs/gips-standard.md` §9.3; in
+`--format json` it is an envelope field, not a rendered string, so a consumer cannot
+drop it without noticing.
 
 **Commits.** Conventional Commits, small and reviewable, message explains *why*. Tests
 land with the code they test, not after.

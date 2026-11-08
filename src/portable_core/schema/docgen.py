@@ -22,13 +22,21 @@ history of it. A table re-created by a later migration -- by ``DROP`` and
 replaces the earlier entry, keeping the table's and each column's description
 where the new text does not restate it. Indexes and triggers a rebuild
 recreates are listed once.
+
+The output is UTF-8 with LF line endings on every platform, written to
+``--out PATH`` or to stdout -- the same bytes either way, whatever the
+console's code page (see :func:`main`).
 """
 
 from __future__ import annotations
 
+import argparse
+import io
 import re
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TextIO, TypeVar
 
 from portable_core.schema.migrations import CURRENT_SCHEMA_VERSION, available_migrations
@@ -463,12 +471,56 @@ def _paragraphs(doc: list[str]) -> str:
     return "\n\n".join(out)
 
 
-def main(out: TextIO | None = None) -> int:
-    stream = out or sys.stdout
+def document() -> str:
+    """The whole reference: the schema every migration, in order, produces."""
     tables: list[Table] = []
     for migration in available_migrations():
         parse(migration.sql, into=tables)
-    render(tables, stream)
+    buffer = io.StringIO()
+    render(tables, buffer)
+    return buffer.getvalue()
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Write the reference to ``--out PATH``, or to stdout, as UTF-8 with LF.
+
+    The text is encoded here, once, and those bytes are what either path
+    writes. Leaving it to the stream would not do: on Windows, Python encodes a
+    redirected stdout in the ANSI code page, cp1252, so ``> docs/schema.md``
+    wrote each ``—`` as byte ``0x97``, raised ``UnicodeEncodeError`` at the
+    first character cp1252 lacks, and left the file truncated -- and a schema
+    whose comments held none of those would have committed cp1252 bytes and
+    exited 0. A text stream would also turn each ``\\n`` into ``\\r\\n`` there,
+    in a committed file.
+
+    ``make docs`` uses ``--out``, because a shell redirect empties the file
+    before Python starts. With ``--out`` the document is complete before the
+    file is opened, so a failure to generate it leaves the committed
+    reference as it was.
+
+    This cannot borrow the stream set-up that fixes the same fault for ``pt``:
+    ``portable_core.schema`` may not import ``portable_core.cli``
+    (``tests/unit/test_layering.py``).
+    """
+    parser = argparse.ArgumentParser(
+        prog="python -m portable_core.schema.docgen",
+        description="Generate docs/schema.md from the DDL comments.",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        metavar="PATH",
+        help="write the reference to PATH instead of stdout (UTF-8, LF either way)",
+    )
+    args = parser.parse_args(argv)
+
+    data = document().encode("utf-8")
+    if args.out is not None:
+        args.out.write_bytes(data)
+    else:
+        sys.stdout.flush()
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
     return 0
 
 

@@ -15,6 +15,7 @@ pytest>=8.0
 hypothesis>=6.100
 coverage[toml]>=7.5
 jsonschema>=4.22
+pyyaml>=6.0          # tests/unit/test_ci_workflow.py reads the workflow
 
 # hooks
 pre-commit>=3.7
