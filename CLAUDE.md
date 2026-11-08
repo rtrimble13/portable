@@ -407,7 +407,8 @@ test that fails without your change.
   | 0037 | Wash sales are detected in replay, across every account |
   | 0038 | A short sale credits cash, and an option resolves in replay |
   | 0039 | Return of capital reduces basis in replay, entitled on the ex-date |
-  | 0040 | Time-weighted return: daily sub-periods from stored snapshots, Modified Dietz across gaps (proposed) |
+  | 0040 | Time-weighted return: daily sub-periods from stored snapshots, Modified Dietz across gaps |
+  | 0041 | A bond is held at face, priced by its quote basis, and carries its accrued interest (proposed) |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

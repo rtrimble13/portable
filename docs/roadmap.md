@@ -127,9 +127,9 @@ Then:
 1. **Daily time-weighted return engine** — chain-linked sub-period returns from
    `valuation_snapshot`, Modified Dietz as the gap-day fallback, method recorded
    on every result. `PORT-GIPS-B01`–`B07`. Designed in
-   [ADR 0040](adr/0040-time-weighted-return.md), proposed: four open
-   questions are the owner's, and three snapshot prerequisites in `pt` come
-   first. Note the 2020 provisions specify the
+   [ADR 0040](adr/0040-time-weighted-return.md), accepted: three snapshot
+   prerequisites in `pt` come first (accrued interest, dividends accrued
+   from the ex-date, the day's income and fees). Note the 2020 provisions specify the
    required *outcome* and never name a method: cite the archived 2011 Guidance
    Statement on Calculation Methodology for the formula, not a provision number.
 2. **Money-weighted return (XIRR)** — annualized since-inception, daily external

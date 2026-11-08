@@ -1,7 +1,7 @@
 # ADR 0040 — Time-weighted return: daily sub-periods from stored snapshots, Modified Dietz across gaps
 
-- **Status:** Proposed. Records the design and four open questions for the owner. No code yet
-- **Date:** 2026-11-08
+- **Status:** Accepted (owner, 2026-11-08), with the recommended answers to questions 1, 3 and 4. To question 2 the owner holds individual coupon bonds. Accrued interest (§13.1) turned out to need a bond model the code lacks, proposed in [ADR 0041](0041-bonds-at-face-with-accrued-interest.md); until it lands, §12's bond refusal stands
+- **Date:** 2026-11-08; accepted 2026-11-08
 - **Milestone:** v0.2, issue 2 (P0)
 - **Governs:** `PORT-GIPS-A03`, `A06`, `B01`–`B07`, `D01`, `D04`, `D05`; `CLAUDE.md` "TWR vs. MWR", "External cash flow classification is level-dependent", "Do not annualize sub-one-year returns"
 - **Depends on:** [ADR 0005](0005-decimal-representation-and-rounding.md) (rates are not rounded until the formatter), [ADR 0007](0007-cash-flow-classification.md) (one level-aware classifier), [ADR 0024](0024-valuation-snapshots-are-valued-state.md) (stored snapshots, checked), [ADR 0028](0028-instrument-with-no-market-price.md) (unpriced instruments at zero), [ADR 0031](0031-price-acceptance-against-statements.md) (unresolved statement lines block returns)
@@ -341,6 +341,25 @@ pert twr [--from DATE] --to DATE [--account NAME] [--daily]
 4. **Bases.** Net-of-fees first, with gross and net-of-external-costs-only
    beside it and net of all costs as supplemental (recommended, §8)? Or
    gross-of-fees first, the Firms convention?
+
+## Owner's answers (2026-11-08)
+
+1. **Flow timing:** inflows at the start of the day, outflows at the end, as
+   recommended.
+2. **Bonds:** the owner holds individual coupon bonds, so accrued interest
+   goes into every snapshot (§13.1). Starting on it showed that the bond
+   model is missing more than accrual:
+   - the stored quote basis is never read;
+   - a bond's quantity has no defined unit;
+   - a bond trade cannot record the accrued interest it exchanges;
+   - import cannot create a bond.
+
+   [ADR 0041](0041-bonds-at-face-with-accrued-interest.md) proposes the
+   model. Until it lands, the engine refuses any period holding a coupon
+   bond (§12). Dividend accrual on the ex-date (§13.2) and the day's income
+   and fees (§13.3) do not depend on it and go first.
+3. **Snapshots:** stored and checked, as recommended. `pert` is read-only.
+4. **Bases:** net-of-fees first, as recommended.
 
 ## Consequences
 
