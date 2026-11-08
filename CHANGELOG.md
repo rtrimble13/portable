@@ -42,6 +42,11 @@ Two rules specific to this repository:
   beside a replacement replay deferred a loss into (ADR 0037, decision 7).
   The custodian's stated basis may already include that deferral; its lot
   detail says whether it does.
+- **`pt reconcile --realized` labels a break that is a deferral from another
+  account** (ADR 0037, decision 7). A custodian adjusts a replacement's
+  basis only for a loss in the same account. Where a break equals the
+  deferral the sold shares carry from a loss elsewhere, the line says so in
+  a new `note`. It is still a break.
 - **`pt instrument equivalent A B --reason`** declares two instruments
   substantially identical, and `pt instrument equivalents` lists every
   declaration. `portable` never infers it. A declaration applies to every

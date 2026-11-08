@@ -1,6 +1,6 @@
 # ADR 0037 — Wash sales are detected in replay, across every account
 
-- **Status:** Accepted (owner, 2026-11-08), with the recommended answer to each open question, and schema 11 approved. Implemented: schema 11, matching in replay (decisions 1–6), the refusal of a designation a split divided (answer 2, by the reversal route the owner chose on 2026-11-08), decision 7's held-back lots and its warning on reconstructed blocks, declarations and candidates (decision 8), notices (decisions 5, 9) and the report (decisions 10, 11). Not yet implemented: decision 7's label on `pt reconcile --realized`. The primary-text check of the citations under Consequences is still open, and is a condition of merging
+- **Status:** Accepted (owner, 2026-11-08), with the recommended answer to each open question, and schema 11 approved. Implemented in full: schema 11, matching in replay (decisions 1–6), the refusal of a designation a split divided (answer 2, by the reversal route the owner chose on 2026-11-08), decision 7, declarations and candidates (decision 8), notices (decisions 5, 9) and the report (decisions 10, 11). Citations: the statute and regulations were read in primary text on 2026-11-08; two revenue rulings are still unread (see Consequences)
 - **Date:** 2026-11-06; accepted 2026-11-08
 - **Milestone:** v0.2, issue 27 (P0)
 - **Governs:** `CLAUDE.md` "Wash sales cross accounts", invariants 3, 9; `docs/tax-methodology.md`
@@ -80,9 +80,12 @@ Five things make it harder than it sounds:
    sale. Lots sold together can carry different losses per share and
    different holding periods. Only dispositions at a loss are matched.
    - Loss dispositions are matched in ledger order. Within one sale, the
-     earliest-acquired sold lot goes first, and ties go by lot key. The
-     regulation fixes the order of the replacement shares but not this one,
-     so this order is a stated convention.
+     earliest-acquired sold lot goes first, and ties go by lot key. Treas.
+     Reg. §1.1091-1(b) fixes this order: losses in the order the shares were
+     disposed of, and, where the order of dispositions on one day cannot be
+     determined, in the order they were acquired. The first draft said the
+     regulation left it open; the primary text corrected that, and the
+     implementation already followed it.
    - Replacement shares are matched in order of acquisition, earliest first,
      and ties go by lot key.
    - Each replacement share washes at most one sold share. The disallowed
@@ -249,18 +252,39 @@ folded into the decisions above.
   erased it, so a loss on an assigned covered call would have been invisible
   to detection built in replay.
 - **Tax-loss harvesting** in `po` (v0.3) can be built on decision 8's table.
-- **Citations still to verify, before the implementation is merged.** The
-  verification standard of `docs/gips-standard.md` applies here too. These
-  points were checked only against secondary sources. The primary texts
-  could not be fetched: ecfr.gov, uscode.house.gov, irs.gov and
-  law.cornell.edu are all outside the network policy of the sessions that
-  wrote and accepted this ADR. Each is to be read in primary text, and any
-  decision it contradicts amended by the next ADR:
-  - §1091(a)'s "by purchase or by an exchange";
-  - §1.1091-1's order rules;
-  - §1223(3) on overlapping periods (decision 5);
-  - converting days absorbed into a calendar-year holding test;
-  - the reach of Rev. Rul. 2008-5 beyond IRAs.
+- **Citations, read in primary text on 2026-11-08** (Cornell LII's copies of
+  the US Code and the CFR). The verification standard of
+  `docs/gips-standard.md` applies here too.
+  - **§1091(a): confirmed.** "Acquired (by purchase or by an exchange on
+    which the entire amount of gain or loss was recognized by law), or has
+    entered into a contract or option so to acquire". "Stock or
+    securities" includes contracts or options to acquire or sell them.
+  - **§1091(d): confirmed, in an equivalent form.** The statute states the
+    replacement's basis as the sold shares' basis adjusted by the
+    difference between the purchase price and the sale price. Per share
+    that equals the purchase price plus the disallowed loss, which is what
+    decision 5 does. Treas. Reg. §1.1091-1(h), Example 2 is reproduced to
+    the cent by a test.
+  - **§1091(e): confirmed.** Short sales have their own rule, not detected
+    here.
+  - **Treas. Reg. §1.1091-1(b)–(f): confirmed.**
+    - Losses are matched in order of disposition, and replacement shares
+      in order of acquisition.
+    - An acquisition that disallows one loss is disregarded for any other.
+    - "Acquired" is defined as in the statute.
+    - Decision 3's sentence about the order of sold lots is corrected
+      above.
+  - **§1223(3) and Treas. Reg. §1.1223-1(d): confirmed.** The replacement's
+    holding period includes the period the sold shares were held. Neither
+    text addresses overlapping periods. Decision 5's "no day counted twice",
+    and converting the absorbed days into the calendar-year test, remain
+    this ADR's reading.
+  - **Not yet read.** `www.irs.gov` was still refused by the session's
+    network policy:
+    - Rev. Rul. 2008-5, on IRA replacements, and its reach beyond IRAs;
+    - Rev. Rul. 56-602, which the rule that shares from one purchase are
+      not each other's replacement rests on (decision 2's "the shares being
+      sold").
 
 ## Alternatives considered
 

@@ -1154,6 +1154,8 @@ def reconcile(
                     "difference": line.difference,
                     "compared": line.compared,
                     "status": line.status,
+                    # ADR 0037: why a break is a deferral the custodian cannot see.
+                    "note": line.note,
                 }
                 for line in tie.lines
             )
@@ -1167,6 +1169,7 @@ def reconcile(
                     Column("difference", "Difference", ColumnKind.MONEY),
                     Column("compared", "On"),
                     Column("status", "Status"),
+                    Column("note", "Note"),
                 ),
                 rows=tie_rows,
                 title=f"Realized gains against {realized.name}, per sale",
@@ -1224,11 +1227,12 @@ _TRUE = frozenset({"1", "true", "yes", "y", "t"})
 
 def _describe_tie_break(line: RealizedTieLine) -> str:
     head = f"{line.account} {line.identifier} sold {line.disposed.isoformat()}: "
+    tail = f" ({line.note})" if line.note else ""
     if line.theirs_basis is None:
         return head + f"not in the custodian's report, portable gain {line.ours_gain}"
     if line.compared == "gain":
-        return head + f"portable gain {line.ours_gain} vs custodian {line.theirs_gain}"
-    return head + f"portable basis {line.ours_basis} vs custodian {line.theirs_basis}"
+        return head + f"portable gain {line.ours_gain} vs custodian {line.theirs_gain}" + tail
+    return head + f"portable basis {line.ours_basis} vs custodian {line.theirs_basis}" + tail
 
 
 def _read_closed_lots(adapter: Path) -> tuple[ClosedLotRecord, ...]:

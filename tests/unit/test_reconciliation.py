@@ -489,3 +489,60 @@ def test_report_rows_for_accounts_out_of_scope_are_ignored(
         tolerance=TOL,
     )
     assert [line.account for line in tie.lines] == ["Brokerage"]
+
+
+def test_a_break_that_is_a_deferral_from_another_account_says_so(
+    repos: Repositories, taxable_account: Account, aapl: Instrument
+) -> None:
+    """ADR 0037, decision 7. A custodian adjusts within one account: a loss in
+    one account deferred into shares bought in another is in portable's basis
+    and not the custodian's. Still a break, and labelled as what it is."""
+    from portable_core.domain.enums import AccountType, ReliefMethod
+    from portable_core.domain.models import TaxRateSchedule
+
+    joint_id = repos.accounts.add(
+        Account(
+            account_id=0,
+            name="Joint",
+            account_type=AccountType.TAXABLE,
+            opened_date=date(2024, 1, 2),
+            default_relief_method=ReliefMethod.FIFO,
+        )
+    )
+    repos.accounts.add_rate_schedule(
+        TaxRateSchedule(
+            rate_id=0, account_id=joint_id, effective_from=date(2024, 1, 1),
+            short_term_federal=D("0.37"), long_term_federal=D("0.20"),
+            state=D("0.05"), niit=D("0.038"),
+        )
+    )  # fmt: skip
+    joint = repos.accounts.get(joint_id)
+    assert joint is not None
+
+    _fund_and_buy(repos, taxable_account, aapl, "100")  # 10,000 on ON
+    service = TradingService(repos)
+
+    def trade(account: Account, kind: TransactionType, qty: str, price: str, on: date) -> None:
+        service.commit(
+            service.plan(
+                TradeIntent(account=account, instrument=aapl, txn_type=kind,
+                            quantity=D(qty), price=D(price), trade_date=on)
+            )
+        )  # fmt: skip
+
+    append(repos, joint_id, TransactionType.DEPOSIT, date(2024, 1, 2),
+           net_cash_effect=D("50000.00"))  # fmt: skip
+    ReplayEngine(repos).rebuild()
+    trade(taxable_account, TransactionType.SELL, "100", "90.00", date(2024, 3, 1))  # -1,000
+    trade(joint, TransactionType.BUY, "100", "92.00", date(2024, 3, 10))  # basis 10,200
+    trade(joint, TransactionType.SELL, "100", "95.00", SOLD)  # gain 9,500 - 10,200
+
+    tie = ReconciliationService(repos).tie_realized(
+        [_closed("Joint", "AAPL", "100", "9200.00", "9500.00")],  # what Joint's custodian saw
+        [joint],
+        tolerance=TOL,
+    )
+    (line,) = tie.lines
+    assert line.status == "break", "the custodian is not the authority; it is still shown"
+    assert line.difference == D("-1000.00")
+    assert line.note is not None and "another account" in line.note

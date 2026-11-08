@@ -27,11 +27,12 @@ keeps it out of the ledger.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
 
-from portable_core.domain.enums import BasisSource
+from portable_core.decimals import money_context, quantize_money
+from portable_core.domain.enums import BasisSource, WashSaleStatus
 from portable_core.domain.import_records import ClosedLotRecord
 from portable_core.domain.models import Account, Instrument, LotDisposition
 from portable_core.errors import ValidationError
@@ -126,6 +127,11 @@ class RealizedTieLine:
     difference: Decimal | None
     compared: str
     status: str
+    #: ADR 0037, decision 7. Why a break is what it is, where that is known:
+    #: a loss from another account deferred into the shares sold, which a
+    #: custodian cannot see because it adjusts within one account. Still a
+    #: break; the label says which, and the custodian is not the authority.
+    note: str | None = None
 
     @property
     def is_break(self) -> bool:
@@ -317,12 +323,60 @@ class ReconciliationService:
                     unavailable.add(key)
 
         lines = [
-            self._tie_line(
-                key, ours.get(key, []), theirs.get(key), key in unavailable, tolerance
+            self._label_unseen(
+                self._tie_line(
+                    key, ours.get(key, []), theirs.get(key), key in unavailable, tolerance
+                ),
+                self._unseen_deferral(ours.get(key, [])),
+                tolerance,
             )
             for key in sorted(set(ours) | set(theirs), key=lambda k: (k[0], k[2], k[1]))
         ]
         return RealizedTieResult(lines=tuple(lines), tolerance=tolerance)
+
+    def _unseen_deferral(self, mine: Sequence[LotDisposition]) -> Decimal:
+        """Losses from other accounts deferred into the shares these sold. ADR 0037.
+
+        A custodian adjusts a replacement's basis only for a loss in the same
+        account. A deferral from another account is in `portable`'s basis and
+        not in the custodian's, by exactly this amount.
+        """
+        total = Decimal("0.00")
+        for disposition in mine:
+            lot = self.repos.lots.get(disposition.lot_id)
+            if lot is None or "~" not in lot.lot_key or not lot.original_quantity:
+                continue
+            carried = sum(
+                (
+                    w.disallowed
+                    for w in self.repos.wash_sales.for_replacement(lot.lot_key)
+                    if w.status is WashSaleStatus.DEFERRED and w.account_id != lot.account_id
+                ),
+                Decimal("0.00"),
+            )
+            with money_context():
+                total += quantize_money(carried * disposition.quantity / lot.original_quantity)
+        return total
+
+    @staticmethod
+    def _label_unseen(
+        line: RealizedTieLine, unseen: Decimal, tolerance: Decimal
+    ) -> RealizedTieLine:
+        """Name a break that is a deferral the custodian could not see."""
+        if not unseen or not line.is_break or line.difference is None:
+            return line
+        # A higher basis here: the gain is lower by it, the basis higher.
+        expected = -unseen if line.compared == "gain" else unseen
+        if abs(line.difference - expected) > tolerance:
+            return line
+        return replace(
+            line,
+            note=(
+                f"{unseen} of losses from another account was deferred into these "
+                "shares (ADR 0037); a custodian adjusts within one account and cannot "
+                "see it"
+            ),
+        )
 
     @staticmethod
     def _tie_line(

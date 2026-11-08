@@ -314,3 +314,25 @@ def test_a_reconstructed_block_beside_a_deferral_is_named(run_pt: CliRunner, por
     _trade(run_pt, port, "buy", "100", "42.00", "2024-03-15")
     checked = run_pt("--port", port, "validate").json()
     assert any("reconstructed block" in w for w in checked["warnings"])
+
+
+def test_treas_reg_1_1091_1_example_2_to_the_cent(run_pt: CliRunner, port: str) -> None:
+    """Treas. Reg. §1.1091-1(h), Example 2, with its dates moved to 2024-25.
+
+    100 shares bought for 5,000; 50 more for 2,750 and 25 for 1,125 inside the
+    window; the 100 sold for 4,000. The loss on 75 shares (750) is disallowed
+    and on 25 (250) allowed; the 50 shares' basis is 3,250 and the 25's 1,375.
+    """
+    for qty, price, on in (("100", "50.00", "2024-09-21"), ("50", "55.00", "2024-12-21"),
+                           ("25", "45.00", "2024-12-27")):  # fmt: skip
+        run_pt("--port", port, "buy", "XYZ", "--qty", qty, "--price", price,
+               "--date", on, "-a", "B", "--fees", "0")  # fmt: skip
+    run_pt("--port", port, "sell", "XYZ", "--qty", "100", "--price", "40.00",
+           "--date", "2025-01-03", "-a", "B", "--fees", "0")  # fmt: skip
+
+    tax = run_pt("--port", port, "tax", "--year", "2025").json()["data"]
+    assert tax["wash_sales"]["disallowed"] == "750.00"
+    (row,) = tax["rows"]
+    assert row["allowed_gain"] == "-250.00"
+    bases = sorted(r[3] for r in _lots(run_pt, port, "2025-01-04"))
+    assert bases == ["1375.00", "3250.00"]
