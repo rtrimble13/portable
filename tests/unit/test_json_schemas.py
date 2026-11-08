@@ -126,7 +126,7 @@ def test_decimals_are_specified_as_strings_not_numbers() -> None:
             "holdings-1.0.json",
             ("--port", "examples/sample.port", "holdings", "--as-of", "2025-06-30"),
         ),
-        ("tax-1.0.json", ("--port", "examples/sample.port", "tax", "--year", "2025")),
+        ("tax-2.0.json", ("--port", "examples/sample.port", "tax", "--year", "2025")),
         (
             "cash-flows-1.0.json",
             (
@@ -164,17 +164,18 @@ def test_real_command_output_validates(schema: str, args: tuple[str, ...]) -> No
 def test_the_tax_report_cannot_drop_its_wash_sale_statement() -> None:
     """The schema requires it, so removing it breaks CI rather than a filing.
 
-    `excludes_wash_sales` is a const in the schema: flipping it to false
-    requires changing the schema too, which is a review somebody has to do.
+    ADR 0037. `wash_sales.not_detected` is required and must be non-empty in
+    the schema: dropping what the detection does not cover requires changing
+    the schema too, which is a review somebody has to do.
     """
     payload = _run("--port", "examples/sample.port", "tax", "--year", "2025")
 
     assert payload["disclaimer"]
     assert "wash sale" in payload["disclaimer"].lower()
     assert "not tax advice" in payload["disclaimer"].lower()
-    assert payload["data"]["excludes_wash_sales"] is True
+    assert payload["data"]["wash_sales"]["not_detected"]
 
-    errors = list(_validator("tax-1.0.json").iter_errors(payload))
+    errors = list(_validator("tax-2.0.json").iter_errors(payload))
     assert not errors, [e.message for e in errors]
 
 

@@ -261,9 +261,11 @@ for an expense ratio on top of NAV-based returns is a silently wrong number
 (`PORT-GIPS-D05`).
 
 **Wash sales cross accounts.** The 30-day window spans *all* of the taxpayer's accounts,
-including IRAs, and covers substantially identical securities and options. Wash-sale
-detection is deferred to `v0.2` — until then, the tax report must state plainly that it
-does not account for wash sales.
+including IRAs, and covers substantially identical securities and options. Replay pairs
+each loss with its replacements when the later row is applied (ADR 0037). A replacement
+in a sheltered account loses the loss for good; it is not deferred. "Substantially
+identical" is declared, never inferred. Options, undeclared securities, in-kind lots
+and short sales are not detected, and every tax report must state that list plainly.
 
 **Nothing here is tax advice**, and this tool is not a substitute for a broker's 1099-B.
 Reports say so. Separately, **after-tax performance is outside GIPS entirely** — removed at
@@ -402,7 +404,7 @@ test that fails without your change.
   | 0034 | A wrong symbol is corrected, not renamed |
   | 0035 | Every stored stamp is read from an injected clock |
   | 0036 | A lot is designated by its lineage, not by its row number |
-  | 0037 | Wash sales are detected in replay, across every account (accepted, not yet built) |
+  | 0037 | Wash sales are detected in replay, across every account |
   | 0038 | A short sale credits cash, and an option resolves in replay |
   | 0039 | Return of capital reduces basis in replay, entitled on the ex-date |
 

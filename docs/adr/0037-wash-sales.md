@@ -1,6 +1,6 @@
 # ADR 0037 — Wash sales are detected in replay, across every account
 
-- **Status:** Accepted (owner, 2026-11-08), with the recommended answer to each open question, and schema 11 approved. Not yet implemented. The primary-text check of the citations under Consequences is still open, and is a condition of merging the implementation
+- **Status:** Accepted (owner, 2026-11-08), with the recommended answer to each open question, and schema 11 approved. Implemented: schema 11, matching in replay (decisions 1–6), declarations and candidates (decision 8), notices (decisions 5, 9) and the report (decisions 10, 11). Not yet implemented: decision 7's warnings for reconstructed blocks, decision 7's reconciliation label, and answer 2's refusal of a designation that a split divided. The primary-text check of the citations under Consequences is still open, and is a condition of merging
 - **Date:** 2026-11-06; accepted 2026-11-08
 - **Milestone:** v0.2, issue 27 (P0)
 - **Governs:** `CLAUDE.md` "Wash sales cross accounts", invariants 3, 9; `docs/tax-methodology.md`

@@ -162,16 +162,20 @@ def _fee(fees: str, fee_class: str | None) -> tuple[Decimal, FeeClass | None]:
     return amount, FeeClass(fee_class) if fee_class else None
 
 
-def _derive(repos: Repositories, txn: Transaction) -> tuple[int, bool, list[LotDisposition]]:
+def _derive(
+    repos: Repositories, txn: Transaction
+) -> tuple[int, bool, list[LotDisposition], tuple[str, ...]]:
     """Append *txn* and derive from it as every trade does. ADR 0016, ADR 0038.
 
-    Returns the row's id, whether a rebuild was needed, and the dispositions
-    the row produced, read back from derived state rather than predicted.
+    Returns the row's id, whether a rebuild was needed, the dispositions the
+    row produced, read back from derived state rather than predicted, and what
+    it paired as wash sales (ADR 0037).
     """
     txn_id = repos.transactions.append(txn)
     stored = repos.transactions.get(txn_id)
     assert stored is not None
-    rebuilt = ReplayEngine(repos).apply_or_rebuild(stored)
+    engine = ReplayEngine(repos)
+    rebuilt = engine.apply_or_rebuild(stored)
     produced = [
         d
         for d in repos.lots.dispositions(
@@ -179,7 +183,7 @@ def _derive(repos: Repositories, txn: Transaction) -> tuple[int, bool, list[LotD
         )
         if d.txn_id == txn_id
     ]
-    return txn_id, rebuilt, produced
+    return txn_id, rebuilt, produced, engine.wash.notices_for(txn_id)
 
 
 def _row(
@@ -313,7 +317,7 @@ def expire(
             ref=ref,
         )
         with ctx.write():
-            txn_id, rebuilt, produced = _derive(repos, txn)
+            txn_id, rebuilt, produced, notices = _derive(repos, txn)
 
         with money_context():
             realized = quantize_money(sum((d.realized_gain for d in produced), ZERO))
@@ -336,7 +340,7 @@ def expire(
                 "txn_id": txn_id,
                 **({"rebuilt": True} if rebuilt else {}),
             },
-            warnings=(_REBUILT,) if rebuilt else (),
+            warnings=(*notices, *((_REBUILT,) if rebuilt else ())),
             portfolio=ctx.portfolio_name(),
         )
 
@@ -437,7 +441,7 @@ def assign(
             relief_method=ReliefMethod(method) if method else None,
         )
         with ctx.write():
-            txn_id, rebuilt, produced = _derive(repos, txn)
+            txn_id, rebuilt, produced, notices = _derive(repos, txn)
 
         payload: dict[str, object] = {
             "option": option.symbol,
@@ -468,7 +472,7 @@ def assign(
             command="option assign",
             table=table,
             data=payload,
-            warnings=(_REBUILT,) if rebuilt else (),
+            warnings=(*notices, *((_REBUILT,) if rebuilt else ())),
             portfolio=ctx.portfolio_name(),
         )
 
@@ -547,7 +551,7 @@ def exercise(
             fee_class=fee_cls,
         )
         with ctx.write():
-            txn_id, rebuilt, _produced = _derive(repos, txn)
+            txn_id, rebuilt, _produced, notices = _derive(repos, txn)
 
         return CommandResult(
             command="option exercise",
@@ -568,6 +572,7 @@ def exercise(
             warnings=(
                 "The option produced no independent P&L: its premium is now part of "
                 "the stock's basis, and the gain is recognised when the stock is sold.",
+                *notices,
                 *((_REBUILT,) if rebuilt else ()),
             ),
             portfolio=ctx.portfolio_name(),

@@ -38,6 +38,7 @@ from portable_core.domain.enums import (
     TransactionSource,
     TransactionType,
     ValuationBasis,
+    WashSaleStatus,
 )
 
 # ── Portfolio and accounts ───────────────────────────────────────────────────
@@ -567,9 +568,15 @@ class LotDisposition:
     days_held: int
     relief_method: ReliefMethod
     allocated_fees: Decimal = Decimal("0.00")
-    #: v0.2. Until wash-sale detection lands this is always None, and the tax
-    #: report says on its face that it does not account for wash sales.
+    #: ADR 0037. The part of this loss a wash sale disallows, deferred into a
+    #: taxable replacement or lost to a sheltered one. None when no
+    #: replacement disallows any of it.
     wash_sale_deferred: Decimal | None = None
+
+    @property
+    def allowed_gain(self) -> Decimal:
+        """The gain the estimate is taken on: the loss less what is disallowed."""
+        return self.realized_gain + (self.wash_sale_deferred or Decimal("0.00"))
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)
@@ -610,9 +617,53 @@ class RealizedGain:
     #: provenance cannot disclose one without going back for the other, and the
     #: one that gets skipped is always the provenance.
     basis_source: BasisSource = BasisSource.DERIVED
+    #: ADR 0037. The Form 8949 adjustment, code W: the part of a loss a wash
+    #: sale disallows. Zero when none does. `gain` stays proceeds less basis.
+    wash_sale_disallowed: Decimal = Decimal("0.00")
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)
+
+    @property
+    def allowed_gain(self) -> Decimal:
+        """The gain after the wash-sale adjustment: what is reported as taxed."""
+        return self.gain + self.wash_sale_disallowed
+
+
+@dataclass(frozen=True, slots=True)
+class WashSale:
+    """One pairing of a sold lot's loss with the shares that disallow it. ADR 0037.
+
+    Derived, by replay. The sold lot and the replacement are named by their
+    lineage keys (ADR 0036), which no rebuild changes.
+    """
+
+    disposition_id: int
+    txn_id: int
+    account_id: int
+    sold_lot_key: str
+    sale_date: date
+    replacement_lot_key: str
+    replacement_date: date
+    quantity: Decimal
+    disallowed: Decimal
+    status: WashSaleStatus
+    days_absorbed: int
+    wash_sale_id: int | None = None
+
+    def __post_init__(self) -> None:
+        check_decimal_fields(self)
+
+
+@dataclass(frozen=True, slots=True)
+class InstrumentEquivalence:
+    """Two instruments the owner declared substantially identical. ADR 0037."""
+
+    instrument_a_id: int
+    instrument_b_id: int
+    reason: str
+    created_at: str
+    equivalence_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

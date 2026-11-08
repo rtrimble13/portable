@@ -193,10 +193,11 @@ pt tax --year 2025
 ```
 
 Read the disclaimer at the bottom. It is not boilerplate: it says what the
-estimate does not model, and it says plainly that **this report does not account
-for wash sales**. That matters because the 30-day window spans *all* of your
-accounts, including IRAs. Detection lands in v0.2; until then the report says so
-on its face and you cannot turn it off.
+estimate does not model, and it says what **wash-sale detection does not cover**.
+That matters because the 30-day window spans *all* of your accounts, including
+IRAs. Wash sales are applied for the same instrument and for instruments you
+declare substantially identical. The report lists what it does not detect, on its
+face, and you cannot turn that off.
 
 ---
 

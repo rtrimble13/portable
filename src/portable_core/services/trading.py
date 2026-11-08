@@ -119,6 +119,10 @@ class CommitResult:
 
     transaction: Transaction
     rebuilt: bool
+    #: ADR 0037. What applying the row paired as wash sales, for the person
+    #: who entered it: above all a permanent disallowance, and a purchase
+    #: that restates a past tax year.
+    notices: tuple[str, ...] = ()
 
 
 class TradingService:
@@ -229,7 +233,11 @@ class TradingService:
         # The same derivation a rebuild uses, and a full rebuild where this row
         # is back-dated. See the module docstring and ADR 0016.
         rebuilt = self.replay.apply_or_rebuild(stored)
-        return CommitResult(transaction=stored, rebuilt=rebuilt)
+        return CommitResult(
+            transaction=stored,
+            rebuilt=rebuilt,
+            notices=self.replay.wash.notices_for(txn_id),
+        )
 
     # ── checks ───────────────────────────────────────────────────────────────
 

@@ -47,7 +47,13 @@ from portable_core.persistence.repositories import Repositories
 from portable_core.services import snapshots
 from portable_core.services.replay import ReplayEngine
 
-__all__ = ["Recorded", "record_market_price", "record_policy", "record_rate_schedule"]
+__all__ = [
+    "Recorded",
+    "record_equivalence",
+    "record_market_price",
+    "record_policy",
+    "record_rate_schedule",
+]
 
 ZERO = Decimal("0.00")
 
@@ -301,6 +307,89 @@ def record_market_price(
         instrument.instrument_id,
         (f"restated {change}, keeping the prices they recorded",),
     )
+
+
+def record_equivalence(
+    repos: Repositories,
+    first: Instrument,
+    second: Instrument,
+    *,
+    reason: str,
+    restate: bool,
+) -> Recorded:
+    """Declare *first* and *second* substantially identical. ADR 0037, decision 8.
+
+    A declaration applies to every past and future pairing, so the ledger is
+    replayed with it. One that changes a recorded gain is refused unless
+    *restate* says to restate, under ADR 0025's rule: a loss it disallows may
+    be in a year already filed.
+
+    Raises:
+        ValidationError: for the same instrument twice, a pair already
+            declared, an empty reason, or (``PT-E-RESTATES-HISTORY``) a
+            declaration that changes a recorded gain when *restate* is False.
+    """
+    if first.instrument_id == second.instrument_id:
+        raise ValidationError(
+            f"{first.symbol} is the same instrument",
+            remedy="An instrument is matched against itself without a declaration.",
+            symbol=first.symbol,
+        )
+    if not reason.strip():
+        raise ValidationError(
+            "a declaration of substantially identical securities needs a reason",
+            remedy="Say why with --reason: the judgement is the owner's, and is recorded.",
+        )
+    if second.instrument_id in repos.equivalences.equivalents_of(first.instrument_id):
+        raise ValidationError(
+            f"{first.symbol} and {second.symbol} are already declared substantially identical",
+            remedy="`pt instrument equivalents` lists every declaration.",
+            symbols=[first.symbol, second.symbol],
+        )
+
+    before = _all_gains(repos)
+    row_id = repos.equivalences.add(first.instrument_id, second.instrument_id, reason=reason)
+    replayed = ReplayEngine(repos).rebuild()
+    after = _all_gains(repos)
+    gone = Counter(before) - Counter(after)
+    new = Counter(after) - Counter(before)
+    if not gone and not new:
+        return Recorded(row_id)
+
+    with money_context():
+        was = sum((g[-1] for g in gone.elements()), ZERO)
+        now = sum((g[-1] for g in new.elements()), ZERO)
+    dates = sorted(g[0] for g in new.elements()) or sorted(g[0] for g in gone.elements())
+    count = max(sum(gone.values()), sum(new.values()))
+    noun = "realized gain" if count == 1 else "realized gains"
+    change = (
+        f"the wash-sale adjustment on {count} {noun} dated {_span(dates[0], dates[-1])} "
+        f"({to_text(was)} disallowed becomes {to_text(now)})"
+    )
+    if not restate:
+        raise ValidationError(
+            f"declaring {first.symbol} and {second.symbol} substantially identical "
+            f"changes {change}",
+            code=E_RESTATES_HISTORY,
+            remedy=(
+                "A declaration applies to every pairing, past ones included, and a "
+                "loss it disallows may be in a year already reported. Pass --restate "
+                "to record it and restate them."
+            ),
+            symbols=[first.symbol, second.symbol],
+            gains=count,
+            disallowed_was=to_text(was),
+            disallowed_now=to_text(now),
+        )
+    return Recorded(row_id, (f"restated {change}", *replayed.warnings))
+
+
+def _all_gains(repos: Repositories) -> list[tuple[date, int, int, Decimal, Decimal]]:
+    """Every realized gain as a wash-sale declaration can change it."""
+    return [
+        (g.disposition_date, g.account_id, g.instrument_id, g.gain, g.wash_sale_disallowed)
+        for g in repos.lots.realized_gains()
+    ]
 
 
 def _gains(repos: Repositories, account_id: int) -> list[_GainFigures]:

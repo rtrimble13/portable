@@ -885,7 +885,7 @@ It also requires that "for each after-tax composite, all input data, calculation
 
 1. After-tax returns are **supplemental information** under `PORT-GIPS-H08`, always labelled.
 2. `pert` backlog item 8 ("After-tax performance… following AIMR/GIPS after-tax guidance") should be **re-scoped** to cite the USIPC standards explicitly, and to note that they are US-specific, voluntary, and last revised fifteen years ago. The phrase "AIMR/GIPS after-tax guidance" points at a lineage that no longer exists as such.
-3. `portable`'s after-tax capability is a genuine differentiator precisely *because* the global standard abandoned this ground. It should be built well and described honestly — and it inherits `CLAUDE.md`'s existing caveats: not tax advice, not a substitute for a 1099-B, and (until the v0.2 backlog item lands) not wash-sale aware.
+3. `portable`'s after-tax capability is a genuine differentiator precisely *because* the global standard abandoned this ground. It should be built well and described honestly — and it inherits `CLAUDE.md`'s existing caveats: not tax advice, not a substitute for a 1099-B, and wash-sale aware only as far as ADR 0037 detects.
 4. After-tax reporting ranked third in practitioner polling at the 2025 GIPS Standards Conference for topics wanted in future guidance. Nothing is in exposure draft. Watch for it; do not wait for it.
 
 ### 7.2 Attribution

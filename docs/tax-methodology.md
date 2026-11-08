@@ -22,7 +22,8 @@ authoritative.
 | Lot selection under a relief method | ✓ | | |
 | Basis adjustments | ✓ | | |
 | Tax liability | | ✓ | |
-| Wash sales | | | ✗ until v0.2 |
+| Wash sales, for identical and declared instruments | ✓ | | |
+| Wash sales through options, undeclared securities, short sales | | | ✗ listed, not applied |
 | Bracket progressivity, carryforwards, AMT | | | ✗ |
 
 **Exact** means every input is a ledger fact and the arithmetic is defined.
@@ -358,17 +359,62 @@ For the affected years the custodian's 1099-B is the authority and always was.
 What `portable` must not do is print a number that looks like a tax figure and
 is the gain since an arbitrary cutover instead.
 
-## Wash sales — not implemented
+## Wash sales
 
-**`pt tax` does not account for wash sales.** Detection is deferred to v0.2
-(backlog, P0), and until it lands every tax output says so on its face, in every
-format, as an envelope field that a consumer cannot drop without noticing.
+[ADR 0037](adr/0037-wash-sales.md). IRC §1091 disallows a loss on stock or
+securities when substantially identical ones are acquired within 30 days
+before or after the sale. **The window spans every account in the portfolio,
+IRAs included.** Replay pairs each loss with its replacements when the later
+of the two rows is applied, so a rebuild and a live entry agree.
 
-This is stated prominently rather than in a footnote because of what wash sales
-are: **the 30-day window spans *all* of the taxpayer's accounts, including
-IRAs**, and covers substantially identical securities and options. A tax report
-that quietly omitted them would be wrong in a way that looks entirely normal —
-the "silently wrong number" failure mode by definition.
+**What is matched:**
+
+- **Loss sales:** a loss on a long lot in a taxable account, by a sale, an
+  expiration, or the stock a written call delivers.
+- **Replacements**, in any account:
+  - a buy;
+  - a reinvested dividend;
+  - a distribution taken in units;
+  - stock acquired by an option.
+
+  The law has no de minimis, so a small reinvestment disallows its share of
+  a loss.
+- **Instruments:** the same instrument, or one declared substantially
+  identical with `pt instrument equivalent`. `portable` never infers it.
+
+**Matching order:** losses are matched in ledger order, and within one sale
+the earliest-acquired sold lot first. Replacement shares are matched in
+order of acquisition. Each replacement share washes at most one sold share,
+and only that share of the loss is disallowed. Shares bought in one purchase
+are not each other's replacement.
+
+**What a pairing does:**
+
+| Replacement in | Loss | Replacement's basis | Holding period |
+|---|---|---|---|
+| A taxable account | Disallowed (Form 8949 code W) | Increased by the disallowed loss | Absorbs the sold shares' period, counting no day twice |
+| A sheltered account | Disallowed **permanently** | Unchanged (Rev. Rul. 2008-5) | Unchanged |
+| Disposed of before the loss sale | Reported for manual handling | — | — |
+
+The matched shares become their own lot, keyed
+`<replacement>~<sale>.<sold lot>`, so no other lot is renumbered. A purchase
+in January that disallows a December loss restates December's year. The
+purchase's own result says so, and so does a sheltered replacement.
+
+**Not detected, and said so in every tax output:**
+
+- securities not declared substantially identical, which
+  `pt tax wash-candidates` lists;
+- options and contracts to acquire, listed but not applied;
+- lots transferred in or seeded with a custodian-stated basis, which may
+  already carry the custodian's own adjustment;
+- short sales (§1091(e));
+- acquisitions outside this portfolio, such as an account not in the file.
+
+Every account in the file is taken to be the taxpayer's or their spouse's.
+
+The §1091 and §1.1091-1 citations were checked against secondary sources
+only. ADR 0037 records which points are still to be read in primary text.
 
 ---
 

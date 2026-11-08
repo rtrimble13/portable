@@ -184,7 +184,32 @@ app.command("value")(pricing.value)
 app.command("mark")(pricing.mark)
 app.command("holdings")(reporting.holdings)
 app.command("pnl")(reporting.pnl)
-app.command("tax")(reporting.tax)
+# `pt tax` is the report; `pt tax wash-candidates` lists what ADR 0037 does not
+# match itself. The report runs when no subcommand is given, so `pt tax --year`
+# keeps working.
+tax_app = typer.Typer(
+    help="Realized gains and estimated tax; wash-sale candidates.",
+    invoke_without_command=True,
+)
+
+
+@tax_app.callback()
+def _tax(
+    ctx: typer.Context,
+    year: Annotated[int | None, typer.Option("--year")] = None,
+    account: Annotated[str | None, typer.Option("--account", "-a")] = None,
+) -> None:
+    """Realized gains by holding period, with estimated liability and wash sales.
+
+    `pt tax wash-candidates` lists acquisitions in a loss's window that are not
+    matched automatically (ADR 0037).
+    """
+    if ctx.invoked_subcommand is None:
+        reporting.tax(year=year, account=account)
+
+
+tax_app.command("wash-candidates")(reporting.wash_candidates)
+app.add_typer(tax_app, name="tax")
 app.command("activity")(reporting.activity)
 app.command("cash-flows")(reporting.cash_flows)
 app.command("reconcile")(reporting.reconcile)

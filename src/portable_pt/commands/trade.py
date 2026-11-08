@@ -131,7 +131,7 @@ def _trade(
             **result.data,
             "txn_id": committed.transaction.txn_id,
         }
-        warnings = result.warnings
+        warnings = (*result.warnings, *committed.notices)
         if committed.rebuilt:
             # A back-dated entry sorts before rows already applied, so derived
             # state was replayed from the ledger rather than extended. Worth

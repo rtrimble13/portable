@@ -722,7 +722,9 @@ at the end.
 
 **Open.**
 
-- **Wash sales are not detected** until `v0.2`; `pt tax` says so on its face.
+- **Wash sales** are detected across accounts (ADR 0037). Lots seeded from a
+  custodian's basis are listed as candidates, not matched, because that basis may
+  already carry the custodian's own adjustment.
 
 ---
 

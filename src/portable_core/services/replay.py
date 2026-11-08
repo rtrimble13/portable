@@ -82,6 +82,7 @@ from portable_core.services.lots import (
 )
 from portable_core.services.positions import PositionEngine, leg_role_for
 from portable_core.services.tax import TaxEngine
+from portable_core.services.wash_sales import WashSaleMatcher
 
 __all__ = [
     "LegacyReader",
@@ -115,6 +116,18 @@ _ACTION_TYPE_FOR: dict[TransactionType, str] = {
     TransactionType.MERGER_STOCK: "merger",
 }
 _CORPORATE_ACTIONS = frozenset(_ACTION_TYPE_FOR)
+
+#: ADR 0037. Opening rows whose lot can wash a loss: acquisitions by purchase.
+#: A short sale opens a lot and acquires nothing; an in-kind transfer moves a
+#: lot acquired before (decision 7).
+_ACQUISITIONS = frozenset(
+    {
+        TransactionType.BUY,
+        TransactionType.DIVIDEND_REINVEST,
+        TransactionType.CAPITAL_GAIN_LT,
+        TransactionType.CAPITAL_GAIN_ST,
+    }
+)
 
 #: ADR 0038. Rows on an option that resolve it: replay derives the option's
 #: side and, for an assignment or an exercise, the stock's.
@@ -247,6 +260,8 @@ class ReplayEngine:
         self.corporate_actions = CorporateActionEngine()
         self.positions = PositionEngine()
         self.tax = TaxEngine()
+        # ADR 0037. Pairs losses with replacements as rows are applied.
+        self.wash = WashSaleMatcher(repos, self.tax)
         self._legacy_reader = legacy_reader or self._recorded_meaning
 
     def rebuild(self) -> ReplayResult:
@@ -493,6 +508,10 @@ class ReplayEngine:
             TransactionType.TRANSFER_IN,
         }:
             self._open(txn, counters)
+            if txn.txn_type in _ACQUISITIONS:
+                acquired = self.repos.lots.by_key(opening_lot_key(txn.txn_id))
+                assert acquired is not None
+                self.wash.after_acquisition(txn, acquired)
         elif txn.txn_type in {
             TransactionType.SELL,
             TransactionType.BUY_TO_COVER,
@@ -793,7 +812,9 @@ class ReplayEngine:
                 fees=txn.total_costs,
             )
 
-        self._record(plan, dispositions, txn, account, counters)
+        stored = self._record(plan, dispositions, txn, account, counters)
+        if not covering:
+            self.wash.after_disposals(txn, stored)
 
     def _record(
         self,
@@ -802,10 +823,15 @@ class ReplayEngine:
         txn: Transaction,
         account: Account,
         counters: dict[str, int],
-    ) -> None:
-        """Store a closing trade's dispositions and gains, and consume its lots."""
+    ) -> list[LotDisposition]:
+        """Store a closing trade's dispositions and gains, and consume its lots.
+
+        Returns the dispositions as stored, with their ids, for the wash-sale
+        matcher (ADR 0037).
+        """
         schedules = self.repos.accounts.rate_schedules(txn.account_id)
         leg_ids: set[int] = set()
+        stored_all: list[LotDisposition] = []
 
         for consumption, disposition in zip(plan.consumptions, dispositions, strict=True):
             disposition_id = self.repos.lots.add_disposition(disposition)
@@ -823,9 +849,11 @@ class ReplayEngine:
             # slots dataclasses, so there is no __dict__ to splat.
             stored = replace(disposition, disposition_id=disposition_id)
             self.repos.lots.add_realized_gain(self.tax.estimate(stored, account, schedules))
+            stored_all.append(stored)
 
         for leg_id in sorted(leg_ids):
             self._refresh_leg(leg_id, txn.trade_date)
+        return stored_all
 
     # ── return of capital (ADR 0039) ─────────────────────────────────────────
 
@@ -1095,7 +1123,9 @@ class ReplayEngine:
                 gross_proceeds=ZERO,
                 fees=txn.total_costs,
             )
-        self._record(plan, dispositions, txn, account, counters)
+        stored = self._record(plan, dispositions, txn, account, counters)
+        if not written:
+            self.wash.after_disposals(txn, stored)
 
     def _consume_without_disposition(self, plan: ReliefPlan, on: date) -> None:
         """Close option lots whose premium moves into the stock's figures."""
@@ -1137,7 +1167,8 @@ class ReplayEngine:
             gross_proceeds=proceeds,
             fees=txn.total_costs,
         )
-        self._record(plan, dispositions, txn, account, counters)
+        stored = self._record(plan, dispositions, txn, account, counters)
+        self.wash.after_disposals(txn, stored)
 
     def _receive_stock(
         self,
@@ -1197,6 +1228,9 @@ class ReplayEngine:
                 note=note,
             )
         )
+        acquired = self.repos.lots.by_key(opening_lot_key(txn.txn_id))
+        assert acquired is not None
+        self.wash.after_acquisition(txn, acquired)
 
     def _selection(self, txn: Transaction, open_lots: list[Lot]) -> dict[int, Decimal] | None:
         """The lot ids in this replay of the lots *txn* designates, or None.

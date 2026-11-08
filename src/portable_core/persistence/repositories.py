@@ -32,6 +32,7 @@ from portable_core.domain.models import (
     CashFlow,
     CorporateAction,
     Instrument,
+    InstrumentEquivalence,
     Lot,
     LotDesignation,
     LotDisposition,
@@ -46,6 +47,7 @@ from portable_core.domain.models import (
     TaxRateSchedule,
     Transaction,
     ValuationSnapshot,
+    WashSale,
 )
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import (
@@ -1377,6 +1379,62 @@ class LotRepository(_Repository):
             for r in self.con.execute(sql, params)
         ]
 
+    def acquired_between(
+        self, instrument_ids: set[int] | None, start: date, end: date
+    ) -> list[Lot]:
+        """Long lots opened from *start* to *end*, in any account.
+
+        Of *instrument_ids*, or of every instrument when it is None. Open or
+        closed: ADR 0037 matches the shares a lot acquired, including those
+        since disposed of. Ordered by acquisition, then the opening row.
+        """
+        if instrument_ids is not None and not instrument_ids:
+            return []
+        ids = sorted(instrument_ids) if instrument_ids is not None else []
+        within = f"instrument_id IN ({', '.join('?' for _ in ids)}) AND " if ids else ""
+        rows = self.con.execute(
+            f"SELECT * FROM lot WHERE {within}is_short = 0 "  # noqa: S608 -- placeholders only
+            "AND open_date BETWEEN ? AND ? ORDER BY open_date, open_txn_id, lot_key",
+            (*ids, start.isoformat(), end.isoformat()),
+        ).fetchall()
+        return [mappers.to_lot(r, tuple(self.adjustments(int(r["lot_id"])))) for r in rows]
+
+    def dispositions_between(
+        self, instrument_ids: set[int], start: date, end: date
+    ) -> list[LotDisposition]:
+        """Dispositions of *instrument_ids* from *start* to *end*, any account."""
+        if not instrument_ids:
+            return []
+        marks = ", ".join("?" for _ in instrument_ids)
+        return [
+            mappers.to_disposition(r)
+            for r in self.con.execute(
+                f"SELECT * FROM lot_disposition WHERE instrument_id IN ({marks}) "  # noqa: S608 -- placeholders only
+                "AND disposition_date BETWEEN ? AND ? "
+                "ORDER BY disposition_date, disposition_id",
+                (*sorted(instrument_ids), start.isoformat(), end.isoformat()),
+            )
+        ]
+
+    def update_split(self, lot: Lot) -> None:
+        """Store a lot that shares were split off. ADR 0037."""
+        self.con.execute(
+            "UPDATE lot SET original_quantity = ?, remaining_quantity = ?, "
+            "per_unit_price = ?, allocated_fees = ?, original_cost_basis = ?, "
+            "adjusted_cost_basis = ?, status = ?, closed_date = ? WHERE lot_id = ?",
+            (
+                to_text(lot.original_quantity),
+                to_text(lot.remaining_quantity),
+                to_text(lot.per_unit_price),
+                to_text(lot.allocated_fees),
+                to_text(lot.original_cost_basis),
+                to_text(lot.adjusted_cost_basis),
+                str(lot.status),
+                lot.closed_date.isoformat() if lot.closed_date else None,
+                lot.lot_id,
+            ),
+        )
+
     def by_leg(self, leg_id: int, *, open_only: bool = True) -> list[Lot]:
         sql = "SELECT * FROM lot WHERE leg_id = ?"
         if open_only:
@@ -1516,8 +1574,9 @@ class LotRepository(_Repository):
         cursor = self.con.execute(
             "INSERT INTO realized_gain (disposition_id, account_id, instrument_id, "
             "tax_year, disposition_date, holding_period, proceeds, cost_basis, gain, "
-            "rate_id, federal_rate, state_rate, niit_rate, estimated_tax, is_taxable) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "wash_sale_disallowed, rate_id, federal_rate, state_rate, niit_rate, "
+            "estimated_tax, is_taxable) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 gain.disposition_id,
                 gain.account_id,
@@ -1528,6 +1587,7 @@ class LotRepository(_Repository):
                 to_text(gain.proceeds),
                 to_text(gain.cost_basis),
                 to_text(gain.gain),
+                to_text(gain.wash_sale_disallowed),
                 gain.rate_id,
                 _text(gain.federal_rate),
                 _text(gain.state_rate),
@@ -1537,6 +1597,30 @@ class LotRepository(_Repository):
             ),
         )
         return int(cursor.lastrowid or 0)
+
+    def disposition(self, disposition_id: int) -> LotDisposition | None:
+        row = self.con.execute(
+            "SELECT * FROM lot_disposition WHERE disposition_id = ?", (disposition_id,)
+        ).fetchone()
+        return mappers.to_disposition(row) if row is not None else None
+
+    def set_wash_sale_deferred(self, disposition_id: int, amount: Decimal | None) -> None:
+        """ADR 0037. What of a disposition's loss wash sales disallow."""
+        self.con.execute(
+            "UPDATE lot_disposition SET wash_sale_deferred = ? WHERE disposition_id = ?",
+            (_text(amount), disposition_id),
+        )
+
+    def replace_realized_gain(self, gain: RealizedGain) -> None:
+        """Restate a disposition's gain row, as a later wash-sale pairing does.
+
+        Derived state, rewritten by replay: a replacement bought after a loss
+        sale disallows part of a loss already estimated (ADR 0037).
+        """
+        self.con.execute(
+            "DELETE FROM realized_gain WHERE disposition_id = ?", (gain.disposition_id,)
+        )
+        self.add_realized_gain(gain)
 
     def realized_gains(
         self, *, tax_year: int | None = None, account_id: int | None = None
@@ -1565,6 +1649,104 @@ class LotRepository(_Repository):
                 params,
             )
         ]
+
+
+class WashSaleRepository(_Repository):
+    """Pairings of a loss with the replacement shares that disallow it. ADR 0037.
+
+    Derived state: written by replay, emptied by `clear_derived`.
+    """
+
+    def add(self, wash: WashSale) -> int:
+        cursor = self.con.execute(
+            "INSERT INTO wash_sale (disposition_id, txn_id, account_id, sold_lot_key, "
+            "sale_date, replacement_lot_key, replacement_date, quantity, disallowed, "
+            "status, days_absorbed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                wash.disposition_id,
+                wash.txn_id,
+                wash.account_id,
+                wash.sold_lot_key,
+                wash.sale_date.isoformat(),
+                wash.replacement_lot_key,
+                wash.replacement_date.isoformat(),
+                to_text(wash.quantity),
+                to_text(wash.disallowed),
+                str(wash.status),
+                wash.days_absorbed,
+            ),
+        )
+        return int(cursor.lastrowid or 0)
+
+    def for_disposition(self, disposition_id: int) -> list[WashSale]:
+        return [
+            mappers.to_wash_sale(r)
+            for r in self.con.execute(
+                "SELECT * FROM wash_sale WHERE disposition_id = ? ORDER BY wash_sale_id",
+                (disposition_id,),
+            )
+        ]
+
+    def for_replacement(self, lot_key: str) -> list[WashSale]:
+        return [
+            mappers.to_wash_sale(r)
+            for r in self.con.execute(
+                "SELECT * FROM wash_sale WHERE replacement_lot_key = ? ORDER BY wash_sale_id",
+                (lot_key,),
+            )
+        ]
+
+    def all(self, *, sale_year: int | None = None) -> list[WashSale]:
+        sql = "SELECT * FROM wash_sale"
+        params: tuple[Any, ...] = ()
+        if sale_year is not None:
+            sql += " WHERE substr(sale_date, 1, 4) = ?"
+            params = (f"{sale_year:04d}",)
+        return [
+            mappers.to_wash_sale(r)
+            for r in self.con.execute(sql + " ORDER BY sale_date, wash_sale_id", params)
+        ]
+
+
+class EquivalenceRepository(_Repository):
+    """Instruments the owner declared substantially identical. ADR 0037.
+
+    Reference state: never written by a rebuild.
+    """
+
+    def add(self, first: int, second: int, *, reason: str) -> int:
+        low, high = sorted((first, second))
+        cursor = self.con.execute(
+            "INSERT INTO instrument_equivalence (instrument_a_id, instrument_b_id, "
+            "reason, created_at) VALUES (?, ?, ?, ?)",
+            (low, high, reason, self.clock.stamp()),
+        )
+        return int(cursor.lastrowid or 0)
+
+    def all(self) -> list[InstrumentEquivalence]:
+        return [
+            mappers.to_instrument_equivalence(r)
+            for r in self.con.execute(
+                "SELECT * FROM instrument_equivalence ORDER BY equivalence_id"
+            )
+        ]
+
+    def equivalents_of(self, instrument_id: int) -> set[int]:
+        """Instruments declared substantially identical to *instrument_id*.
+
+        Direct declarations only. Equivalence is not taken to be transitive:
+        two instruments each declared identical to a third are not thereby
+        declared identical to each other.
+        """
+        found: set[int] = set()
+        for row in self.con.execute(
+            "SELECT instrument_a_id, instrument_b_id FROM instrument_equivalence "
+            "WHERE instrument_a_id = ? OR instrument_b_id = ?",
+            (instrument_id, instrument_id),
+        ):
+            found.update((int(row[0]), int(row[1])))
+        found.discard(instrument_id)
+        return found
 
 
 # ── balances and valuations ──────────────────────────────────────────────────
@@ -2089,6 +2271,8 @@ class Repositories:
         self.benchmarks = BenchmarkRepository(con, clock)
         self.statements = StatementRepository(con, clock)
         self.designations = DesignationRepository(con, clock)
+        self.wash_sales = WashSaleRepository(con, clock)
+        self.equivalences = EquivalenceRepository(con, clock)
 
     #: Derived tables, with the column ordering that makes a digest of them
     #: stable, and the surrogate key to exclude from it. Surrogate ids are
@@ -2104,6 +2288,10 @@ class Repositories:
             "disposition_id",
         ),
         "realized_gain": ("account_id, disposition_date, gain", "realized_gain_id"),
+        "wash_sale": (
+            "txn_id, sold_lot_key, replacement_lot_key, status",
+            "wash_sale_id",
+        ),
         "cash_balance": ("account_id, currency", ""),
     }
 
@@ -2194,6 +2382,7 @@ class Repositories:
         "instrument_symbol_history",
         "instrument_option",
         "instrument_bond",
+        "instrument_equivalence",
         "price",
         "statement_position",
         "price_acceptance",
@@ -2325,6 +2514,7 @@ class Repositories:
         stale, and checked by `pt validate` (ADR 0024).
         """
         for table in (
+            "wash_sale",
             "realized_gain",
             "lot_disposition",
             "lot_basis_adjustment",

@@ -36,6 +36,7 @@ from portable_core.domain.enums import (
     TransactionSource,
     TransactionType,
     ValuationBasis,
+    WashSaleStatus,
 )
 from portable_core.domain.models import (
     Account,
@@ -44,6 +45,7 @@ from portable_core.domain.models import (
     BondDetail,
     CorporateAction,
     Instrument,
+    InstrumentEquivalence,
     Lot,
     LotDesignation,
     LotDisposition,
@@ -57,6 +59,7 @@ from portable_core.domain.models import (
     StatementPosition,
     TaxRateSchedule,
     Transaction,
+    WashSale,
 )
 
 __all__ = [
@@ -68,6 +71,7 @@ __all__ = [
     "to_decimal",
     "to_disposition",
     "to_instrument",
+    "to_instrument_equivalence",
     "to_lot",
     "to_position",
     "to_position_leg",
@@ -76,6 +80,7 @@ __all__ = [
     "to_return_policy",
     "to_tax_rate_schedule",
     "to_transaction",
+    "to_wash_sale",
 ]
 
 
@@ -414,6 +419,34 @@ def to_realized_gain(row: sqlite3.Row) -> RealizedGain:
         # would be a claim, so the absence is handled by the caller supplying
         # the column rather than by guessing here.
         basis_source=BasisSource(row["basis_source"]),
+        wash_sale_disallowed=to_decimal(row["wash_sale_disallowed"]),
+    )
+
+
+def to_wash_sale(row: sqlite3.Row) -> WashSale:
+    return WashSale(
+        disposition_id=int(row["disposition_id"]),
+        txn_id=int(row["txn_id"]),
+        account_id=int(row["account_id"]),
+        sold_lot_key=str(row["sold_lot_key"]),
+        sale_date=to_date(row["sale_date"]),
+        replacement_lot_key=str(row["replacement_lot_key"]),
+        replacement_date=to_date(row["replacement_date"]),
+        quantity=to_decimal(row["quantity"]),
+        disallowed=to_decimal(row["disallowed"]),
+        status=WashSaleStatus(row["status"]),
+        days_absorbed=int(row["days_absorbed"]),
+        wash_sale_id=int(row["wash_sale_id"]),
+    )
+
+
+def to_instrument_equivalence(row: sqlite3.Row) -> InstrumentEquivalence:
+    return InstrumentEquivalence(
+        instrument_a_id=int(row["instrument_a_id"]),
+        instrument_b_id=int(row["instrument_b_id"]),
+        reason=str(row["reason"]),
+        created_at=str(row["created_at"]),
+        equivalence_id=int(row["equivalence_id"]),
     )
 
 

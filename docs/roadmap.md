@@ -153,8 +153,10 @@ Then:
 9. **Tearsheet** — modelled on a GIPS Asset Owner Report, with a generated
    disclosure block.
 
-**Also v0.2, and P0:** wash-sale detection. Until it lands, `pt tax` states on
-its face that it does not account for wash sales.
+**Also v0.2, and P0:** wash-sale detection. Built in ADR 0037: losses paired
+with replacements across every account, in replay. Not detected, and listed on
+every tax report: options, undeclared substantially identical securities,
+in-kind lots and short sales.
 
 ---
 

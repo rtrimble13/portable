@@ -16,6 +16,32 @@ Two rules specific to this repository:
 
 ### Added
 
+- **Wash sales are detected, across every account** (ADR 0037, accepted by
+  the owner with the recommended answers).
+  - **Matching.** Replay pairs each loss on a long lot in a taxable account
+    with replacement shares acquired within 30 days before or after it. A
+    replacement is a buy, a reinvestment, units taken, or stock acquired by an
+    option, in any account. Pairing happens when the later of the two rows is
+    applied, so a rebuild and a live entry agree.
+  - **Deferral.** The disallowed loss goes into the replacement's basis, and
+    the replacement's holding period absorbs the sold shares'. A replacement
+    in a sheltered account loses the loss for good (Rev. Rul. 2008-5), and
+    its purchase says so.
+  - **Lot keys.** Matched shares become their own lot, keyed
+    `<replacement>~<sale>.<sold lot>`, so nothing is renumbered.
+  - **Manual handling.** A replacement disposed of before the loss sale is
+    reported for manual handling, and its year is marked incomplete.
+  - **Notices.** A purchase that restates a past year says which year.
+- **`pt instrument equivalent A B --reason`** declares two instruments
+  substantially identical, and `pt instrument equivalents` lists every
+  declaration. `portable` never infers it. A declaration applies to every
+  pairing, and one that changes a recorded gain is refused unless
+  `--restate` (ADR 0025).
+- **`pt tax wash-candidates`** lists, for each loss in a year, what is in its
+  window but not matched automatically: other instruments, options on the
+  same underlying, and lots transferred in or seeded from a custodian.
+  Proposed, never applied; `--type` filters it for reading.
+
 - **`pt instrument correct-symbol`: a symbol recorded in error is corrected,
   not renamed** (ADR 0034). Every period of the instrument's symbol history
   that carried the wrong ticker carries the right one, with no period opened
@@ -309,6 +335,15 @@ Two rules specific to this repository:
 
 ### Schema
 
+- **`schema_version` 10 → 11**, migration `0011_wash_sales` (ADR 0037).
+  - `lot_disposition` and `realized_gain` are recreated empty for
+    `pt migrate` to rebuild. The gain gains `wash_sale_disallowed`, the
+    Form 8949 code W adjustment, and the disposition's `wash_sale_deferred`
+    now holds what its name says.
+  - A new derived table, `wash_sale`, records each pairing.
+  - A new reference table, `instrument_equivalence`, records the pairs
+    declared substantially identical. `pt export` carries it.
+  - Valuation snapshots are kept.
 - **`schema_version` 9 → 10**, migration `0010_lot_lineage_keys` (ADR 0036).
   `lot` is recreated with `lot_key`, a lot's lineage (`NOT NULL UNIQUE`), and
   derived state is cleared for `pt migrate` to rebuild. Valuation snapshots
@@ -351,6 +386,20 @@ Two rules specific to this repository:
   preserved and nothing else moves.
 
 ### Changed
+
+- **`pt tax` reports wash sales (schema `tax-2.0`).**
+  - Totals are the allowed gains: Schedule D's column (h).
+  - Each disposition carries `wash_sale_disallowed` and `allowed_gain`.
+  - `data.wash_sales` states what was detected, what was not, the total
+    disallowed and the part disallowed permanently, and any pairings left
+    for manual handling.
+  - `excludes_wash_sales` is gone. The disclaimer now says precisely what is
+    not detected.
+  - `pt tax` became a group. With no subcommand it is still the report.
+- **`pt pnl` counts a deferred loss once.** Its realized P&L adds back a loss
+  a wash sale deferred into a replacement's basis, because that loss is now
+  in the replacement's unrealized P&L. A loss lost to a sheltered
+  replacement stays realized: it is a real loss.
 
 - **Option lifecycle rows are recorded on the option** (ADR 0038).
   - `option_assignment`, `option_exercise` and `option_expiration` rows name

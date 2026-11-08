@@ -230,8 +230,9 @@ GIPS® is a registered trademark of CFA Institute, which does not endorse this
 tool.
 
 **Nothing in `portable` is tax advice**, and it is not a substitute for a
-broker's 1099-B. Wash-sale detection is deferred to v0.2, and until it lands the
-tax report says so on its face.
+broker's 1099-B. Wash sales are detected across every account in the portfolio
+for the same instrument and instruments declared substantially identical
+(ADR 0037); what is not detected is listed on every tax report.
 
 ---
 

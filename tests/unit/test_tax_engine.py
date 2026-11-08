@@ -208,14 +208,16 @@ def test_the_summary_only_covers_the_requested_year() -> None:
 
 
 def test_the_wash_sale_and_not_tax_advice_statements_are_not_suppressible() -> None:
-    """ADR 0011.
+    """ADR 0011, ADR 0037.
 
-    A tax report that quietly omits wash sales is the silently-wrong-number
-    failure mode by definition: the 30-day window spans every account the
-    taxpayer has, including IRAs.
+    A tax report that quietly omitted what its wash-sale detection does not
+    cover is the silently-wrong-number failure mode by definition: the 30-day
+    window spans every account the taxpayer has, and reaches options and
+    substantially identical securities this version does not match.
     """
     summary = ENGINE.summarise([], 2025)
-    assert summary.excludes_wash_sales is True
+    assert summary.wash_sales_not_detected, "what is not detected is always stated"
+    assert any("option" in item for item in summary.wash_sales_not_detected)
     assert "wash sale" in summary.disclaimer.lower()
     assert "not tax advice" in summary.disclaimer.lower()
     assert "1099-B" in summary.disclaimer

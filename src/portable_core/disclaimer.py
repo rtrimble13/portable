@@ -40,16 +40,41 @@ WRAP_KWARGS: Final[dict[str, object]] = {
     "break_long_words": False,
 }
 
-#: Carried by every tax report until wash-sale detection lands (ADR 0011).
-#: A tax report that quietly omits wash sales is the "silently wrong number"
-#: failure mode by definition, so this is not suppressible.
+#: What wash-sale detection covers (ADR 0037, decision 2). Carried by every
+#: tax report beside :data:`WASH_SALES_NOT_DETECTED`.
+WASH_SALES_DETECTED: Final[tuple[str, ...]] = (
+    "losses on long lots in taxable accounts, by sale, expiration, or the stock a "
+    "written call delivers",
+    "replacements bought, reinvested, taken in units or acquired by an option, in "
+    "every account of this portfolio, IRAs included, within 30 days before or after",
+    "the same instrument, and instruments declared substantially identical with "
+    "`pt instrument equivalent`",
+)
+
+#: What it does not, stated in every tax output (ADR 0037, decision 11). A tax
+#: report that quietly omitted these would be the "silently wrong number"
+#: failure mode by definition, so the list is not suppressible.
+WASH_SALES_NOT_DETECTED: Final[tuple[str, ...]] = (
+    "securities not declared substantially identical (`pt tax wash-candidates` lists them)",
+    "options and contracts to acquire (listed as candidates, not applied)",
+    "lots transferred in, or seeded with a custodian-stated basis that may already "
+    "carry the custodian's own adjustment (listed as candidates)",
+    "short sales, and the purchases that close them (IRC 1091(e))",
+    "acquisitions outside this portfolio, such as an account not in this file",
+    "replacements disposed of before the loss sale, which are reported for manual "
+    "handling and mark the year incomplete",
+)
+
+#: Carried by every tax report (ADR 0011). Not suppressible.
 TAX_DISCLAIMER: Final[str] = (
     "This is an estimate, not tax advice, and portable is not a substitute for a "
-    "broker's 1099-B. Estimated liability is computed as realized gain multiplied by "
-    "the account's effective-dated rate for the holding period at disposition; it does "
-    "not model bracket progressivity, the capital-loss limitation or carryforward, "
-    "qualified-dividend rate stacking, AMT, or any other income. This report does NOT "
-    "account for wash sales: the 30-day window spans all of the taxpayer's accounts, "
-    "including IRAs, and covers substantially identical securities and options. "
-    "Wash-sale detection is deferred to v0.2."
+    "broker's 1099-B. Estimated liability is computed as the allowed gain multiplied "
+    "by the account's effective-dated rate for the holding period at disposition; it "
+    "does not model bracket progressivity, the capital-loss limitation or "
+    "carryforward, qualified-dividend rate stacking, AMT, or any other income. Wash "
+    "sales are applied for the same instrument and for instruments declared "
+    "substantially identical, across every account in this portfolio including IRAs. "
+    "This report does NOT detect a wash sale through an undeclared security, an "
+    "option, a lot transferred in, a short sale, or an account outside this "
+    "portfolio; each report lists what it does not detect."
 )

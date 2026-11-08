@@ -318,11 +318,12 @@ def _income(
             from dataclasses import replace
 
             rebuilt = service.replay.apply_or_rebuild(replace(txn, txn_id=txn_id))
+            notices = service.replay.wash.notices_for(txn_id)
 
         return CommandResult(
             command=f"income {txn_type}",
             data={**payload, "txn_id": txn_id, **({"rebuilt": True} if rebuilt else {})},
-            warnings=(_BACKDATED,) if rebuilt else (),
+            warnings=(*notices, *((_BACKDATED,) if rebuilt else ())),
             portfolio=ctx.portfolio_name(),
         )
 

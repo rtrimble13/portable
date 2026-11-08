@@ -137,6 +137,20 @@ class LotStatus(enum.StrEnum):
     CLOSED = "closed"
 
 
+class WashSaleStatus(enum.StrEnum):
+    """What became of one wash-sale pairing. ADR 0037."""
+
+    #: Added to a taxable replacement's basis; deductible when it is sold.
+    DEFERRED = "deferred"
+    #: The replacement is in a sheltered account: the loss is lost, not
+    #: deferred, and no basis is increased (Rev. Rul. 2008-5).
+    PERMANENT = "permanent"
+    #: The replacement was disposed of before the loss sale, so the basis it
+    #: would carry is gone. Reported for manual handling; the year is marked
+    #: incomplete (ADR 0037, answer 1).
+    MANUAL = "manual"
+
+
 class DesignationStatus(enum.StrEnum):
     """Whether a designation written before schema 10 has a meaning. ADR 0036."""
 

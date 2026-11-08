@@ -254,5 +254,5 @@ def test_short_and_long_stay_apart_through_the_exclusion() -> None:
 def test_the_wash_sale_statement_is_untouched_by_any_of_this() -> None:
     """Two separate incompleteness claims; neither may mask the other."""
     summary = TaxEngine().summarise([_gain(BasisSource.UNAVAILABLE)], YEAR)
-    assert summary.excludes_wash_sales is True
+    assert summary.wash_sales_not_detected
     assert summary.disclaimer

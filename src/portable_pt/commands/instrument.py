@@ -306,6 +306,92 @@ def market_price(
     dispatch(action)
 
 
+@app.command(name="equivalent")
+def equivalent(
+    first: Annotated[str, typer.Argument(help="One instrument.")],
+    second: Annotated[str, typer.Argument(help="The other.")],
+    reason: Annotated[
+        str, typer.Option("--reason", help="Why they are substantially identical.")
+    ],
+    restate: Annotated[
+        bool, typer.Option("--restate", help="Restate the recorded gains it changes.")
+    ] = False,
+) -> None:
+    """Declare two instruments substantially identical for wash sales.
+
+    ADR 0037. `portable` never infers it: whether two securities are
+    substantially identical is a judgement, and a wrong guess silently allows
+    or disallows a loss. A purchase of either is then matched against a loss on
+    the other, in every account.
+
+    The declaration applies to every past and future pairing. One that changes
+    a recorded gain is refused with PT-E-RESTATES-HISTORY unless --restate
+    (ADR 0025). `pt tax wash-candidates` lists the pairs worth considering.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        one = repos.instruments.resolve(first, on=ctx.as_of)
+        other = repos.instruments.resolve(second, on=ctx.as_of)
+
+        with ctx.write():
+            recorded = restatement.record_equivalence(
+                repos, one, other, reason=reason, restate=restate
+            )
+
+        return CommandResult(
+            command="instrument equivalent",
+            data={
+                "instruments": [one.symbol, other.symbol],
+                "reason": reason,
+                "restated": bool(recorded.restated),
+            },
+            warnings=recorded.restated,
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
+@app.command(name="equivalents")
+def equivalents() -> None:
+    """Every pair declared substantially identical, with its reason (ADR 0037)."""
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        rows: list[dict[str, object]] = []
+        for pair in repos.equivalences.all():
+            a = repos.instruments.get(pair.instrument_a_id)
+            b = repos.instruments.get(pair.instrument_b_id)
+            rows.append(
+                {
+                    "first": a.symbol if a else None,
+                    "second": b.symbol if b else None,
+                    "reason": pair.reason,
+                    "declared": pair.created_at,
+                }
+            )
+        return CommandResult(
+            command="instrument equivalents",
+            table=Table(
+                columns=(
+                    Column("first", "Instrument"),
+                    Column("second", "Substantially identical to"),
+                    Column("reason", "Reason"),
+                    Column("declared", "Declared"),
+                ),
+                rows=tuple(rows),
+                title="Declared substantially identical",
+            ),
+            data={"pairs": len(rows)},
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
 @app.command(name="correct-symbol")
 def correct_symbol(
     symbol: Annotated[str, typer.Argument(help="The symbol recorded in error.")],
