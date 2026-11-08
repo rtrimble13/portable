@@ -67,7 +67,7 @@ def _run(*args: str) -> dict[str, Any]:
     completed = subprocess.run(
         [sys.executable, "-m", "portable_pt", "--format", "json", *args],
         capture_output=True,
-        text=True,
+        encoding="utf-8",  # what `pt` writes, on every platform
         check=False,
         cwd=ROOT,
         # Inherit the real environment rather than replacing it: a hand-built

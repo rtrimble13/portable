@@ -235,6 +235,10 @@ One formatter subsystem, four formats, used by every CLI:
 - **`table`** — Rich, colour-aware, degrades to plain text on a non-TTY or under
   `NO_COLOR`.
 
+All four are written in UTF-8 whatever the console's code page: a CLI's entry
+point calls `portable_core.cli.streams.configure_streams()` before it writes
+anything, so no formatter and no call site has to think about encodings.
+
 Two return-specific rules live in the formatter **so that no call site can bypass
 them**:
 

@@ -466,6 +466,23 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **On Windows, a command whose output held a character outside cp1252
+  crashed after doing its work.** Python encodes stdout in the console's code
+  page once it is a pipe or a file: a redirect, `| jq`, an agent, a test
+  harness. `pt ca convert` (whose title is `FUNDI → FUNDR`), `pt import
+  broker` (`unpaired → …` rule labels) and `pt lot show` (`Basis Δ`) raised
+  `UnicodeEncodeError` in every format, JSON included, because the envelope
+  carries the table title. A mutating command had already committed, so the
+  crash also hid what it wrote. Characters cp1252 does have came out as
+  different bytes: `—`, the null placeholder, was `0x97` on Windows and
+  UTF-8 elsewhere, so output depended on the locale (invariant 6). `pt` now
+  sets stdout and stderr to UTF-8 at its entry point, for every character
+  and every format, whatever `PYTHONIOENCODING` says. JSON bytes are the
+  same on every platform; line endings stay the platform's. `errors="replace"`
+  was rejected because it rewrites JSON data silently, and an ASCII fallback
+  because it covers only the characters on its list and never a custodian's
+  instrument names.
+
 - **Table and CSV output never showed a command's warnings.** Not even a dry
   run's `DRY RUN: nothing was written to the portfolio.`, so in the default
   format a dry run and the real write looked the same; nor rebuild notices,
