@@ -7,10 +7,10 @@
 
 ## Context
 
-Bootstrap §4.4: "**A position may span multiple securities** — a vertical spread,
-a covered call, a collar, a bond plus its hedge." Positions track P&L
-**independent of tax**; tax is an account-level concern (§4.2). Lots are the tax
-engine's atoms (§4.5).
+**A position may span multiple securities** — a vertical spread, a covered
+call, a collar, a bond plus its hedge (`CLAUDE.md`, "Domain glossary").
+Positions track P&L **independent of tax**; tax is an account-level concern.
+Lots are the tax engine's atoms.
 
 Most portfolio systems make "position" a synonym for "holding of one instrument
 in one account". That model cannot express a covered call as one thing, and the

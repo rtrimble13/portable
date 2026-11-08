@@ -3,7 +3,7 @@
 Both are run by ``make lint`` and by CI, and **neither may be silenced**:
 
 * :mod:`portable_core.lint.no_float` — no binary floating point in any money,
-  quantity, price, or rate path (``CLAUDE.md`` invariant 1, bootstrap §3.2).
+  quantity, price, or rate path (``CLAUDE.md`` invariant 1).
 * :mod:`portable_core.lint.gips_language` — no compliance claim about the GIPS
   standards, anywhere (``CLAUDE.md`` invariant 11, ``PORT-GIPS-J05``).
 

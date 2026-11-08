@@ -1,8 +1,7 @@
 # CLAUDE.md — Working Agreement for `portable`
 
 Read this before touching anything in this repository. It is the standing context for
-every agent session here. The one-time build instructions live in
-`portable_bootstrap_prompt.md`; this file is what stays true afterward.
+every agent session here.
 
 ---
 
@@ -363,8 +362,8 @@ test that fails without your change.
 
 ## Reference
 
-- `docs/adr/` — **read this before redesigning anything.** The decisions the
-  bootstrap left open, each with its reasoning:
+- `docs/adr/` — **read this before redesigning anything.** The design
+  decisions, each with its reasoning:
 
   | ADR | Decision |
   |---|---|

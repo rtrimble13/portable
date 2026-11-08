@@ -79,7 +79,7 @@ DEFAULTS: Final[dict[str, Any]] = {
     "offline": False,
     "staleness_tolerance_days": 5,
     # fafnir. The DSN is resolved separately and never stored in a config file
-    # when an environment variable is available (bootstrap §6.3).
+    # when an environment variable is available (docs/architecture.md §6).
     "fafnir_dsn": None,
     "duk_path": "duk",
     # File provider.

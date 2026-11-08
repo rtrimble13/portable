@@ -1,6 +1,6 @@
 """Layered configuration resolution.
 
-Highest precedence first (bootstrap §6.3):
+Highest precedence first (``docs/architecture.md`` §6):
 
 1. command-line flags
 2. environment variables (``PORTABLE_*``)

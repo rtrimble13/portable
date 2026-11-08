@@ -6,7 +6,7 @@
 
 ## Context
 
-`CLAUDE.md` invariant 1 and bootstrap §3.2: no binary floating point in any
+`CLAUDE.md` invariant 1: no binary floating point in any
 money, quantity, price, or rate path. `Decimal` in Python, canonical decimal
 `TEXT` in SQLite, adapters registered in exactly one place, one rounding policy
 applied only at documented boundaries.
@@ -49,7 +49,7 @@ One `decimal.Context` in `portable_core/decimals.py`:
 
 - `prec = 34` — comfortably above IEEE 754-2008 decimal128, and far above any
   realistic share count × price.
-- `rounding = ROUND_HALF_EVEN` — the valuation default the bootstrap fixes.
+- `rounding = ROUND_HALF_EVEN` — the valuation default.
 - `traps` include `InvalidOperation`, `DivisionByZero`, and **`Inexact` is not
   trapped** (division of money by a share count is legitimately inexact);
   `Overflow` and `Underflow` are trapped.

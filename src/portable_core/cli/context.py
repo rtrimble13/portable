@@ -34,7 +34,7 @@ __all__ = ["CommandContext", "GlobalOptions", "build_context"]
 
 @dataclass(frozen=True, slots=True)
 class GlobalOptions:
-    """The flags every `pt` command accepts (bootstrap §7.2)."""
+    """The flags every `pt` command accepts (`CLAUDE.md`, "CLI shape")."""
 
     port: Path | None = None
     output_format: OutputFormat = OutputFormat.TABLE
@@ -125,8 +125,9 @@ class CommandContext:
     def confirm(self, prompt: str) -> bool:
         """Ask for confirmation, unless ``--yes`` supplied the answer.
 
-        Non-interactive operation is a requirement, not a nicety (bootstrap
-        §6.6): anything that could prompt has a flag that supplies the answer.
+        Non-interactive operation is a requirement, not a nicety (`CLAUDE.md`,
+        "CLI shape"): anything that could prompt has a flag that supplies the
+        answer.
         On a non-TTY with no ``--yes`` this refuses rather than blocking
         forever, because a CI job that hangs on a hidden prompt is worse than
         one that fails.

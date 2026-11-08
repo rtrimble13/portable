@@ -1,7 +1,7 @@
 """The market data provider interface.
 
 Capabilities are **separately declarable protocols**, so a partial provider is
-legal and its gaps are *visible* (bootstrap §6.4). That matters more than it
+legal and its gaps are *visible* (`docs/market-data.md`). That matters more than it
 sounds: `FafnirProvider` deliberately declares no benchmark capability, because
 the warehouse carries no total-return index series and ``PORT-GIPS-G01``
 requires refusal rather than approximation. A monolithic interface would have

@@ -1,9 +1,9 @@
 """Generate `docs/schema.md` from the DDL comments.
 
-``make docs`` runs this. The bootstrap (§5) requires every table and column to
-be documented "generated from the DDL comments so it cannot drift" -- which is
-the whole point: prose kept next to the thing it describes, in the file a
-reviewer is already reading, and rendered rather than retyped.
+``make docs`` runs this. Every table and column is documented from the DDL
+comments, so the documentation cannot drift -- which is the whole point: prose
+kept next to the thing it describes, in the file a reviewer is already reading,
+and rendered rather than retyped.
 
 The markup it reads is deliberately minimal, because a comment format nobody
 can remember does not get written:

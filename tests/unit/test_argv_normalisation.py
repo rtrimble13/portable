@@ -1,7 +1,7 @@
 """Global flags must work after the subcommand as well as before it.
 
-The bootstrap requires every command to support --format, --as-of and the rest
-(§7.2), and click only parses group-level options before the subcommand. This
+`CLAUDE.md` requires every command to support --format, --as-of and the rest
+("CLI shape"), and click only parses group-level options before the subcommand. This
 is the shim, and these are the cases that keep it from changing the meaning of
 anything else.
 """
