@@ -466,6 +466,17 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **The `portable` command failed with `ModuleNotFoundError` on every run.**
+  `pyproject.toml` has declared `portable = "portable_core.cli.portable_cmd:main"`
+  since the scaffold, and the module never existed, so every install created
+  a command that crashed the first time it ran. The command is planned, not
+  dropped: it is where `portable config show` goes (`docs/architecture.md`
+  §6, issue #38). So it is now a stub like `pert`, `po` and `risky`: it says
+  it is not built, links the issue, writes nothing to stdout and exits 1. A
+  unit test now imports every `[project.scripts]` target and checks it is
+  callable, so a command declared with nothing behind it fails CI rather
+  than its first user.
+
 - **Table and CSV output never showed a command's warnings.** Not even a dry
   run's `DRY RUN: nothing was written to the portfolio.`, so in the default
   format a dry run and the real write looked the same; nor rebuild notices,
