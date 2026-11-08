@@ -110,6 +110,16 @@ E_DESIGNATION_IMMUTABLE: Final = "PT-E-DESIGNATION-IMMUTABLE"
 #: ADR 0038. An option event `portable` cannot yet treat correctly, refused
 #: rather than approximated: a long put's exercise.
 E_OPTION_UNSUPPORTED: Final = "PT-E-OPTION-UNSUPPORTED"
+#: ADR 0041. A short position in a bond, which nothing here models.
+E_BOND_UNSUPPORTED: Final = "PT-E-BOND-UNSUPPORTED"
+#: ADR 0041 §1. A bond quantity that is not a whole number of bonds.
+E_BOND_DENOMINATION: Final = "PT-E-BOND-DENOMINATION"
+#: ADR 0041 §2. A bond trade that does not state the accrued interest it exchanges.
+E_ACCRUED_INTEREST_REQUIRED: Final = "PT-E-ACCRUED-INTEREST-REQUIRED"
+#: ADR 0041 §3. A bond whose accrued interest cannot be computed on a date.
+E_ACCRUAL_UNAVAILABLE: Final = "PT-E-ACCRUAL-UNAVAILABLE"
+#: ADR 0041 §3. A coupon a bond was held for, which no ledger row records.
+E_COUPON_UNRECORDED: Final = "PT-E-COUPON-UNRECORDED"
 #: ADR 0038. An option lifecycle row whose shape replay cannot derive from:
 #: an assignment recorded on the underlier, as rows were before ADR 0038.
 E_OPTION_ROW_INVALID: Final = "PT-E-OPTION-ROW-INVALID"
@@ -188,6 +198,11 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_LOT_DESIGNATION_DIVIDED,
     E_DESIGNATION_IMMUTABLE,
     E_OPTION_UNSUPPORTED,
+    E_BOND_UNSUPPORTED,
+    E_BOND_DENOMINATION,
+    E_ACCRUED_INTEREST_REQUIRED,
+    E_ACCRUAL_UNAVAILABLE,
+    E_COUPON_UNRECORDED,
     E_OPTION_ROW_INVALID,
     E_ROC_ENTITLEMENT,
     E_TAX_METHOD_CONFLICT,

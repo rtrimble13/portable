@@ -541,3 +541,54 @@ def test_two_lots_on_one_day_with_no_cost_to_tell_them_apart_are_refused(
     with pytest.raises(ValidationError, match="2 open lots") as caught:
         BatchImporter(ready).commit(batch)
     assert caught.value.code == "PT-E-LOT-SELECTION-INVALID"
+
+
+def test_a_bond_trade_carries_its_accrued_interest_through_the_batch(
+    tmp_path: Path, ready: Repositories
+) -> None:
+    """ADR 0041 §2, §5. Stated as the confirm gives it; cash, never basis."""
+    from portable_core.domain.enums import DayCount, InstrumentType
+    from portable_core.domain.models import BondDetail
+
+    ready.instruments.add(
+        Instrument(
+            instrument_id=0,
+            symbol="T-4.25-2030",
+            instrument_type=InstrumentType.BOND,
+            bond=BondDetail(
+                issuer="US Treasury",
+                coupon_rate=D("0.0425"),
+                coupon_frequency=2,
+                maturity_date=date(2030, 5, 15),
+                day_count=DayCount.ACT_ACT,
+                face_value=D("1000"),
+            ),
+        )
+    )
+    bond_buy = _append(
+        external_ref="ex:b",
+        account="Brokerage",
+        txn_type="buy",
+        trade_date="2024-06-20",
+        settlement_date="2024-06-21",
+        symbol="T-4.25-2030",
+        quantity="10000",
+        price="101.24",
+        accrued_interest="42.73",
+    )
+    unstated = {k: v for k, v in bond_buy.items() if k != "accrued_interest"}
+    unstated["external_ref"] = "ex:c"
+    BatchImporter(ready).commit(load_batch(_write(tmp_path / "d.json", _document([DEPOSIT]))))
+    with pytest.raises(ValidationError) as refused:
+        BatchImporter(ready).commit(
+            load_batch(_write(tmp_path / "a.json", _document([unstated])))
+        )
+    assert refused.value.code == "PT-E-ACCRUED-INTEREST-REQUIRED"
+
+    BatchImporter(ready).commit(load_batch(_write(tmp_path / "b.json", _document([bond_buy]))))
+    row = next(t for t in ready.transactions.in_ledger_order() if t.external_ref == "ex:b")
+    assert (row.gross_amount, row.accrued_interest, row.net_cash_effect) == (
+        D("10124.00"),
+        D("-42.73"),
+        D("-10166.73"),
+    )

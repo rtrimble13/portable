@@ -16,13 +16,13 @@ what it checks.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
-from portable_core.decimals import from_text
+from portable_core.decimals import from_text, quantize_money
 from portable_core.domain.enums import TransactionType, ValuationBasis
 from portable_core.domain.models import (
     Account,
@@ -39,6 +39,7 @@ from portable_core.services.valuation import NO_MARKET_PRICE, Holding, Valuation
 __all__ = [
     "PriceLookup",
     "build",
+    "coupons_by_account",
     "declared_by_account",
     "rederived_differently",
     "removal_notices",
@@ -70,6 +71,7 @@ def build(
     price_for: PriceLookup,
     staleness_tolerance_days: int,
     declared: Sequence[Transaction] = (),
+    coupons: Mapping[int, frozenset[date]] | None = None,
 ) -> ValuationSnapshot:
     """Price an account's holdings and assemble its snapshot for one date.
 
@@ -82,6 +84,9 @@ def build(
     *declared* are the account's distributions entitled before they are paid
     (:func:`declared_by_account`), from the ledger as it now stands, because
     each is dated after the snapshots that accrue it (ADR 0040 §13.2).
+    *coupons* are the coupon dates the account's ledger records, by
+    instrument (:func:`coupons_by_account`), for the check that none it was
+    owed is missing (ADR 0041 §3).
 
     Instruments that cannot be priced are collected rather than raised on, so
     that one missing price does not hide the rest of the report -- but the
@@ -91,7 +96,21 @@ def build(
     engine = ValuationEngine(staleness_tolerance_days=staleness_tolerance_days)
     priced: list[SnapshotPrice] = []
     missing: list[str] = []
+    interest = ZERO
     for holding in _holdings(repos, account.account_id):
+        if holding.instrument.bond is not None:
+            # ADR 0041 §3: accrued to the valuation date, and every coupon the
+            # account was owed is in the ledger. Either failing leaves the
+            # snapshot incomplete, as a missing price does.
+            try:
+                interest += engine.accrued_interest(holding, on)
+                engine.require_coupons_recorded(
+                    holding,
+                    on,
+                    (coupons or {}).get(holding.instrument.instrument_id, frozenset()),
+                )
+            except DataUnavailableError:
+                missing.append(holding.instrument.symbol)
         if not holding.instrument.has_market_price:
             # ADR 0028: nothing quotes it, so no price is looked for.
             priced.append(engine.without_market_price(holding, on))
@@ -104,6 +123,10 @@ def build(
             )
         except DataUnavailableError:
             missing.append(holding.instrument.symbol)
+    # A coupon entitled and not yet paid is accrued interest; any other
+    # distribution, accrued dividends (ADR 0040 §13.2, ADR 0041 §3).
+    paying = [txn for txn in declared if txn.txn_type is TransactionType.COUPON]
+    distributing = [txn for txn in declared if txn.txn_type is not TransactionType.COUPON]
 
     cash, margin = repos.valuations.cash(account.account_id, currency=account.currency)
     return engine.build_snapshot(
@@ -114,7 +137,8 @@ def build(
         margin_loan=margin,
         beginning_market_value=beginning,
         transactions=transactions,
-        accrued_dividends=engine.accrued_dividends(list(declared), on),
+        accrued_interest=quantize_money(interest + engine.accrued_dividends(paying, on)),
+        accrued_dividends=engine.accrued_dividends(distributing, on),
         policy=repos.policies.in_force(on),
         incomplete_symbols=tuple(missing),
     )
@@ -139,6 +163,7 @@ def value_range(
     days = [first + timedelta(days=n) for n in range((last - first).days + 1)]
     rows_on = _rows_on(repos, set(days))
     declared = declared_by_account(repos)
+    coupons = coupons_by_account(repos)
 
     beginning: dict[int, Decimal] = {}
     for target in accounts:
@@ -159,6 +184,7 @@ def value_range(
                 price_for=repos.prices.newest_on_or_before,
                 staleness_tolerance_days=staleness_tolerance_days,
                 declared=declared.get(target.account_id, ()),
+                coupons=coupons.get(target.account_id, {}),
             )
             beginning[target.account_id] = snapshot.ending_market_value
             built.append(snapshot)
@@ -307,6 +333,7 @@ def _rederive(
     accounts = {account.account_id: account for account in repos.accounts.all()}
     rows_on = _rows_on(repos, set(days))
     declared = declared_by_account(repos)
+    coupons = coupons_by_account(repos)
 
     def visit(on: date) -> list[_Rederived]:
         again: list[_Rederived] = []
@@ -324,6 +351,7 @@ def _rederive(
                 price_for=_recorded(recorded[snapshot_id]),
                 staleness_tolerance_days=_ANY_STALENESS,
                 declared=declared.get(account_id, ()),
+                coupons=coupons.get(account_id, {}),
             )
             again.append(_Rederived(account_id, on, kept[snapshot_id], snapshot))
         return again
@@ -411,7 +439,15 @@ def _holdings(repos: Repositories, account_id: int) -> list[Holding]:
             if instrument is None:
                 continue
             # ADR 0038: a short leg is held negatively, so it is valued so.
-            holdings.append(Holding(instrument, leg.signed_quantity))
+            holdings.append(
+                Holding(
+                    instrument,
+                    leg.signed_quantity,
+                    held_since=_arrived(repos, account_id, instrument.instrument_id)
+                    if instrument.bond is not None
+                    else None,
+                )
+            )
     return holdings
 
 
@@ -427,6 +463,34 @@ def declared_by_account(repos: Repositories) -> dict[int, list[Transaction]]:
         if txn.accrues_from is not None:
             declared.setdefault(txn.account_id, []).append(txn)
     return declared
+
+
+def coupons_by_account(repos: Repositories) -> dict[int, dict[int, frozenset[date]]]:
+    """Each account's recorded coupon dates, by instrument. ADR 0041 §3.
+
+    A coupon's date is the scheduled date it pays, held in ``ex_date``; a row
+    without one is dated by its pay-date. From the effective ledger, so a
+    reversed coupon is not recorded.
+    """
+    found: dict[int, dict[int, set[date]]] = {}
+    for txn in effective_ledger(repos.transactions.in_ledger_order()):
+        if txn.txn_type is not TransactionType.COUPON or txn.instrument_id is None:
+            continue
+        on = txn.ex_date or txn.trade_date
+        found.setdefault(txn.account_id, {}).setdefault(txn.instrument_id, set()).add(on)
+    return {
+        account_id: {instrument_id: frozenset(days) for instrument_id, days in by.items()}
+        for account_id, by in found.items()
+    }
+
+
+def _arrived(repos: Repositories, account_id: int, instrument_id: int) -> date | None:
+    """When the account's earliest open lot of a bond arrived: its opening row's date."""
+    dates = []
+    for lot in repos.lots.open_lots(account_id, instrument_id):
+        opened = repos.transactions.get(lot.open_txn_id)
+        dates.append(opened.trade_date if opened is not None else lot.open_date)
+    return min(dates) if dates else None
 
 
 def _rows_on(repos: Repositories, days: set[date]) -> dict[tuple[int, date], list[Transaction]]:

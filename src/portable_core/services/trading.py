@@ -20,6 +20,7 @@ from datetime import date
 from decimal import Decimal
 
 from portable_core.decimals import is_whole, money_context, quantize_money, quantize_quantity
+from portable_core.domain import bonds
 from portable_core.domain.enums import (
     AccountStatus,
     BasisSource,
@@ -32,7 +33,10 @@ from portable_core.domain.models import Account, Instrument, Transaction
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import (
     E_ACCOUNT_CLOSED,
+    E_ACCRUED_INTEREST_REQUIRED,
     E_BASIS_SOURCE_INVALID,
+    E_BOND_DENOMINATION,
+    E_BOND_UNSUPPORTED,
     E_CASH_INSUFFICIENT,
     E_FEE_CLASS_MISSING,
     E_FRACTIONAL_SHARE,
@@ -84,6 +88,10 @@ class TradeIntent:
     relief_method: ReliefMethod | None = None
     lot_selection: str | None = None
     settlement_date: date | None = None
+    #: ADR 0041 §2. The interest accrued to settlement that a bond trade pays
+    #: or receives, as the confirm states it: a magnitude, with the side from
+    #: the trade. Required on a coupon bond's buy or sale, refused elsewhere.
+    accrued_interest: Decimal | None = None
     note: str | None = None
     external_ref: str | None = None
     #: Where this row came from. `manual` unless an importer says otherwise --
@@ -146,12 +154,11 @@ class TradingService:
         self._check_account(intent)
         self._check_quantity(intent)
         self._check_fee_class(intent)
+        accrued = self._accrued_interest(intent, warnings)
         self.check_external_ref(intent.account, intent.external_ref)
 
         with money_context():
-            gross = quantize_money(
-                intent.price * intent.quantity * intent.instrument.contract_size
-            )
+            gross = quantize_money(intent.instrument.value_of(intent.quantity, intent.price))
             costs = intent.fees + intent.commissions
             # A buy or a cover pays out gross plus costs; a sale or a short
             # sale receives gross minus costs. Costs always reduce the cash
@@ -160,6 +167,9 @@ class TradingService:
                 net_cash = quantize_money(-(gross + costs))
             else:
                 net_cash = quantize_money(gross - costs)
+            # ADR 0041 §2: the accrued interest moves cash and nothing else.
+            if accrued is not None:
+                net_cash = quantize_money(net_cash + accrued)
 
         relief_plan: ReliefPlan | None = None
         stored_selection: str | None = None
@@ -200,6 +210,7 @@ class TradingService:
             fees=quantize_money(intent.fees),
             commissions=quantize_money(intent.commissions),
             fee_class=intent.fee_class,
+            accrued_interest=accrued,
             # ADR 0036: the lots the user named, by lineage key, never by the
             # ids `pt lot list` showed, which the next rebuild may renumber.
             lot_selection=stored_selection,
@@ -288,6 +299,98 @@ class TradingService:
                 ),
                 quantity=str(intent.quantity),
             )
+
+    @staticmethod
+    def _accrued_interest(intent: TradeIntent, warnings: list[str]) -> Decimal | None:
+        """A bond trade's accrued interest, signed like cash. ADR 0041 §1, §2.
+
+        A buyer between coupons pays the seller the interest accrued to
+        settlement. That is a receivable bought, not basis, so it moves cash
+        and nothing else -- and without it the cash is short by it and the
+        next coupon reads as income in full. It is stated, as the confirm
+        gives it, because it runs to settlement; where the trade states its
+        settlement date, portable computes its own and warns on a difference.
+        """
+        instrument = intent.instrument
+        bond = instrument.bond
+        if bond is None:
+            if intent.accrued_interest is not None:
+                raise ValidationError(
+                    f"accrued interest is stated on a trade in {instrument.symbol}, "
+                    "which is not a bond",
+                    remedy="Only a bond trade exchanges accrued interest. Drop it.",
+                    symbol=instrument.symbol,
+                )
+            return None
+        if intent.txn_type not in (TransactionType.BUY, TransactionType.SELL):
+            raise ValidationError(
+                f"a short position in the bond {instrument.symbol} is not modelled",
+                code=E_BOND_UNSUPPORTED,
+                remedy=(
+                    "A short bond pays the coupons and accrues against itself, and "
+                    "portable values neither. Record it by hand outside portable."
+                ),
+                symbol=instrument.symbol,
+            )
+        if not bond.is_whole_denomination(intent.quantity):
+            raise ValidationError(
+                f"{intent.quantity} of {instrument.symbol} is not a whole number of "
+                f"{bond.face_value} bonds",
+                code=E_BOND_DENOMINATION,
+                remedy=(
+                    "A bond's quantity is its face amount, as the custodian reports it: "
+                    f"25,000 is $25,000 of par. It is a multiple of the {bond.face_value} "
+                    "denomination (ADR 0041)."
+                ),
+                quantity=str(intent.quantity),
+                face_value=str(bond.face_value),
+            )
+        stated = intent.accrued_interest
+        if bond.is_zero_coupon:
+            if stated is not None and stated != 0:
+                raise ValidationError(
+                    f"{instrument.symbol} is a zero-coupon bond and accrues no interest",
+                    remedy="Its accretion is in its price. Drop --accrued-interest.",
+                    symbol=instrument.symbol,
+                )
+            return None
+        if stated is None:
+            raise ValidationError(
+                f"a trade in the bond {instrument.symbol} states the accrued interest "
+                "it exchanges",
+                code=E_ACCRUED_INTEREST_REQUIRED,
+                remedy=(
+                    "Pass --accrued-interest as the trade confirm states it: the "
+                    "interest accrued to settlement, paid on a buy and received on a "
+                    "sale. 0 on a coupon date, or for a bond trading flat. It is not "
+                    "basis and not proceeds (ADR 0041)."
+                ),
+                symbol=instrument.symbol,
+            )
+        if stated < 0:
+            raise ValidationError(
+                f"accrued interest is stated as a magnitude, got {stated}",
+                remedy="The side comes from the command: a buy pays it, a sale receives it.",
+                accrued_interest=str(stated),
+            )
+        if intent.settlement_date is not None:
+            try:
+                computed = quantize_money(
+                    bonds.accrued_interest(bond, intent.quantity, intent.settlement_date)
+                )
+            except bonds.OddFirstPeriod:
+                computed = None
+            with money_context():
+                tolerance = intent.quantity / Decimal(1000) * Decimal("0.01")
+            if computed is not None and abs(computed - stated) > tolerance:
+                warnings.append(
+                    f"the stated accrued interest {stated} differs from the {computed} "
+                    f"portable computes to settlement on "
+                    f"{intent.settlement_date.isoformat()} -- check the confirm, the "
+                    "bond's day count and its coupon dates"
+                )
+        sign = Decimal(-1) if intent.txn_type is TransactionType.BUY else Decimal(1)
+        return quantize_money(sign * stated)
 
     @staticmethod
     def _check_fee_class(intent: TradeIntent) -> None:
@@ -483,6 +586,14 @@ class TradingService:
             )
 
         ex = ex_date if ex_date is not None else pay_date
+        if (
+            ex_date is None
+            and txn_type is TransactionType.COUPON
+            and instrument.bond is not None
+        ):
+            # ADR 0041 §3: a coupon is entitled on the scheduled date it pays,
+            # and is a receivable from there until it is paid.
+            ex = bonds.last_coupon_on_or_before(instrument.bond, pay_date) or pay_date
         if ex > pay_date:
             raise ValidationError(
                 f"ex-date {ex.isoformat()} is after pay-date {pay_date.isoformat()}",

@@ -24,12 +24,13 @@ What is deliberate rather than incidental:
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
 
 from portable_core.decimals import money_context, quantize_money
-from portable_core.domain.dates import accrual_fraction
+from portable_core.domain import bonds
 from portable_core.domain.enums import CashTreatment, FlowClassification, FlowLevel
 from portable_core.domain.models import (
     Account,
@@ -42,7 +43,12 @@ from portable_core.domain.models import (
     ValuationSnapshot,
 )
 from portable_core.errors import DataUnavailableError
-from portable_core.errors.kinds import E_PRICE_MISSING, E_PRICE_STALE
+from portable_core.errors.kinds import (
+    E_ACCRUAL_UNAVAILABLE,
+    E_COUPON_UNRECORDED,
+    E_PRICE_MISSING,
+    E_PRICE_STALE,
+)
 from portable_core.services import cash_flow
 
 __all__ = ["Holding", "ValuationEngine", "is_accruing", "receivable"]
@@ -56,11 +62,11 @@ class Holding:
 
     instrument: Instrument
     quantity: Decimal
-    #: For bonds: the last coupon paid on or before the valuation date, and the
-    #: next one due. Needed for accrued interest, which is part of market
-    #: value.
-    last_coupon_date: date | None = None
-    next_coupon_date: date | None = None
+    #: For a bond: the date its earliest open lot arrived in the account --
+    #: the opening row's date, not the lot's holding-period start, which an
+    #: in-kind lot carries back to the original purchase. A coupon dated after
+    #: it was paid to this account (ADR 0041 §3).
+    held_since: date | None = None
 
 
 def is_accruing(txn: Transaction, as_of: date) -> bool:
@@ -171,7 +177,7 @@ class ValuationEngine:
 
         with money_context():
             market_value = quantize_money(
-                price.price * holding.quantity * holding.instrument.contract_size
+                holding.instrument.value_of(holding.quantity, price.price)
             )
 
         return SnapshotPrice(
@@ -201,20 +207,71 @@ class ValuationEngine:
         Accrual for interest-bearing instruments is *required* under
         Firms 2.A.10 / AO 22.A.7 -- not merely recommended, which is the
         asymmetry with dividends worth keeping straight.
+
+        Accrued from the bond's coupon schedule to the valuation date
+        (``PORT-GIPS-A05``), on its face amount (ADR 0041 §3).
+
+        Raises:
+            DataUnavailableError: the date is in a first coupon period whose
+                start is not stored (``PT-E-ACCRUAL-UNAVAILABLE``). Nothing is
+                guessed: the snapshot is incomplete.
         """
         bond = holding.instrument.bond
-        if bond is None or bond.is_zero_coupon:
+        if bond is None:
             return ZERO
-        if holding.last_coupon_date is None or holding.next_coupon_date is None:
-            return ZERO
+        try:
+            return quantize_money(bonds.accrued_interest(bond, holding.quantity, as_of))
+        except bonds.OddFirstPeriod as odd:
+            raise DataUnavailableError(
+                f"cannot accrue interest on {holding.instrument.symbol} on "
+                f"{as_of.isoformat()}: {odd}",
+                code=E_ACCRUAL_UNAVAILABLE,
+                remedy=(
+                    "A first coupon period accrues from the bond's dated date, which "
+                    "portable does not store. Value the account from the first coupon "
+                    "on, or after the bond is gone."
+                ),
+                symbol=holding.instrument.symbol,
+                as_of=as_of.isoformat(),
+            ) from None
 
-        fraction = accrual_fraction(
-            holding.last_coupon_date, as_of, holding.next_coupon_date, bond.day_count
+    @staticmethod
+    def require_coupons_recorded(
+        holding: Holding, as_of: date, recorded: Collection[date]
+    ) -> None:
+        """The last scheduled coupon, if this account held the bond for it, is in the ledger.
+
+        A coupon is a receivable from its scheduled date until it is paid, and
+        it is in value as the row that records it (ADR 0041 §3). A coupon the
+        account was owed and that no row records is a missing ledger row, not a
+        market move: valued without it, the day reads as a loss of the coupon.
+        So the snapshot is incomplete until the row is entered, and entering it
+        removes the snapshots from the coupon date for valuing again.
+
+        Raises:
+            DataUnavailableError: ``PT-E-COUPON-UNRECORDED``.
+        """
+        bond = holding.instrument.bond
+        if bond is None or bond.is_zero_coupon or holding.held_since is None:
+            return
+        try:
+            period = bonds.coupon_period(bond, as_of)
+        except bonds.OddFirstPeriod:
+            return
+        if period is None or period.last <= holding.held_since or period.last in recorded:
+            return
+        raise DataUnavailableError(
+            f"the {period.last.isoformat()} coupon on {holding.instrument.symbol} is not "
+            "recorded",
+            code=E_COUPON_UNRECORDED,
+            remedy=(
+                f"Record it with `pt income coupon {holding.instrument.symbol} --pay-date "
+                "DATE --amount X`, as the custodian paid it. Entering it removes the "
+                "snapshots from the coupon date, to be valued again."
+            ),
+            symbol=holding.instrument.symbol,
+            coupon_date=period.last.isoformat(),
         )
-        with money_context():
-            annual = bond.face_value * bond.coupon_rate * holding.quantity
-            period = annual / Decimal(bond.coupon_frequency)
-            return quantize_money(period * fraction)
 
     @staticmethod
     def accrued_dividends(

@@ -66,6 +66,16 @@ WASH_SALES_NOT_DETECTED: Final[tuple[str, ...]] = (
 )
 
 #: Carried by every tax report (ADR 0011). Not suppressible.
+#: ADR 0041 §4. What the tax report does not compute for a bond, stated on
+#: every report in which a bond was held. Each changes basis or income, so a
+#: gain on a bond is reported without them.
+BOND_TAX_NOT_COMPUTED: Final[tuple[str, ...]] = (
+    "bond premium amortization (IRC §171)",
+    "market discount (IRC §1276)",
+    "original issue discount",
+    "coupon interest, and the purchased accrued interest that reduces it",
+)
+
 TAX_DISCLAIMER: Final[str] = (
     "This is an estimate, not tax advice, and portable is not a substitute for a "
     "broker's 1099-B. Estimated liability is computed as the allowed gain multiplied "

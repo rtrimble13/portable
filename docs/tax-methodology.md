@@ -247,6 +247,31 @@ the whole. Rounding each lot's share independently loses or invents a cent, and
 that cent becomes a basis error, then a realized-gain error, then a wrong tax
 figure.
 
+### Bonds: accrued interest, and what is not computed
+
+[ADR 0041](adr/0041-bonds-at-face-with-accrued-interest.md). A bond's quantity
+is its face amount, and its price is read through its quote basis, so basis
+and proceeds are `face × price / 100` for a bond quoted percent of par.
+
+- **Accrued interest paid on a purchase is not basis.** The buyer pays the
+  seller the interest accrued to settlement. That is a receivable bought, and
+  the next coupon repays it. The trade row records it in `accrued_interest`,
+  and it moves cash and nothing else. For tax it reduces the interest income
+  of the coupon that repays it.
+- **Accrued interest received on a sale is interest income, not proceeds.**
+  The gain is `face × price / 100 − basis`, with the accrued interest outside
+  it.
+- **Not computed:**
+  - bond premium amortization (IRC §171);
+  - market discount (IRC §1276);
+  - original issue discount;
+  - coupon interest itself, and the purchased accrued interest that reduces
+    it.
+
+  Each changes basis or income, so a gain on a bond is reported without
+  them. Every `pt tax` report in a year a bond was held says so, in its
+  footnotes and in its `bonds` field.
+
 ---
 
 ## The estimate

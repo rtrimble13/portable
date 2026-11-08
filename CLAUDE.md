@@ -212,6 +212,9 @@ asking for.
 **Accrued interest is part of market value** for bonds. A bond bought between coupons pays
 accrued interest to the seller; that is not basis. Accrual for interest-bearing
 instruments is *required*; accrual for dividends is *recommended* (`PORT-GIPS-A06`).
+A bond's quantity is its **face amount**, its price is read through its quote basis
+(`Instrument.value_of`, never `price × quantity` by hand), and a bond trade states the
+accrued interest it exchanges (ADR 0041).
 
 **External cash flow classification is level-dependent, and it is the easiest way to
 produce a plausible wrong return.** Income — dividends, coupons, reinvestments — is

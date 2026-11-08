@@ -124,9 +124,15 @@ def check(
 
     *recorded*, when given, is the stored line whose acceptances apply.
     """
-    units = quantity * instrument.contract_size
+    # What one unit of price is worth across the line: the units for a stock
+    # or an option, face over 100 for a bond quoted percent of par (ADR 0041).
+    units = instrument.value_of(quantity, Decimal(1))
     with money_context():
-        stated = (market_value / units).quantize(_STATED_PRICE) if units else None
+        stated = (
+            instrument.price_of(quantity, market_value).quantize(_STATED_PRICE)
+            if units
+            else None
+        )
 
     price: Decimal | None = None
     price_date: date | None = None
@@ -154,7 +160,7 @@ def check(
     else:
         assert price is not None and price_date is not None
         with money_context():
-            exact = price * units - market_value
+            exact = instrument.value_of(quantity, price) - market_value
             within = abs(exact) <= PER_UNIT * abs(units) + ROUNDING
         difference = quantize_money(exact)
         accepted = (

@@ -279,7 +279,9 @@ def _income(
             txn_type,
             gross,
             pay,
-            ex_date=ex,
+            # Unstated, the service decides: the pay-date for a distribution,
+            # the scheduled coupon date for a coupon (ADR 0041 §3).
+            ex_date=ex if ex_date else None,
             taxes_withheld=(
                 money_arg(withheld, what="--withheld") if withheld else Decimal("0.00")
             ),
@@ -299,7 +301,7 @@ def _income(
             "account": found.name,
             "type": str(txn_type),
             "amount": quantize_money(gross),
-            "ex_date": ex.isoformat(),
+            "ex_date": txn.ex_date.isoformat() if txn.ex_date else None,
             "pay_date": pay.isoformat(),
             "qualified": qualified,
         }
@@ -441,18 +443,33 @@ def coupon(
     account: Annotated[str, typer.Option("--account", "-a")],
     amount: Annotated[str, typer.Option("--amount")],
     pay_date: Annotated[str | None, typer.Option("--pay-date")] = None,
+    coupon_date: Annotated[
+        str | None,
+        typer.Option(
+            "--coupon-date",
+            help=(
+                "The scheduled coupon date this pays. Default: the bond's last "
+                "scheduled coupon on or before the pay-date."
+            ),
+        ),
+    ] = None,
     note: Annotated[str | None, typer.Option("--note")] = None,
     ref: RefOpt = None,
     withheld: WithheldOpt = None,
     reclaimable: ReclaimableOpt = None,
 ) -> None:
-    """Record a bond coupon. Income -- never an external cash flow."""
+    """Record a bond coupon. Income -- never an external cash flow.
+
+    Entitled on its scheduled coupon date and a receivable in value until it
+    is paid (ADR 0041 §3). A coupon the bond was held for that is not
+    recorded makes every valuation after it incomplete: it is a missing row.
+    """
     _income(
         TransactionType.COUPON,
         symbol,
         account,
         amount,
-        ex_date=None,
+        ex_date=coupon_date,
         pay_date=pay_date,
         qualified=None,
         note=note,

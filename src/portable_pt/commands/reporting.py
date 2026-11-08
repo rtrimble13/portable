@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -12,7 +13,7 @@ from typing import Annotated
 import typer
 
 from portable_core.decimals import from_text, money_context, quantize_money
-from portable_core.disclaimer import TAX_DISCLAIMER
+from portable_core.disclaimer import BOND_TAX_NOT_COMPUTED, TAX_DISCLAIMER
 from portable_core.domain.enums import BasisSource, FlowLevel, TransactionType, WashSaleStatus
 from portable_core.domain.import_records import ClosedLotRecord
 from portable_core.domain.models import RealizedGain, ReturnPolicy, WashSale
@@ -87,7 +88,7 @@ def holdings(
                                 basis = ZERO - basis
                             value = (
                                 quantize_money(
-                                    price.price * leg.signed_quantity * instrument.contract_size
+                                    instrument.value_of(leg.signed_quantity, price.price)
                                 )
                                 if price
                                 else None
@@ -406,8 +407,7 @@ def pnl(
                             if leg.sign < 0:
                                 basis = ZERO - basis
                             unrealized += (
-                                price.price * leg.signed_quantity * instrument.contract_size
-                                - basis
+                                instrument.value_of(leg.signed_quantity, price.price) - basis
                             )
             return _PnlFigures(
                 rows=rows,
@@ -529,6 +529,7 @@ def tax(
         )
 
         excluded_ids = {d.disposition_id for d in summary.unreportable}
+        held_bonds = _bonds_held(repos, gains, tax_year)
 
         def _name(gain: RealizedGain) -> tuple[str | None, str | None]:
             instrument = repos.instruments.get(gain.instrument_id)
@@ -601,7 +602,20 @@ def tax(
                 ),
                 rows=tuple(rows),
                 title=f"Realized gains, {tax_year}",
-                footnotes=_tax_notes(summary),
+                footnotes=(
+                    *_tax_notes(summary),
+                    *(
+                        (
+                            "Bonds held ("
+                            + ", ".join(held_bonds)
+                            + "): NOT computed -- "
+                            + "; ".join(BOND_TAX_NOT_COMPUTED)
+                            + ".",
+                        )
+                        if held_bonds
+                        else ()
+                    ),
+                ),
             ),
             data={
                 "tax_year": tax_year,
@@ -641,6 +655,13 @@ def tax(
                     for p in summary.basis_provenance
                 ],
                 "unreportable": unreportable_rows,
+                # ADR 0041 §4. Null when no bond was held in the year; a list
+                # of what is not computed for them when one was.
+                "bonds": (
+                    {"held": list(held_bonds), "not_computed": list(BOND_TAX_NOT_COMPUTED)}
+                    if held_bonds
+                    else None
+                ),
             },
             disclaimer=TAX_DISCLAIMER,
             as_of=ctx.as_of,
@@ -1548,6 +1569,21 @@ def _manual_row(repos: Repositories, wash: WashSale) -> dict[str, object]:
         "quantity": wash.quantity,
         "disallowed": wash.disallowed,
     }
+
+
+def _bonds_held(
+    repos: Repositories, gains: Sequence[RealizedGain], tax_year: int
+) -> tuple[str, ...]:
+    """The bonds disposed of, or held at any point, in *tax_year*. ADR 0041 §4."""
+    bonds = {i.instrument_id: i.symbol for i in repos.instruments.all() if i.bond is not None}
+    if not bonds:
+        return ()
+    first, last = date(tax_year, 1, 1), date(tax_year, 12, 31)
+    held = {g.instrument_id for g in gains if g.instrument_id in bonds}
+    for lot in repos.lots.acquired_between(set(bonds), date.min, last):
+        if lot.closed_date is None or lot.closed_date >= first:
+            held.add(lot.instrument_id)
+    return tuple(sorted(bonds[i] for i in held))
 
 
 def _tax_notes(summary: TaxSummary) -> tuple[str, ...]:

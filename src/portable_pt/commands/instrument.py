@@ -60,7 +60,29 @@ def add(
     day_count: Annotated[
         str, typer.Option("--day-count", help="30/360 | ACT/ACT | ACT/365 | ACT/360")
     ] = "ACT/ACT",
-    face: Annotated[str, typer.Option("--face")] = "1000",
+    face: Annotated[
+        str, typer.Option("--face", help="A bond's denomination: face per bond.")
+    ] = "1000",
+    quote_basis: Annotated[
+        str,
+        typer.Option(
+            "--quote-basis",
+            help=(
+                "percent_of_par (99.50 per 100 of face) | price_per_bond. A bond's "
+                "quantity is its face amount either way (ADR 0041)."
+            ),
+        ),
+    ] = "percent_of_par",
+    first_coupon: Annotated[
+        str | None,
+        typer.Option(
+            "--first-coupon",
+            help=(
+                "A bond's first coupon date, when its first period is irregular. "
+                "Nothing accrues before it."
+            ),
+        ),
+    ] = None,
     no_market_price: Annotated[
         bool,
         typer.Option(
@@ -118,6 +140,12 @@ def add(
                 maturity_date=resolve_date(maturity, ctx, what="--maturity"),
                 day_count=DayCount(day_count),
                 face_value=from_text(face),
+                first_coupon_date=(
+                    resolve_date(first_coupon, ctx, what="--first-coupon")
+                    if first_coupon
+                    else None
+                ),
+                quote_basis=_quote_basis(quote_basis),
             )
 
         instrument = Instrument(
@@ -198,6 +226,19 @@ def list_instruments(
     dispatch(action)
 
 
+_QUOTE_BASES = ("percent_of_par", "price_per_bond")
+
+
+def _quote_basis(value: str) -> str:
+    if value not in _QUOTE_BASES:
+        raise ValidationError(
+            f"unknown quote basis {value!r}",
+            remedy="percent_of_par prices per 100 of face; price_per_bond per bond.",
+            choices=list(_QUOTE_BASES),
+        )
+    return value
+
+
 @app.command()
 def show(symbol: Annotated[str, typer.Argument()]) -> None:
     """Show one instrument, including its option or bond detail."""
@@ -240,6 +281,10 @@ def show(symbol: Annotated[str, typer.Argument()]) -> None:
                 "maturity_date": bond.maturity_date.isoformat(),
                 "day_count": str(bond.day_count),
                 "face_value": bond.face_value,
+                "quote_basis": bond.quote_basis,
+                "first_coupon_date": (
+                    bond.first_coupon_date.isoformat() if bond.first_coupon_date else None
+                ),
             }
 
         return CommandResult(

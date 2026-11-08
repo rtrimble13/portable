@@ -18,7 +18,6 @@ from portable_core.decimals import money_context
 from portable_core.domain.enums import DayCount, HoldingPeriod
 
 __all__ = [
-    "accrual_fraction",
     "day_count_factor",
     "days_between",
     "holding_period",
@@ -189,25 +188,3 @@ def _act_act(start: date, end: date) -> Decimal:
 def year_fraction(start: date, end: date, convention: DayCount) -> Decimal:
     """Alias for :func:`day_count_factor`, named for return-period contexts."""
     return day_count_factor(start, end, convention)
-
-
-def accrual_fraction(
-    last_coupon: date,
-    settlement: date,
-    next_coupon: date,
-    convention: DayCount,
-) -> Decimal:
-    """The fraction of a coupon period accrued at *settlement*.
-
-    A bond bought between coupons pays accrued interest to the seller. **That
-    is not basis** -- it is a receivable that the next coupon extinguishes, and
-    treating it as basis overstates cost and understates the eventual gain.
-
-    Returns a value in [0, 1]; a settlement on a coupon date accrues nothing.
-    """
-    with money_context():
-        elapsed = day_count_factor(last_coupon, settlement, convention)
-        period = day_count_factor(last_coupon, next_coupon, convention)
-        if period == 0:
-            return Decimal(0)
-        return elapsed / period

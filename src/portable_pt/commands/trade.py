@@ -76,6 +76,7 @@ def _trade(
     note: str | None,
     ref: str | None,
     settlement: str | None,
+    accrued_interest: str | None = None,
 ) -> None:
     def action() -> CommandResult:
         ctx = state.with_portfolio()
@@ -112,6 +113,11 @@ def _trade(
                 settlement_date=resolve_date(settlement, ctx, what="--settlement")
                 if settlement
                 else None,
+                accrued_interest=(
+                    money_arg(accrued_interest, what="--accrued-interest")
+                    if accrued_interest is not None
+                    else None
+                ),
                 note=note,
                 external_ref=ref,
             )
@@ -262,6 +268,7 @@ def _plan_result(
             "fees": plan.intent.fees,
             "commissions": plan.intent.commissions,
             "net_cash_effect": plan.net_cash_effect,
+            "accrued_interest": plan.transaction.accrued_interest,
             "trade_date": plan.intent.trade_date.isoformat(),
             "account": plan.intent.account.name,
             **(
@@ -310,6 +317,17 @@ def make_trade_command(txn_type: TransactionType, help_text: str) -> Callable[..
         note: Annotated[str | None, typer.Option("--note")] = None,
         ref: RefOpt = None,
         settlement: Annotated[str | None, typer.Option("--settlement")] = None,
+        accrued_interest: Annotated[
+            str | None,
+            typer.Option(
+                "--accrued-interest",
+                help=(
+                    "A bond trade only, and required on one: the interest accrued to "
+                    "settlement, as the confirm states it. Paid on a buy, received on a "
+                    "sale; not basis and not proceeds (ADR 0041)."
+                ),
+            ),
+        ] = None,
     ) -> None:
         _trade(
             txn_type,
@@ -328,6 +346,7 @@ def make_trade_command(txn_type: TransactionType, help_text: str) -> Callable[..
             note=note,
             ref=ref,
             settlement=settlement,
+            accrued_interest=accrued_interest,
         )
 
     command.__doc__ = help_text

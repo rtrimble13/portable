@@ -375,7 +375,7 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
                     maturity_date=date(2030, 5, 15),
                     day_count=DayCount.ACT_ACT,
                     face_value=D("1000"),
-                    first_coupon_date=date(2021, 11, 15),
+                    quote_basis="percent_of_par",
                 ),
             )
         )
@@ -429,21 +429,41 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
         _buy(repos, ira, vti, date(2021, 1, 12), "600", "197.11")
         _buy(repos, roth, aapl, date(2021, 1, 12), "150", "128.10")
         _buy(repos, taxable, acme, date(2021, 3, 15), "500", "42.30")
-        _buy(repos, taxable, treasury, date(2021, 8, 20), "50", "1012.40")
-
-        # Bought between coupons: accrued interest is part of market value and
-        # is NOT basis (PORT-GIPS-A06).
+        # $50,000 of face at 101.24 percent of par, bought between coupons.
+        # The seller is paid the interest accrued from the 05-15 coupon to
+        # settlement on 08-21: 1,062.50 x 98 / 184 = 565.92. That is cash, and
+        # NOT basis (ADR 0041, PORT-GIPS-A06).
         _txn(
             repos,
             account_id=taxable,
-            trade_date=date(2021, 11, 15),
-            txn_type=TransactionType.COUPON,
+            trade_date=date(2021, 8, 20),
+            settlement_date=date(2021, 8, 21),
+            txn_type=TransactionType.BUY,
             instrument_id=treasury,
-            gross_amount=D("1062.50"),
-            pay_date=date(2021, 11, 15),
-            net_cash_effect=D("1062.50"),
-            note="Semi-annual coupon.",
+            quantity=D("50000"),
+            price=D("101.24"),
+            gross_amount=D("50620.00"),
+            fees=D("1.00"),
+            fee_class=FeeClass.TRANSACTION_COST,
+            accrued_interest=D("-565.92"),
+            net_cash_effect=D("-51186.92"),
         )
+        # Every coupon it was owed, each paid on its scheduled date. An
+        # unrecorded one would leave every valuation after it incomplete.
+        for paid in [date(year, month, 15) for year in range(2021, 2026) for month in (5, 11)]:
+            if date(2021, 11, 15) <= paid <= date(2025, 11, 15):
+                _txn(
+                    repos,
+                    account_id=taxable,
+                    trade_date=paid,
+                    txn_type=TransactionType.COUPON,
+                    instrument_id=treasury,
+                    gross_amount=D("1062.50"),
+                    ex_date=paid,
+                    pay_date=paid,
+                    net_cash_effect=D("1062.50"),
+                    note="Semi-annual coupon.",
+                )
 
         for ex, pay, amount in [
             (date(2021, 2, 5), date(2021, 2, 11), "82.00"),
@@ -645,17 +665,6 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
         _txn(
             repos,
             account_id=taxable,
-            trade_date=date(2025, 5, 15),
-            txn_type=TransactionType.COUPON,
-            instrument_id=treasury,
-            gross_amount=D("1062.50"),
-            pay_date=date(2025, 5, 15),
-            net_cash_effect=D("1062.50"),
-        )
-
-        _txn(
-            repos,
-            account_id=taxable,
             trade_date=date(2025, 8, 1),
             txn_type=TransactionType.RETURN_OF_CAPITAL,
             instrument_id=vti,
@@ -785,13 +794,14 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
                 ("2025-12-31", "31.20"),
             ],
             newco: [("2024-12-31", "13.10"), ("2025-06-30", "14.85"), ("2025-12-31", "15.40")],
+            # Percent of par (ADR 0041): 100.82 is 1,008.20 per 1,000 bond.
             treasury: [
-                ("2021-12-31", "1008.20"),
-                ("2022-12-30", "941.50"),
-                ("2023-12-29", "978.30"),
-                ("2024-12-31", "965.10"),
-                ("2025-06-30", "982.75"),
-                ("2025-12-31", "991.40"),
+                ("2021-12-31", "100.82"),
+                ("2022-12-30", "94.15"),
+                ("2023-12-29", "97.83"),
+                ("2024-12-31", "96.51"),
+                ("2025-06-30", "98.275"),
+                ("2025-12-31", "99.14"),
             ],
             covered_call: [("2023-12-29", "9.10")],
         }

@@ -272,6 +272,7 @@ def to_transaction(row: sqlite3.Row) -> Transaction:
         commissions=to_decimal(row["commissions"]),
         taxes_withheld=to_decimal(row["taxes_withheld"]),
         withholding_reclaimable=to_optional_decimal(row["withholding_reclaimable"]),
+        accrued_interest=to_optional_decimal(row["accrued_interest"]),
         fee_class=FeeClass(row["fee_class"]) if row["fee_class"] else None,
         position_id=row["position_id"],
         counter_account_id=row["counter_account_id"],

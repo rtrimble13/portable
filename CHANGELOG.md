@@ -16,6 +16,43 @@ Two rules specific to this repository:
 
 ### Added
 
+- **Bonds are held at face, priced by their quote basis, and carry their
+  accrued interest** (ADR 0041, accepted by the owner). Before, the stored
+  quote basis was never read and every bond was valued at price × quantity.
+  A bond quoted at 99.50 percent of par was valued at 99.50 per unit of
+  quantity, whatever the unit was.
+  - **Quantity is face amount**, as custodians report it.
+    `Instrument.value_of` is the one product of a price and a quantity, used
+    by valuation, trades, replay, P&L and price acceptance. A bond quantity
+    that is not whole bonds is refused (`PT-E-BOND-DENOMINATION`).
+    `pt instrument add` takes `--quote-basis` and `--first-coupon`.
+  - **A bond trade states its accrued interest.** `--accrued-interest` on
+    `pt buy` and `pt sell`, and an `accrued_interest` column in the batch
+    format, are required on a coupon bond (`PT-E-ACCRUED-INTEREST-REQUIRED`).
+    The amount moves cash and is neither basis nor proceeds. With a
+    settlement date, a stated figure is checked against the one computed to
+    settlement. A short bond is refused (`PT-E-BOND-UNSUPPORTED`).
+  - **Snapshots accrue a bond's interest to their date**, from the schedule
+    stepped back from maturity. ACT/ACT is actual days over the coupon
+    period's actual days. A coupon is entitled on its scheduled date and is a
+    receivable until it is paid. `pt income coupon` records that date, by
+    default or with `--coupon-date`. A coupon the account was owed and that
+    no row records makes the snapshot incomplete (`PT-E-COUPON-UNRECORDED`).
+    So does a date inside a first coupon period, which starts from a dated
+    date that is not stored (`PT-E-ACCRUAL-UNAVAILABLE`).
+  - **The tax report says what it does not compute for bonds** in any year
+    one was held: premium amortization, market discount, OID, and coupon
+    interest with the purchased accrued interest that reduces it. This
+    appears in the footnotes and in a `bonds` field, null otherwise.
+  - **The sample fixture's bond** is now $50,000 of face at 101.24 percent
+    of par. It pays the 565.92 of accrued interest its purchase owed, and
+    every coupon it was owed through 2025-11-15. Before, it was 50 bonds at
+    a per-bond price under a percent-of-par label, held two of nine coupons,
+    and dated a first coupon that would have made 2021 an odd period.
+  - Not built: an `accrued_interest` field in the activity mapping grammar.
+    A bond trade from a custodian export is refused at the batch until it
+    states one.
+
 - **Snapshots record what the time-weighted return will read** (ADR 0040
   §13, accepted by the owner). Stored snapshots made before this re-derive
   differently, so `pt validate` names them, and `pt value` over their dates
@@ -371,6 +408,12 @@ Two rules specific to this repository:
 
 ### Schema
 
+- **`schema_version` 11 → 12**, migration `0012_bond_accrued_interest`
+  (ADR 0041, accepted by the owner). It adds one nullable column,
+  `transaction.accrued_interest`: the interest accrued to settlement that a
+  bond trade pays or receives, signed like cash. The column is additive, with
+  no rebuild, and the append-only triggers bind it as they bind every column.
+  `pt migrate` applies it; no existing row changes.
 - **`schema_version` 10 → 11**, migration `0011_wash_sales` (ADR 0037).
   - `lot_disposition` and `realized_gain` are recreated empty for
     `pt migrate` to rebuild. The gain gains `wash_sale_disallowed`, the
@@ -423,6 +466,13 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **BREAKING for a file that holds bonds:** a bond's quantity is now its
+  face amount, and its price is read through its quote basis (ADR 0041). A
+  bond entered under the old reading, as a number of bonds priced per bond
+  under the default `percent_of_par`, values a hundredth of what it should,
+  and its stored snapshots no longer re-derive; `pt validate` names them.
+  Reverse such rows and enter them again at face. The owner's file holds no
+  bonds.
 - **`pt tax` reports wash sales (schema `tax-2.0`).**
   - Totals are the allowed gains: Schedule D's column (h).
   - Each disposition carries `wash_sale_disallowed` and `allowed_gain`.

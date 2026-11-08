@@ -963,16 +963,21 @@ class TransactionRepository(_Repository):
         repository's clock (ADR 0035), as is every other row it writes.
         """
         self.refuse_if_ref_taken(txn.account_id, txn.external_ref)
+        # `accrued_interest` (schema 12) is named only when the row carries one,
+        # so a row without it is the INSERT it was before the column existed.
+        # Every file is migrated before it is written to; this is what lets a
+        # test still build a pre-12 file through this repository.
+        extra = ", accrued_interest" if txn.accrued_interest is not None else ""
         cursor = self.con.execute(
-            'INSERT INTO "transaction" (account_id, trade_date, settlement_date, seq, '
+            'INSERT INTO "transaction" (account_id, trade_date, settlement_date, seq, '  # noqa: S608 -- one fixed column name, no values
             "txn_type, instrument_id, quantity, price, gross_amount, fees, commissions, "
             "taxes_withheld, withholding_reclaimable, fee_class, net_cash_effect, "
             "position_id, counter_account_id, related_txn_id, reverses_txn_id, "
             "lot_selection, relief_method, ex_date, pay_date, is_qualified, note, "
             "external_ref, source, original_basis, original_acquired_date, "
-            "basis_source, basis_assumption, strategy_type, label, created_at) VALUES "
-            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            f"basis_source, basis_assumption, strategy_type, label, created_at{extra}) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            f"?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?{', ?' if extra else ''})",
             (
                 txn.account_id,
                 txn.trade_date.isoformat(),
@@ -1012,6 +1017,7 @@ class TransactionRepository(_Repository):
                 str(txn.strategy_type) if txn.strategy_type else None,
                 txn.label,
                 txn.created_at or self.clock.stamp(),
+                *((_text(txn.accrued_interest),) if extra else ()),
             ),
         )
         self._remove_stale_snapshots(txn)

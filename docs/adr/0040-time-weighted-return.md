@@ -92,9 +92,11 @@ run, the same walk `pt validate` makes. Open question 3 asks whether that is
 acceptable.
 
 An account needs a snapshot for every day from its **inception** to the end
-of the period. Inception is the first day it holds capital at the start of
-the day or receives an inflow. Before inception the account contributes
-nothing; it is not a zero return.
+of the period. Inception is the date of the first ledger row on either side
+of the account. That includes the receiving side of a transfer: an account
+funded only by a transfer has no row of its own, and leaving it out would
+lose the money from the portfolio without a flow. Before inception the
+account contributes nothing; it is not a zero return.
 
 ### 3. One formula, with day-resolution flow timing
 
@@ -223,6 +225,15 @@ same formula. On a daily sub-period that is exactly adding it back to `V_E`.
   net-of-external-costs-only are equal. They are shown once, labelled with
   both names (`PORT-GIPS-D01`).
 
+**What "unchanged" means for a basis.** A fee undone at a basis leaves that
+basis's return unchanged for the sub-period it is charged in, exactly. Later
+sub-periods are measured on the capital actually left, which the fee
+reduced. So across a longer period, gross-of-fees with a custody fee differs
+from gross-of-fees without it by the return earned on the fee's amount.
+That is the per-day add-back, and it is what an Alternatives entry chooses
+over compounding a hypothetical gross value. `PORT-GIPS-D01`'s acceptance
+tests are worded to match (`docs/gips-standard.md`).
+
 ADR 0014's advisory fee paid by one account for another works without a
 special case. It is a transfer, neutral at portfolio level, plus an
 `external_mgmt_fee` in the account paid for, which gross-of-fees adds back.
@@ -275,9 +286,10 @@ multi-period reporting (issue 5).
   whole cost on the day, and a sale as a gain. Receiving such an instrument
   in kind, or a cash payout on one (`merger_cash`), is not refused: the
   first moves nothing and the second is real return.
-- **A coupon bond held in the period while snapshots cannot accrue its
-  interest** is refused (`PT-E-ACCRUAL-UNAVAILABLE`), until the
-  prerequisite in §13 is done.
+- ~~A coupon bond held while snapshots cannot accrue its interest~~ is no
+  longer refused here: ADR 0041 put accrued interest into every snapshot.
+  A day whose bond cannot be accrued (a first coupon period) or whose coupon
+  is unrecorded is an incomplete snapshot, and §6 treats it as one.
 
 ### 13. Prerequisites, in `pt`, before the engine
 

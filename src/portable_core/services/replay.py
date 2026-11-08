@@ -624,7 +624,7 @@ class ReplayEngine:
                 gross = (
                     txn.gross_amount
                     if txn.gross_amount is not None
-                    else ((txn.price or ZERO) * txn.quantity * instrument.contract_size)
+                    else instrument.value_of(txn.quantity, txn.price or ZERO)
                 )
                 if is_short:
                     # ADR 0038. A short lot holds what the sale RECEIVED, its
@@ -794,7 +794,7 @@ class ReplayEngine:
             gross = (
                 txn.gross_amount
                 if txn.gross_amount is not None
-                else ((txn.price or ZERO) * txn.quantity * instrument.contract_size)
+                else instrument.value_of(txn.quantity, txn.price or ZERO)
             )
             amount = abs(quantize_money(gross))
 

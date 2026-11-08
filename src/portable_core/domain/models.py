@@ -174,6 +174,30 @@ class BondDetail:
     def is_zero_coupon(self) -> bool:
         return self.coupon_frequency == 0
 
+    def value_of(self, quantity: Decimal, price: Decimal) -> Decimal:
+        """What *quantity* of face is worth at *price*, unrounded. ADR 0041 §1.
+
+        Quantity is face amount, as a custodian reports it. ``percent_of_par``
+        prices per 100 of face; ``price_per_bond`` per bond of ``face_value``.
+        """
+        if self.quote_basis == "percent_of_par":
+            return quantity * price / Decimal(100)
+        if self.quote_basis == "price_per_bond":
+            return quantity * price / self.face_value
+        raise ValueError(f"unhandled bond quote basis: {self.quote_basis!r}")
+
+    def price_of(self, quantity: Decimal, value: Decimal) -> Decimal:
+        """The price at which *quantity* of face is worth *value*: the inverse."""
+        if self.quote_basis == "percent_of_par":
+            return value * Decimal(100) / quantity
+        if self.quote_basis == "price_per_bond":
+            return value * self.face_value / quantity
+        raise ValueError(f"unhandled bond quote basis: {self.quote_basis!r}")
+
+    def is_whole_denomination(self, quantity: Decimal) -> bool:
+        """Whether *quantity* of face is a whole number of bonds of ``face_value``."""
+        return self.face_value > 0 and quantity % self.face_value == 0
+
 
 @dataclass(frozen=True, slots=True)
 class Instrument:
@@ -220,6 +244,23 @@ class Instrument:
         if self.option is not None:
             return self.option.multiplier
         return Decimal(1)
+
+    def value_of(self, quantity: Decimal, price: Decimal) -> Decimal:
+        """What *quantity* is worth at *price*, unrounded: the one product.
+
+        Every place a price is multiplied by a quantity goes through here, so
+        a bond's quote basis (ADR 0041 §1) cannot be forgotten at one of them.
+        The caller rounds, at its own boundary (ADR 0005).
+        """
+        if self.bond is not None:
+            return self.bond.value_of(quantity, price)
+        return price * quantity * self.contract_size
+
+    def price_of(self, quantity: Decimal, value: Decimal) -> Decimal:
+        """The price at which *quantity* is worth *value*: :meth:`value_of` inverted."""
+        if self.bond is not None:
+            return self.bond.price_of(quantity, value)
+        return value / (quantity * self.contract_size)
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,11 +327,14 @@ class PriceAcceptance:
 # ── Ledger ───────────────────────────────────────────────────────────────────
 
 
-#: Distributions accrued from their ex-date to their pay-date (PORT-GIPS-A06).
-#: Interest on cash is recognised when paid, which A06 permits; a coupon
-#: accrues from its bond's schedule.
+#: Income accrued from its entitlement date to its pay-date (PORT-GIPS-A06).
+#: A coupon's entitlement date is the scheduled coupon date it pays, held in
+#: ``ex_date``: between the two it is a receivable, and the bond accrues the
+#: next period from its schedule (ADR 0041 §3). Interest on cash is
+#: recognised when paid, which A06 permits.
 ACCRUED_FROM_EX_DATE: frozenset[TransactionType] = frozenset(
     {
+        TransactionType.COUPON,
         TransactionType.DIVIDEND,
         TransactionType.DIVIDEND_REINVEST,
         TransactionType.RETURN_OF_CAPITAL,
@@ -329,6 +373,10 @@ class Transaction:
     #: PORT-GIPS-D01. NULL where a fee is present is an error, enforced by the
     #: schema so it binds every writer.
     fee_class: FeeClass | None = None
+    #: ADR 0041 §2. The interest accrued to settlement that a bond trade pays
+    #: or receives, signed like cash. In ``net_cash_effect``; never in basis
+    #: or proceeds -- it is a receivable bought or sold, not the bond.
+    accrued_interest: Decimal | None = None
     position_id: int | None = None
     #: The other side of a transfer. ONE transaction with two sides, so that
     #: portfolio-level netting is structural rather than a matching heuristic
@@ -396,8 +444,8 @@ class Transaction:
         the row's trade date. Between the two it is a receivable in market
         value (``PORT-GIPS-A06``, ADR 0040 §13.2), so a snapshot dated before
         the row depends on it. None for every other row, and for one whose
-        ex-date is its pay-date. Bond coupons accrue from the coupon
-        schedule, not from here.
+        ex-date is its pay-date. A coupon's ex-date is the scheduled date it
+        pays (ADR 0041 §3).
         """
         if self.txn_type not in ACCRUED_FROM_EX_DATE:
             return None

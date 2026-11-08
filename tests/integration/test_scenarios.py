@@ -247,77 +247,96 @@ def test_3_covered_call_written_and_assigned(run_pt: CliRunner, portfolio: Path)
 
 
 def test_5_bond_bought_between_coupons(run_pt: CliRunner, portfolio: Path) -> None:
-    """Accrued interest is part of market value, not a memo (PORT-GIPS-A06)."""
+    """Accrued interest is part of market value, not a memo (PORT-GIPS-A06).
+
+    ADR 0041. $10,000 of face of a 4.25% semi-annual Treasury maturing
+    2030-05-15, bought on 2024-06-20 at 101.24 percent of par for settlement
+    on 06-21. The seller is paid the interest accrued from the 05-15 coupon to
+    settlement: 212.50 x 37 / 184 = 42.73. That is cash, not basis.
+    """
     port = str(portfolio)
-    run_pt(
-        "--port",
-        port,
-        "instrument",
-        "add",
-        "T-4.25-2030",
-        "--type",
-        "bond",
-        "--issuer",
-        "US Treasury",
-        "--coupon",
-        "0.0425",
-        "--coupon-frequency",
-        "2",
-        "--maturity",
-        "2030-05-15",
-        "--day-count",
-        "ACT/ACT",
-        "--face",
-        "1000",
-    )
-    run_pt(
-        "--port",
-        port,
-        "buy",
-        "T-4.25-2030",
-        "--qty",
-        "10",
-        "--price",
-        "1012.40",
-        "--date",
-        "2024-06-20",
-        "-a",
-        "B",
-    )
-    run_pt(
-        "--port",
-        port,
-        "price",
-        "set",
-        "T-4.25-2030",
-        "--price",
-        "995.00",
-        "--date",
-        "2024-06-30",
-        "--valuation-level",
-        "1",
-    )
+    run_pt("--port", port, "instrument", "add", "T-4.25-2030", "--type", "bond",
+           "--issuer", "US Treasury", "--coupon", "0.0425", "--coupon-frequency", "2",
+           "--maturity", "2030-05-15", "--day-count", "ACT/ACT", "--face", "1000",
+           "--quote-basis", "percent_of_par")  # fmt: skip
+    bought = run_pt("--port", port, "buy", "T-4.25-2030", "--qty", "10000", "--price",
+                    "101.24", "--date", "2024-06-20", "--settlement", "2024-06-21",
+                    "--accrued-interest", "42.73", "-a", "B").data  # fmt: skip
+    assert D(bought["gross_amount"]) == D("10124.00"), "10,000 of face at 101.24 per 100"
+    assert D(bought["accrued_interest"]) == D("-42.73"), "paid on a buy, signed like cash"
+    assert D(bought["net_cash_effect"]) == D("-10166.73")
 
-    run_pt(
-        "--port",
-        port,
-        "income",
-        "coupon",
-        "T-4.25-2030",
-        "-a",
-        "B",
-        "--amount",
-        "212.50",
-        "--pay-date",
-        "2024-11-15",
-    )
-
+    run_pt("--port", port, "price", "set", "T-4.25-2030", "--price", "99.50", "--date",
+           "2024-06-30", "--valuation-level", "1")  # fmt: skip
     holdings = run_pt("--port", port, "holdings", "--as-of", "2024-06-30").data
     bond = next(r for r in holdings["rows"] if r["symbol"] == "T-4.25-2030")
     assert D(bond["market_value"]) == D("9950.00")
     # The accrued interest paid to the seller is NOT basis: basis is price
-    # times quantity plus fees.
+    # times face over 100, plus fees.
     assert D(bond["cost_basis"]) == D("10124.00")
+
+    # The snapshot accrues to its own date: 46 days of the 184-day period.
+    run_pt("--port", port, "value", "--date", "2024-06-30", "-a", "B")
+    snapshot = _snapshot(port, "2024-06-30")
+    assert snapshot["accrued_interest"] == D("53.12")  # 53.125, to the even cent
+    assert snapshot["ending_market_value"] == (
+        snapshot["securities_value"] + snapshot["cash_balance"] + D("53.12")
+    )
+
+
+def test_5b_a_coupon_is_owed_from_its_scheduled_date(
+    run_pt: CliRunner, portfolio: Path
+) -> None:
+    """ADR 0041 §3. 2025-11-15 is a Saturday; the coupon is paid on Monday 11-17.
+
+    Saturday and Sunday carry the whole coupon as a receivable and accrue the
+    new period from zero. A valuation after a coupon the account was owed and
+    that no row records is incomplete, because the row is missing.
+    """
+    port = str(portfolio)
+    run_pt("--port", port, "instrument", "add", "T-4.25-2030", "--type", "bond",
+           "--issuer", "US Treasury", "--coupon", "0.0425", "--coupon-frequency", "2",
+           "--maturity", "2030-05-15", "--face", "1000")  # fmt: skip
+    run_pt("--port", port, "buy", "T-4.25-2030", "--qty", "10000", "--price", "100",
+           "--date", "2025-05-15", "--accrued-interest", "0", "-a", "B")  # fmt: skip
+    run_pt("--port", port, "price", "set", "T-4.25-2030", "--price", "100", "--date",
+           "2025-11-14", "--valuation-level", "1")  # fmt: skip
+
+    run_pt("--port", port, "value", "--from", "2025-11-14", "--to", "2025-11-18", "-a", "B")
+    assert _snapshot(port, "2025-11-18")["is_complete"] == 0, "the coupon is not recorded"
+
+    paid = run_pt("--port", port, "income", "coupon", "T-4.25-2030", "-a", "B",
+                  "--amount", "212.50", "--pay-date", "2025-11-17").data  # fmt: skip
+    assert paid["ex_date"] == "2025-11-15", "entitled on the scheduled date it pays"
+
+    run_pt("--port", port, "value", "--from", "2025-11-14", "--to", "2025-11-18", "-a", "B")
+    friday, saturday = _snapshot(port, "2025-11-14"), _snapshot(port, "2025-11-15")
+    monday = _snapshot(port, "2025-11-17")
+    assert friday["accrued_interest"] == D("211.35")  # 212.50 x 183 / 184
+    assert saturday["accrued_interest"] == D("212.50"), "the receivable; the period restarts"
+    assert monday["accrued_interest"] == D("2.35")  # 212.50 x 2 / 181: paid, and accruing
+    assert _snapshot(port, "2025-11-18")["is_complete"] == 1
+
+
+def _snapshot(port: str, on: str) -> dict[str, D]:
+    import sqlite3
+
+    con = sqlite3.connect(port)
+    con.row_factory = sqlite3.Row
+    try:
+        row = con.execute(
+            "SELECT * FROM valuation_snapshot WHERE snapshot_date = ?", (on,)
+        ).fetchone()
+    finally:
+        con.close()
+    assert row is not None, f"no snapshot on {on}"
+    return {
+        key: (D(str(row[key])) if key != "is_complete" else row[key])
+        for key in (
+            "accrued_interest", "securities_value", "cash_balance",
+            "ending_market_value", "is_complete",
+        )
+    }  # fmt: skip
 
 
 # ── 6 ────────────────────────────────────────────────────────────────────────

@@ -178,14 +178,12 @@ def test_accrued_interest_in_market_value() -> None:
             face_value=D("1000"),
         ),
     )
-    holding = Holding(
-        bond,
-        D("10"),
-        last_coupon_date=date(2025, 5, 15),
-        next_coupon_date=date(2025, 11, 15),
-    )
+    # $10,000 of face: quantity is face amount (ADR 0041). The schedule steps
+    # back from maturity, so 2025-06-30 is 46 days into the 184-day period
+    # from 2025-05-15: 4.25% / 2 x 10,000 x 46 / 184 = 53.125, to the cent.
+    holding = Holding(bond, D("10000"))
     accrued = ENGINE.accrued_interest(holding, date(2025, 6, 30))
-    assert accrued > 0, "46 days into a semi-annual period must accrue something"
+    assert accrued == D("53.12")
 
     snapshot = ENGINE.build_snapshot(
         account(),

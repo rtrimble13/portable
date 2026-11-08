@@ -1,6 +1,6 @@
 # ADR 0041 — A bond is held at face, priced by its quote basis, and carries its accrued interest
 
-- **Status:** Accepted (owner, 2026-11-08), with the recommended answers, and schema 12 approved. No bonds are in the owner's file yet, so nothing is re-entered
+- **Status:** Accepted (owner, 2026-11-08), with the recommended answers, and schema 12 approved. No bonds are in the owner's file yet, so nothing is re-entered. Implemented: schema 12, `Instrument.value_of` and `price_of`, the trade rules, accrual and the coupon check in snapshots, the tax report's statement, the batch column, and the sample fixture. Two changes from the text as accepted are noted where they fall (§3 and §5)
 - **Date:** 2026-11-08; accepted 2026-11-08
 - **Milestone:** v0.2, a prerequisite of [ADR 0040](0040-time-weighted-return.md) §13.1
 - **Governs:** `PORT-GIPS-A06` (accrued interest is required), `A05` (trade date), `A01`; `CLAUDE.md` "Accrued interest is part of market value"; `docs/tax-methodology.md`
@@ -53,10 +53,10 @@ number. ADR 0040's engine would, starting with its first bond.
 ### 1. Quantity is face amount; the quote basis decides the price
 
 A bond's **quantity is its face amount in currency**, as custodians report
-it: 25,000 means $25,000 of par. One function,
-`bond_market_value(bond, quantity, price)`, is used by valuation, trades,
-reconciliation and price acceptance, and nothing else multiplies a bond's
-price:
+it: 25,000 means $25,000 of par. One method, `Instrument.value_of(quantity,
+price)` (with its inverse `price_of`), is used by valuation, trades, replay,
+reconciliation, P&L and price acceptance, and nothing else multiplies a
+price by a quantity. For a bond it reads the quote basis:
 
 | `quote_basis` | Market value |
 |---|---|
@@ -97,15 +97,31 @@ Per `PORT-GIPS-A05`, accrual runs to the valuation date, not to settlement.
 - **A holding inside an odd first coupon period is refused**
   (`PT-E-ACCRUAL-UNAVAILABLE`), because the dated date that starts the
   period is not stored. This is rare, and the refusal names the bond.
-- **A coupon due and not yet recorded is still accrued.** A scheduled
-  coupon dated on or before the valuation date, with no coupon row for it
-  yet, stays a receivable in accrued interest. This covers a coupon falling
-  on a weekend and paid on the Monday. A coupon still unrecorded after the
-  staleness tolerance (5 days, the price tolerance) makes the snapshot
-  incomplete, naming the bond and the date. An unrecorded coupon is a
-  missing ledger row, not a market move.
-- **The amount** is `coupon_rate / coupon_frequency × quantity ×
-  accrual_fraction`, using the existing day-count functions.
+- **A coupon is entitled on the scheduled date it pays**, and is a
+  receivable from there until it is paid. The coupon row holds that date in
+  `ex_date`. `pt income coupon` defaults it to the bond's last scheduled
+  coupon on or before the pay-date, or takes `--coupon-date`. A coupon due
+  on a Saturday and paid on the Monday is in value all weekend. Entering the
+  row removes the snapshots from its coupon date, as a dividend's does
+  (ADR 0040 §13.2).
+- **A coupon the account was owed and that no row records makes the
+  snapshot incomplete** (`PT-E-COUPON-UNRECORDED`), naming the bond and the
+  date. "Owed" means a lot that arrived in the account before the coupon
+  date is still open. That is the opening row's date, not the lot's
+  holding-period start, which an in-kind lot carries back. An unrecorded
+  coupon is a missing ledger row, not a market move.
+
+  *Changed from the text as accepted*, which accrued a missing coupon for
+  five days as a computed receivable. That figure rests on the quantity
+  held on the coupon date, which open lots alone do not give. The row's
+  arrival removes and revalues the days it covers anyway, so nothing is
+  lost by refusing until it comes.
+- **The amount.** ACT/ACT, the bond-market convention (ICMA), is
+  `coupon_rate / coupon_frequency × quantity × days elapsed / days in the
+  period`. The other conventions use `coupon_rate × quantity ×` their own
+  year fraction. `domain/dates.accrual_fraction` took the ratio of two ISDA
+  year fractions, which is not how a bond accrues across 1 January, and was
+  never called. It is removed, and `domain/bonds.py` replaces it.
 
 ### 4. Tax
 
@@ -119,16 +135,25 @@ report, when it comes, starts from them.
 
 **Bond premium amortization (§171), market discount (§1276) and OID are
 not computed.** For any bond held, the tax report says so in its list of
-what it does not handle. For a tax-exempt bond bought at a premium,
-amortization is mandatory and changes basis, so the gain on such a bond is
-reported as an estimate, flagged (ADR 0011).
+what it does not handle. It does so in the footnotes and in a `bonds` field
+of the JSON, which is null in a year with no bond.
+
+*Changed from the text as accepted:* it proposed flagging the gain on a
+tax-exempt bond bought at a premium as an estimate. Nothing records that a
+bond is tax-exempt, so the statement covers every bond instead.
 
 ### 5. Import
 
 A bond is added by hand (`pt instrument add --type bond --quote-basis …`),
 which is the remedy the import already gives. The batch format gains an
-optional `accrued_interest` column, and the broker-import skill asks for it
-by interview like any other mapping field.
+optional `accrued_interest` column, required on a bond trade as it is from
+the command line.
+
+**Not built: an `accrued_interest` field in the activity mapping grammar**,
+the step that turns a custodian's export into batch rows. Until it exists, a
+bond trade from an export is refused at the batch, which states the missing
+column. A bond trade is entered by hand, or the batch row is edited at the
+review gate (ADR 0012). The import refuses, so nothing is guessed.
 
 ## Open questions for the owner
 
