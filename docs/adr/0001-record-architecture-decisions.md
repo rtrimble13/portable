@@ -7,8 +7,8 @@
 ## Context
 
 `portable` computes numbers its owner files taxes from and defends investment
-decisions with. The bootstrap prompt (§13) leaves a number of material choices to
-the implementer and asks that each be decided, written down, and surfaced.
+decisions with. Building it involves a number of material choices, and `CLAUDE.md`
+asks that each be decided, written down, and surfaced.
 `CLAUDE.md` makes checking `docs/adr/` a precondition for redesigning anything.
 
 A decision whose reasoning is not written down gets silently reverted by the next
@@ -16,9 +16,9 @@ agent session, and in this domain a silent reversal is a silently wrong number.
 
 ## Decision
 
-Every decision that (a) was left open by the bootstrap prompt, (b) deviates from
-it, or (c) would be expensive to reverse, gets an ADR in `docs/adr/`, numbered
-sequentially and never renumbered.
+Every decision that (a) is material and not already settled by `CLAUDE.md` or an
+earlier ADR, (b) departs from either, or (c) would be expensive to reverse, gets
+an ADR in `docs/adr/`, numbered sequentially and never renumbered.
 
 Format: Context / Decision / Consequences / Alternatives considered. One page.
 Status is one of `Proposed`, `Accepted`, `Superseded by ADR-xxxx`, `Rejected`.

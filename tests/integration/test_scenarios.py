@@ -1,7 +1,8 @@
-"""The end-to-end scenarios named in the bootstrap (§9), through the real CLI.
+"""The numbered end-to-end scenarios, through the real CLI.
 
 Each asserts on parsed JSON, so a change to the envelope breaks here rather
-than in somebody's consumer. Numbered to match the bootstrap's list.
+than in somebody's consumer. The numbers are stable because other documents
+cite them (`docs/gips-standard.md` names scenario 5); there is no scenario 4.
 """
 
 from __future__ import annotations

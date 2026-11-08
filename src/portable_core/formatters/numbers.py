@@ -3,7 +3,7 @@
 `CLAUDE.md`: "New output formatting rules go in `formatters/`, once, not inline
 at call sites." This module is that place.
 
-The rules, from the bootstrap (§6.2) and `docs/output-formats.md`:
+The rules, from `CLAUDE.md` ("Output") and `docs/output-formats.md`:
 
 * **Human formats** (`table`, `markdown`) -- thousands separators, 2dp for
   currency, a leading minus for negatives (chosen over parentheses; see
@@ -60,7 +60,7 @@ def money(value: Decimal | None, *, null: str = NULL_TEXT) -> str:
     """Currency for a human format: thousands separators, two decimals.
 
     Negatives take a **leading minus**, not parentheses. Both conventions are
-    defensible; the bootstrap requires choosing one and being consistent, and
+    defensible; what matters is choosing one and being consistent, and
     the minus wins because it survives being copied into a spreadsheet, a
     terminal with a narrow column, and an LLM context window, where a lone
     ``)`` at a line break becomes ambiguous.

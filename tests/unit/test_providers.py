@@ -218,7 +218,7 @@ def _adapter_source() -> str:
 def test_the_warehouse_override_is_portables_own_and_nothing_else(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Bootstrap §6.3, ADR 0032. portable reads no fafnir configuration: duk does.
+    """ADR 0032. portable reads no fafnir configuration: duk does.
 
     An explicit DSN (``fafnir_dsn`` in portable's config) or PORTABLE_FAFNIR_DSN
     is handed to duk as FAFNIR_DSN; without either, duk's own FAFNIR_DSN and

@@ -399,7 +399,7 @@ def test_replay_properties_over_generated_sequences(
 def test_no_relief_method_can_leave_a_negative_lot(
     repos: Repositories, taxable_account: Account, aapl: Instrument
 ) -> None:
-    """A property the bootstrap names explicitly."""
+    """A sale spanning several lots leaves no lot with negative quantity or basis."""
     for i in range(3):
         _buy(
             repos,

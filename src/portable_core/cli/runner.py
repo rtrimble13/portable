@@ -7,7 +7,7 @@ Every `pt` command's outermost layer. Two guarantees live here:
   ``PT-E-GENERIC``, and exits 1, with the traceback on stderr under ``-vv``.
 * **Structured output goes to stdout; everything else to stderr.** That is what
   makes ``pt holdings --format json | jq`` work while ``-v`` is on
-  (bootstrap §3.5).
+  (``CLAUDE.md`` invariant 8).
 """
 
 from __future__ import annotations

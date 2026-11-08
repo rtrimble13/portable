@@ -6,11 +6,11 @@
 
 ## Context
 
-Bootstrap §8.4 asks for the C++ toolchain wired end to end and proven with one
-trivial `portable_native` module, importable after `pip install -e .`, tested
-from both pytest and Catch2, building in CI on Linux and Windows — and **no
-production C++ in this engagement**. §8.1 fixes the toolchain as CMake +
-pybind11 + Catch2 via `scikit-build-core`, matching
+The C++ toolchain is to be wired end to end and proven with one trivial
+`portable_native` module, importable after `pip install -e .`, tested from both
+pytest and Catch2, building in CI on Linux and Windows — and **no production
+C++ yet**. The toolchain is CMake + pybind11 + Catch2 via `scikit-build-core`
+(`CLAUDE.md`, "Conventions"), matching
 [`po`](https://github.com/rtrimble13/po) so that integrating `portopt` later is a
 merge rather than a rewrite.
 
@@ -112,7 +112,7 @@ binding, the twin, and their agreement.
 - **Mandatory extension** — rejected: it makes a compiler a precondition for
   reading your own tax report, and it removes the differential test's control
   arm.
-- **`setuptools` + a separate `make cpp`** — simpler, but the bootstrap fixes
-  `scikit-build-core` precisely so `pip install .` is the whole story.
+- **`setuptools` + a separate `make cpp`** — simpler, but `scikit-build-core`
+  is there precisely so `pip install .` is the whole story.
 - **Cython / mypyc** — faster to adopt, but does not converge with `po`, which is
   the entire strategic reason C++ is here at all.

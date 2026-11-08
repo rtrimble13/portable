@@ -14,8 +14,8 @@ does not naturally serve:
 2. **The ledger is append-only**, enforced by database triggers that reject
    `UPDATE` and `DELETE` on `transaction` (invariant 2). An ORM's unit-of-work
    pattern exists to issue exactly the statements we forbid.
-3. **`docs/schema.md` is generated from DDL comments** so it cannot drift
-   (bootstrap §5). That requires the DDL to be the source of truth, in SQL files.
+3. **`docs/schema.md` is generated from DDL comments** so it cannot drift.
+   That requires the DDL to be the source of truth, in SQL files.
 4. **Migrations are numbered, idempotent, and tested in both directions.**
 
 ## Decision

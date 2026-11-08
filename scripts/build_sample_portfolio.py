@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate `examples/sample.port` from a scripted transaction sequence.
 
-**Generated, not hand-crafted** (bootstrap §9). A hand-made fixture drifts from
+**Generated, not hand-crafted** (`CLAUDE.md`). A hand-made fixture drifts from
 what the code actually produces and quietly stops testing anything; a generated
 one is rebuilt by `make fixtures` and fails loudly when the engines change.
 

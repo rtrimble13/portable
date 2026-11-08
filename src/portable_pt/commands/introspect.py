@@ -1,8 +1,8 @@
 """`pt introspect` -- the command tree, for generators and agents.
 
-Bootstrap §6.6: emit "the complete command tree -- commands, arguments, types,
-defaults, help text, and output schema references -- sufficient for a generator
-to produce MCP tool definitions **without parsing --help**".
+It emits the complete command tree -- commands, arguments, types, defaults,
+help text, and output schema references -- sufficient for a generator to
+produce MCP tool definitions **without parsing --help**.
 
 That last clause is the requirement. Anything derived from help text is a
 scraper, and a scraper breaks silently the first time the help is reworded.

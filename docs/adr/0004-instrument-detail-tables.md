@@ -6,9 +6,9 @@
 
 ## Context
 
-Bootstrap §4.3: "Use a base `instrument` table plus type-specific detail tables
-(or a validated JSON detail column — choose one, justify it in an ADR, and be
-consistent)."
+Instruments share a base `instrument` table. What is specific to a type can live
+in type-specific detail tables or in a validated JSON detail column; one has to
+be chosen, justified here, and kept.
 
 v0.1 supports equity/ETF/fund/ADR, cash and money market, listed options
 (underlier, right, strike, expiry, multiplier, OCC symbol, exercise style), and

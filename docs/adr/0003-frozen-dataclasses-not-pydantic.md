@@ -6,9 +6,10 @@
 
 ## Context
 
-The bootstrap prompt (§6.1) says "dataclasses or Pydantic — pick one, justify, be
-consistent". Domain objects carry `Decimal` money fields and `date` fields, have
-no I/O, and are constructed both from database rows and from CLI input.
+Domain objects could be dataclasses or Pydantic models, and the choice has to be
+made once, justified, and kept. They carry `Decimal` money fields and `date`
+fields, have no I/O, and are constructed both from database rows and from CLI
+input.
 
 ## Decision
 
@@ -49,8 +50,8 @@ any money field. That guard is cheap and catches the one mistake this repo fears
 
 - We write the row→object mapping ourselves (already implied by ADR 0002).
 - JSON Schema for command output is authored in `schemas/` and validated in
-  tests, rather than generated from models. This is what the bootstrap asks for
-  anyway (§6.6) — the schema is a published contract, so it should be written
+  tests, rather than generated from models. This is what `CLAUDE.md` invariant 8
+  asks for anyway — the schema is a published contract, so it should be written
   deliberately and versioned, not derived from whatever the models happen to be.
 - No free `.model_dump()`. Serialisation lives in `formatters/`, which is where
   `CLAUDE.md` says presentation rules belong.

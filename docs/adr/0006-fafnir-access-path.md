@@ -6,11 +6,11 @@
 
 ## Context
 
-Bootstrap §2 names [`fafnir`](https://github.com/rtrimble13/fafnir) as
-`portable`'s primary market data source and says: "Prefer querying the warehouse
-directly over shelling out to `duk` where a stable schema exists; use `duk` where
-it is the documented interface. Whichever you choose, document the decision in an
-ADR and isolate it behind the provider interface."
+[`fafnir`](https://github.com/rtrimble13/fafnir) is `portable`'s primary market
+data source. It can be reached by querying the warehouse directly, preferred where
+a stable schema exists, or by shelling out to `duk`, where that is the documented
+interface. Whichever is chosen is decided here and isolated behind the provider
+interface.
 
 `fafnir`'s `doc/data_dictionary.md` was read at commit-time of this ADR. The
 relevant contract:
@@ -53,7 +53,7 @@ treasury yield curve, and for nothing else.
 ### Why direct SQL rather than `duk`
 
 1. The schema is documented, versioned (`meta.schema_migration`), and stable —
-   which is the condition the bootstrap sets for preferring it.
+   which is the condition for preferring direct queries (see Context).
 2. `PORT-GIPS-J03` requires that supporting data for every reported figure be
    captured, including third-party records. Direct SQL lets the adapter record
    *which warehouse rows produced a price* — `security_id`, `trade_date`,
@@ -78,7 +78,8 @@ provider does not have rather than an error.
 DSN resolution order, highest first: `--dsn` flag → `PORTABLE_FAFNIR_DSN` →
 `FAFNIR_DSN` (fafnir's own convention) → `[database].dsn` in `~/.dukrc` →
 `~/.fafnirrc`. Secrets are never read from a `portable` config file when an
-environment variable is available, and are never logged (bootstrap §6.3).
+environment variable is available, and are never logged (`docs/architecture.md`
+§6).
 
 ## Two capabilities fafnir does not have — and what `portable` does about it
 

@@ -117,7 +117,7 @@ class CommandResult:
     portfolio: str | None = None
     #: Set on any command that emits a return. Carried as an envelope *field*
     #: in JSON, never a rendered string, so a consumer cannot drop it without
-    #: noticing (bootstrap §6.2).
+    #: noticing (`CLAUDE.md`, "Output").
     disclaimer: str | None = None
     #: Reference to the JSON Schema this output validates against.
     schema_ref: str | None = None

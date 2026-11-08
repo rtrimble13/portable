@@ -11,7 +11,7 @@ No bare exception reaches the user. The CLI's top-level handler catches
 `PortableError`, renders it in the active format, and exits with the code the
 error carries.
 
-Exit codes (README.md, bootstrap §7.2):
+Exit codes (README.md, CLAUDE.md):
 
 ===== ==========================================================
 ``0`` success

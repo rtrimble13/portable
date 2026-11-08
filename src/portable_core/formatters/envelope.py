@@ -1,6 +1,6 @@
 """The `--format json` envelope.
 
-Schema-stable and versioned (bootstrap §6.2). Consumers pin against
+Schema-stable and versioned (`CLAUDE.md` invariant 8). Consumers pin against
 ``schema_version``, not against the tool version, so a patch release that adds
 nothing to the output does not look like a breaking change.
 

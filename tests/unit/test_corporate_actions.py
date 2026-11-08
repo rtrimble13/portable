@@ -109,7 +109,7 @@ def test_a_reverse_split_reduces_quantity_and_leaves_total_basis_alone() -> None
 
 
 def test_a_split_and_its_inverse_leave_basis_and_quantity_unchanged() -> None:
-    """A property the bootstrap names explicitly."""
+    """A split then its inverse restores quantity, basis and holding period."""
     original = lot()
     forward = CA.split([original], numerator=D(3), denominator=D(1), ex_date=date(2024, 6, 1))
     back = CA.split(

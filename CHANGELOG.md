@@ -460,11 +460,34 @@ Two rules specific to this repository:
 
 ### Removed
 
+- **Citations of the bootstrap prompt.** About fifty places, in code, tests,
+  ADRs, `CLAUDE.md` and `docs/gips-standard.md`, cited
+  `portable_bootstrap_prompt.md` by section. The file was never in the
+  repository, so none of those citations could be checked. Each now cites the
+  document in the repository that states the rule (a `CLAUDE.md` invariant or
+  section, `docs/architecture.md`, `docs/market-data.md`, an ADR), or states
+  it directly. No rule changed. The three comments in migration
+  `0001_initial.sql` still cite it: a shipped migration's text is
+  checksummed into every `.port` file, and ADR 0022 allows amending one only
+  to fix a defect. `docs/schema.md` is generated from that file, so it keeps
+  the same citations.
+
 - **`psycopg`.** The `portable[fafnir]` extra installs nothing now, and is kept
   so that an existing install command still works. What fafnir needs is a
   `duk` with `th`, `ca` and `tc` (fafnir's release after 3.0.5).
 
 ### Fixed
+
+- **The `portable` command failed with `ModuleNotFoundError` on every run.**
+  `pyproject.toml` has declared `portable = "portable_core.cli.portable_cmd:main"`
+  since the scaffold, and the module never existed, so every install created
+  a command that crashed the first time it ran. The command is planned, not
+  dropped: it is where `portable config show` goes (`docs/architecture.md`
+  §6, issue #38). So it is now a stub like `pert`, `po` and `risky`: it says
+  it is not built, links the issue, writes nothing to stdout and exits 1. A
+  unit test now imports every `[project.scripts]` target and checks it is
+  callable, so a command declared with nothing behind it fails CI rather
+  than its first user.
 
 - **On Windows, a command whose output held a character outside cp1252
   crashed after doing its work.** Python encodes stdout in the console's code
@@ -1095,7 +1118,7 @@ Two rules specific to this repository:
   3.11/3.12, a pure-Python job proving `PORTABLE_BUILD_NATIVE=OFF` still works,
   and the C++ build with Catch2 on both platforms.
 - Documentation: `docs/architecture.md`, `docs/domain-model.md`, and eleven
-  ADRs covering every decision the bootstrap prompt left open.
+  ADRs covering the open design decisions.
 - `docs/broker-import.md` — the design for turning custodian exports into ledger
   rows: the three-stage pipeline, the canonical batch format, the activity and
   instrument maps as reviewed data files, the refusal list, and reconciliation as
@@ -1277,6 +1300,6 @@ and whose output was checked.
 
 ### Known gaps
 
-Tracked as issues, not hidden: wash-sale detection (v0.2, P0), several `pt`
-commands from the bootstrap surface, and `--offline` not yet enforced in the
-provider path.
+Tracked as issues, not hidden: wash-sale detection (v0.2, P0), several planned
+`pt` commands (issue #38), and `--offline` not yet enforced in the provider
+path.

@@ -214,6 +214,10 @@ Layered, highest precedence first:
 where each value came from**. Secrets are never read from a config file when an
 environment variable is available, and are never logged.
 
+*Not built yet.* `Config.to_rows()` computes all of it, secrets redacted, but
+nothing calls it: `portable` is a stub that says so and exits 1 until issue #38
+adds the command.
+
 **What is deliberately *not* configuration:** the large-cash-flow and materiality
 thresholds. Those are effective-dated rows in the `.port` file (`return_policy`),
 because they must be reconstructible for historical periods — a threshold that

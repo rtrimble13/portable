@@ -114,7 +114,7 @@ warn_unused_ignores = true
 show_error_codes = true
 pretty = true
 
-# strict on portable_core, per the bootstrap's fixed tooling decisions
+# strict on portable_core (CLAUDE.md, "Conventions")
 [[tool.mypy.overrides]]
 module = "portable_core.*"
 strict = true
