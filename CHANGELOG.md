@@ -483,6 +483,14 @@ Two rules specific to this repository:
   because it covers only the characters on its list and never a custodian's
   instrument names.
 
+- **CI reported the Windows test jobs as passing while tests failed.** The
+  step ran `coverage run -m pytest` and then `coverage report`, and on
+  Windows a step runs in PowerShell, which reports only its last command's
+  exit code: "4 failed, 1115 passed" went green. Each step in the test job
+  now runs one command, the dependency install included, which had the same
+  shape. `tests/unit/test_ci_workflow.py` fails any Windows-capable step
+  that runs more than one command, unless it sets `shell: bash`.
+
 - **Table and CSV output never showed a command's warnings.** Not even a dry
   run's `DRY RUN: nothing was written to the portfolio.`, so in the default
   format a dry run and the real write looked the same; nor rebuild notices,
