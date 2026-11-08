@@ -24,9 +24,14 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def run_pert(tmp_path: Path) -> CliRunner:
-    """Invoke `pert`, JSON by default, isolated as `run_pt` is."""
+    """Invoke `pert`, JSON by default, isolated and decoded as `run_pt` is."""
 
-    def run(*args: str, expect: int | None = 0, fmt: str = "json") -> CliResult:
+    def run(
+        *args: str,
+        expect: int | None = 0,
+        fmt: str = "json",
+        extra_env: dict[str, str] | None = None,
+    ) -> CliResult:
         env = dict(os.environ)
         env |= {
             "PYTHONPATH": str(ROOT / "src"),
@@ -35,10 +40,12 @@ def run_pert(tmp_path: Path) -> CliRunner:
             "USERPROFILE": str(tmp_path),
         }
         env.pop("PORTABLE_PORT", None)
+        env |= extra_env or {}
         completed = subprocess.run(
             [sys.executable, "-m", "portable_pert", "--format", fmt, *args],
             capture_output=True,
-            text=True,
+            # `pert` writes UTF-8 on every platform (portable_core.cli.streams).
+            encoding="utf-8",
             check=False,
             cwd=tmp_path,
             env=env,
@@ -289,3 +296,14 @@ def test_the_output_validates_against_its_schema(
     errors = sorted(_validator("twr-1.0.json").iter_errors(payload), key=str)
     assert not errors, [e.message for e in errors[:5]]
     assert json.dumps(payload)  # nothing in it a float could have produced
+
+
+def test_the_report_is_utf8_whatever_the_code_page(
+    run_pt: CliRunner, run_pert: CliRunner, invested: str
+) -> None:
+    """The disclaimer's ``®`` is 0xAE in cp1252; decoded as UTF-8, that byte
+    fails. `pert` sets its streams as `pt` does (portable_core.cli.streams)."""
+    _value(run_pt, invested)
+    table = run_pert("--port", invested, "twr", "--to", "2024-01-05", fmt="table",
+                     extra_env={"PYTHONIOENCODING": "cp1252"}).stdout  # fmt: skip
+    assert "GIPS®" in table

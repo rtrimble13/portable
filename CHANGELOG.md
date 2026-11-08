@@ -54,6 +54,9 @@ Two rules specific to this repository:
     valued at zero. `--daily` emits every sub-period.
 - `portable_core.cli` gains `make_options` and `resolve_date`, which `pt`
   and `pert` now share.
+- `pert` writes UTF-8 whatever the console's code page, as `pt` does
+  (`portable_core.cli.streams`). A report's disclaimer carries a `®`, which a
+  cp1252 console would otherwise write as a byte no UTF-8 reader accepts.
 
 - **Bonds are held at face, priced by their quote basis, and carry their
   accrued interest** (ADR 0041, accepted by the owner). Before, the stored
