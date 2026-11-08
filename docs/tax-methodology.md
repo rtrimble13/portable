@@ -418,9 +418,9 @@ purchase's own result says so, and so does a sheltered replacement.
 
 Every account in the file is taken to be the taxpayer's or their spouse's.
 
-§1091, §1223 and Treas. Reg. §1.1091-1 and §1.1223-1 were read in primary
-text, and Example 2 of §1.1091-1 is reproduced to the cent by a test. Rev.
-Rul. 2008-5 and Rev. Rul. 56-602 are still to be read (ADR 0037).
+§1091, §1223, Treas. Reg. §1.1091-1 and §1.1223-1, and Rev. Rul. 2008-5 were
+read in primary text, and Example 2 of §1.1091-1 is reproduced to the cent by a
+test. Rev. Rul. 56-602 was read only as quoted (ADR 0037).
 
 ---
 

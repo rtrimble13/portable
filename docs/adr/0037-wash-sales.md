@@ -1,6 +1,6 @@
 # ADR 0037 — Wash sales are detected in replay, across every account
 
-- **Status:** Accepted (owner, 2026-11-08), with the recommended answer to each open question, and schema 11 approved. Implemented in full: schema 11, matching in replay (decisions 1–6), the refusal of a designation a split divided (answer 2, by the reversal route the owner chose on 2026-11-08), decision 7, declarations and candidates (decision 8), notices (decisions 5, 9) and the report (decisions 10, 11). Citations: the statute and regulations were read in primary text on 2026-11-08; two revenue rulings are still unread (see Consequences)
+- **Status:** Accepted (owner, 2026-11-08), with the recommended answer to each open question, and schema 11 approved. Implemented in full: schema 11, matching in replay (decisions 1–6), the refusal of a designation a split divided (answer 2, by the reversal route the owner chose on 2026-11-08), decision 7, declarations and candidates (decision 8), notices (decisions 5, 9) and the report (decisions 10, 11). Citations: the statute, the regulations and Rev. Rul. 2008-5 were read in primary text on 2026-11-08; Rev. Rul. 56-602 only as quoted by Tax Notes (see Consequences)
 - **Date:** 2026-11-06; accepted 2026-11-08
 - **Milestone:** v0.2, issue 27 (P0)
 - **Governs:** `CLAUDE.md` "Wash sales cross accounts", invariants 3, 9; `docs/tax-methodology.md`
@@ -279,12 +279,29 @@ folded into the decisions above.
     text addresses overlapping periods. Decision 5's "no day counted twice",
     and converting the absorbed days into the calendar-year test, remain
     this ADR's reading.
-  - **Not yet read.** `www.irs.gov` was still refused by the session's
-    network policy:
-    - Rev. Rul. 2008-5, on IRA replacements, and its reach beyond IRAs;
-    - Rev. Rul. 56-602, which the rule that shares from one purchase are
-      not each other's replacement rests on (decision 2's "the shares being
-      sold").
+  - **Rev. Rul. 2008-5, 2008-3 I.R.B.: confirmed** (read at www.irs.gov).
+    - The holding: a loss on a sale followed by a purchase in the
+      taxpayer's IRA or Roth IRA "is disallowed under § 1091", and the IRA's
+      basis "is not increased by virtue of § 1091(d)".
+    - It names IRAs and Roth IRAs only and draws "no inference" beyond
+      them. Treating every `tax_deferred` and `tax_exempt` account the same
+      way (decision 5) remains this ADR's reading, as the warning says.
+  - **Rev. Rul. 56-602, 1956-2 C.B.: consistent, as quoted.** It is the
+    basis of decision 2's rule that shares from one purchase are not each
+    other's replacement.
+    - The IRS does not publish the 1956 Cumulative Bulletin, and
+      www.taxnotes.com, which carries the text, is outside the session's
+      network policy. It was read only as quoted from Tax Notes in a search
+      result.
+    - As quoted: a taxpayer acquires 200 shares and, less than 30 days
+      later, sells 100 at a loss. "The loss will not be disallowed unless
+      during the period prescribed in section 1091(a) ... he acquires, or
+      enters into a contract or option to acquire, additional shares".
+    - The implementation matches that.
+    - To be read in full before relying on the case the ruling does not
+      address: every share of one purchase sold at a loss within 30 days
+      of buying it. The implementation does not treat those shares as each
+      other's replacement.
 
 ## Alternatives considered
 
