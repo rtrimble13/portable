@@ -104,6 +104,15 @@ improved. `pt introspect` publishes the full list.
 Same inputs, identical bytes. Keys are sorted; nothing depends on dict insertion
 order, the locale, or unordered iteration.
 
+**Every format is UTF-8, on every platform**, stdout and stderr both. Python
+would otherwise encode a redirected or piped stdout in the console's code page
+-- cp1252 on a Western Windows install -- which crashed on a `→` and wrote a `—`
+as a different byte than Linux does. `pt` sets both streams to UTF-8 before it
+writes anything, whatever `PYTHONIOENCODING` says
+(`portable_core/cli/streams.py`). Line endings are the platform's. On Windows,
+read a saved file as UTF-8 (`Get-Content -Encoding utf8` in Windows PowerShell
+5.1, whose default is the ANSI code page).
+
 `generated_at` is the one wall-clock value, and it is **excluded from the content
 hash** along with `portable_version` — neither is part of what the command
 *computed*. That is what makes `PORT-GIPS-J01`'s error detection work: rebuild a
