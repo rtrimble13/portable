@@ -16,6 +16,7 @@ pathspec==1.1.1
 pluggy==1.6.0
 Pygments==2.19.2
 pytest==9.1.1
+PyYAML==6.0.3
 rich==15.0.0
 ruff==0.16.5
 shellingham==1.5.4
