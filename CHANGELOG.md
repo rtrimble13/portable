@@ -32,6 +32,16 @@ Two rules specific to this repository:
   - **Manual handling.** A replacement disposed of before the loss sale is
     reported for manual handling, and its year is marked incomplete.
   - **Notices.** A purchase that restates a past year says which year.
+- **A designation that a later wash-sale split divided is refused**
+  (`PT-E-LOT-DESIGNATION-DIVIDED`, ADR 0037 answer 2). The owner chose the
+  reversal route: the row is reversed and entered again against the lots as
+  they now stand. Only a back-dated loss sale can cause this, and its own
+  result now says so. Every back-dated entry now reports the rows its
+  rebuild could not apply, rather than leaving them for `pt validate`.
+- **`pt validate` and `pt migrate` name a reconstructed or estimated block**
+  beside a replacement replay deferred a loss into (ADR 0037, decision 7).
+  The custodian's stated basis may already include that deferral; its lot
+  detail says whether it does.
 - **`pt instrument equivalent A B --reason`** declares two instruments
   substantially identical, and `pt instrument equivalents` lists every
   declaration. `portable` never infers it. A declaration applies to every

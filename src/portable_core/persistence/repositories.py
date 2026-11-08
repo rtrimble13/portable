@@ -1416,6 +1416,17 @@ class LotRepository(_Repository):
             )
         ]
 
+    def split_from(self, lot_key: str) -> list[Lot]:
+        """Lots split off *lot_key* by wash-sale pairings, open or closed. ADR 0037."""
+        prefix = f"{lot_key}~"
+        return [
+            mappers.to_lot(r)
+            for r in self.con.execute(
+                "SELECT * FROM lot WHERE substr(lot_key, 1, ?) = ? ORDER BY lot_key",
+                (len(prefix), prefix),
+            )
+        ]
+
     def update_split(self, lot: Lot) -> None:
         """Store a lot that shares were split off. ADR 0037."""
         self.con.execute(

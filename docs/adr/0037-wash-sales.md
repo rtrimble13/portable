@@ -1,6 +1,6 @@
 # ADR 0037 — Wash sales are detected in replay, across every account
 
-- **Status:** Accepted (owner, 2026-11-08), with the recommended answer to each open question, and schema 11 approved. Implemented: schema 11, matching in replay (decisions 1–6), declarations and candidates (decision 8), notices (decisions 5, 9) and the report (decisions 10, 11). Not yet implemented: decision 7's warnings for reconstructed blocks, decision 7's reconciliation label, and answer 2's refusal of a designation that a split divided. The primary-text check of the citations under Consequences is still open, and is a condition of merging
+- **Status:** Accepted (owner, 2026-11-08), with the recommended answer to each open question, and schema 11 approved. Implemented: schema 11, matching in replay (decisions 1–6), the refusal of a designation a split divided (answer 2, by the reversal route the owner chose on 2026-11-08), decision 7's held-back lots and its warning on reconstructed blocks, declarations and candidates (decision 8), notices (decisions 5, 9) and the report (decisions 10, 11). Not yet implemented: decision 7's label on `pt reconcile --realized`. The primary-text check of the citations under Consequences is still open, and is a condition of merging
 - **Date:** 2026-11-06; accepted 2026-11-08
 - **Milestone:** v0.2, issue 27 (P0)
 - **Governs:** `CLAUDE.md` "Wash sales cross accounts", invariants 3, 9; `docs/tax-methodology.md`
@@ -127,9 +127,12 @@ Five things make it harder than it sounds:
      - the sale's transaction and the sold lot's key identify the
        disposition.
    - **Only derived lots split.** No ledger row changes.
-   - **A designation that a later split divided is refused** until its
-     meaning is recorded, once and by key, in ADR 0036's `lot_designation`
-     table (answer 2). Only a back-dated row can cause this.
+   - **A designation that a later split divided is refused**
+     (`PT-E-LOT-DESIGNATION-DIVIDED`, answer 2). Only a back-dated row can
+     cause this. The owner chose the reversal route on 2026-11-08: the row is
+     reversed and entered again against the lots as they now stand, so its
+     meaning is recorded in the ledger. The append that causes it says so at
+     once.
    - **The `wash_sale` table.** A new derived table records each pairing:
      the disposition, the replacement lot's key, the quantity, the amount
      disallowed, whether it went into basis, and the days absorbed. It goes
@@ -150,8 +153,9 @@ Five things make it harder than it sounds:
      custodian's present basis. So when one shares an account and an
      instrument with a replacement this ADR adjusts, the block may already
      contain the same deferral. The rebuild after migrating, and every
-     `pt import reconstruct`, name the block, the replacement and the amount
-     as a warning.
+     `pt validate`, name the block, the replacement and the amount as a
+     warning. `pt import reconstruct` cannot: it runs on the custodian's
+     files before replay has paired anything.
      - Whether the custodian's figure included it is read from the
        custodian's lot detail.
      - A seeded row that included it is corrected by a reversing entry and a
@@ -212,9 +216,13 @@ folded into the decisions above.
    that washes against the very shares the loss sale disposed of. That
    circular case is one the regulation does not resolve (decision 11).
 2. **A designation naming a lot that a later split divided:** (a). It is
-   refused until its meaning is recorded in `lot_designation`. The two
-   parts carry different bases and holding periods, so a fixed order would
-   guess at which shares were meant (decision 6).
+   refused. The two parts carry different bases and holding periods, so a
+   fixed order would guess at which shares were meant (decision 6).
+   - **How the meaning is recorded.** The recommendation said in
+     `lot_designation`. That table's checks cannot hold such a row without
+     another schema change, so on 2026-11-08 the owner chose the reversal
+     route instead: the row is reversed and entered again. The meaning is
+     then in the ledger itself.
 3. **Options:** (a). Candidates only in this version. Matching long calls
    alone would be partial, and whether an option is substantially identical
    is a judgement (decision 8).

@@ -62,6 +62,7 @@ from portable_core.domain.models import (
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import (
     E_CASH_NOT_CONSERVED,
+    E_LOT_DESIGNATION_DIVIDED,
     E_LOT_DESIGNATION_UNRESOLVED,
     E_OPTION_ROW_INVALID,
     E_OPTION_UNSUPPORTED,
@@ -78,11 +79,12 @@ from portable_core.services.lots import (
     is_keyed,
     lots_of_side,
     opening_lot_key,
+    parse_keyed_selection,
     resolve_keyed_selection,
 )
 from portable_core.services.positions import PositionEngine, leg_role_for
 from portable_core.services.tax import TaxEngine
-from portable_core.services.wash_sales import WashSaleMatcher
+from portable_core.services.wash_sales import Notice, WashSaleMatcher
 
 __all__ = [
     "LegacyReader",
@@ -398,7 +400,13 @@ class ReplayEngine:
         if self.repos.transactions.count_after(txn.trade_date, txn.seq) == 0:
             self.apply_transaction(txn)
             return False
-        self.rebuild()
+        result = self.rebuild()
+        # A row the rebuild could not apply is in the book's ledger and not in
+        # its derived state. Said to whoever appended the row that caused the
+        # rebuild, not left for `pt validate` to find (ADR 0037, answer 2).
+        self.wash.notices.extend(
+            Notice(txn.txn_id, f"after this back-dated entry, {w}") for w in result.warnings
+        )
         return True
 
     # ── per-transaction application ──────────────────────────────────────────
@@ -1243,8 +1251,39 @@ class ReplayEngine:
         if not txn.lot_selection:
             return None
         if is_keyed(txn.lot_selection):
+            self._refuse_divided(txn)
             return resolve_keyed_selection(txn.lot_selection, open_lots)
         return self._legacy_reader(txn, open_lots)
+
+    def _refuse_divided(self, txn: Transaction) -> None:
+        """Refuse a designation written before a wash-sale split divided its lot.
+
+        ADR 0037, answer 2, by the reversal route the owner chose (2026-11-08).
+        A split keyed ``<lot>~<sale>.<sold>`` was made once the loss sale
+        ``<sale>`` was in the ledger. A designation appended before that sale
+        named the lot whole, and its parts now carry different bases and
+        holding periods: which shares were meant is the owner's to say, by
+        reversing the row and entering it again against the lots as they now
+        stand. Only a back-dated row can cause this.
+        """
+        assert txn.lot_selection is not None
+        for key in parse_keyed_selection(txn.lot_selection):
+            for part in self.repos.lots.split_from(key):
+                sale = int(part.lot_key[len(key) + 1 :].split(".", 1)[0])
+                if txn.txn_id < sale:
+                    raise ValidationError(
+                        f"txn {txn.txn_id} designates lot @{key}, which a wash sale "
+                        f"recorded later (txn {sale}) divided: {part.lot_key} was split off it",
+                        code=E_LOT_DESIGNATION_DIVIDED,
+                        remedy=(
+                            f"Reverse it with `pt trade reverse {txn.txn_id}` and enter the "
+                            "sale again, designating the lots `pt lot list` now shows "
+                            "(ADR 0037)."
+                        ),
+                        txn_id=txn.txn_id,
+                        lot_key=key,
+                        split=part.lot_key,
+                    )
 
     def _recorded_meaning(self, txn: Transaction, open_lots: list[Lot]) -> dict[int, Decimal]:
         """Read a designation by lot id through ``lot_designation``.

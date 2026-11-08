@@ -263,3 +263,54 @@ def test_an_option_on_the_same_underlying_is_listed_not_applied(
     listed = run_pt("--port", port, "tax", "wash-candidates", "--year", "2024").json()
     (row,) = listed["data"]["rows"]
     assert (row["candidate"], row["reason"]) == ("XYZOPT", "option_on_underlying")
+
+
+def _lot_id(run_pt: CliRunner, port: str, on: str, key: str) -> str:
+    rows = run_pt("--port", port, "lot", "list", "XYZ", "--as-of", on).data["rows"]
+    return str(next(r["lot_id"] for r in rows if r["lot_key"] == key))
+
+
+def test_a_designation_a_later_split_divided_is_refused_until_re_entered(
+    run_pt: CliRunner, port: str
+) -> None:
+    """ADR 0037, answer 2, by the reversal route the owner chose."""
+    first = _trade(run_pt, port, "buy", "100", "50.00", "2024-01-02").data
+    repl = _trade(run_pt, port, "buy", "100", "42.00", "2024-03-15").data
+    whole = str(repl["txn_id"])
+    designated = run_pt(
+        "--port", port, "sell", "XYZ", "--qty", "10", "--price", "45.00",
+        "--date", "2024-04-20", "-a", "B", "--method", "spec",
+        "--lots", f"{_lot_id(run_pt, port, '2024-04-19', whole)}:10",
+    ).data  # fmt: skip
+
+    # Back-dated: a loss sale the replacement washes, which splits it.
+    loss = run_pt(
+        "--port", port, "sell", "XYZ", "--qty", "100", "--price", "40.00",
+        "--date", "2024-03-01", "-a", "B", "--method", "spec",
+        "--lots", f"{_lot_id(run_pt, port, '2024-02-28', str(first['txn_id']))}:100",
+    )  # fmt: skip
+    assert any("divided" in w for w in loss.json()["warnings"]), "said at once"
+    refused = run_pt("--port", port, "validate", expect=4)
+    assert "PT-E-LOT-DESIGNATION-DIVIDED" in refused.stdout or "divided" in refused.stdout
+
+    run_pt("--port", port, "trade", "reverse", str(designated["txn_id"]),
+           "--date", "2024-04-21")  # fmt: skip
+    part = f"{whole}~{loss.data['txn_id']}.{first['txn_id']}"
+    run_pt("--port", port, "sell", "XYZ", "--qty", "10", "--price", "45.00",
+           "--date", "2024-04-22", "-a", "B", "--method", "spec",
+           "--lots", f"{_lot_id(run_pt, port, '2024-04-21', part)}:10")  # fmt: skip
+    run_pt("--port", port, "validate")
+
+
+def test_a_reconstructed_block_beside_a_deferral_is_named(run_pt: CliRunner, port: str) -> None:
+    """ADR 0037, decision 7: the custodian's figure may already include it."""
+    run_pt("--port", port, "transfer", "in", "XYZ", "-a", "B", "--qty", "50",
+           "--value", "2500.00", "--basis-source", "reconstructed",
+           "--basis", "2400.00", "--acquired", "2023-06-01",
+           "--assumption", "present basis less additions", "--date", "2024-01-02")  # fmt: skip
+    _trade(run_pt, port, "buy", "100", "50.00", "2024-01-03")
+    run_pt("--port", port, "sell", "XYZ", "--qty", "100", "--price", "40.00",
+           "--date", "2024-03-01", "-a", "B", "--method", "lifo")  # fmt: skip
+    _trade(run_pt, port, "buy", "100", "42.00", "2024-03-15")
+    checked = run_pt("--port", port, "validate").json()
+    assert any("reconstructed block" in w for w in checked["warnings"])

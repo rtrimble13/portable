@@ -310,6 +310,7 @@ Each of these stops the command rather than producing a number.
 | A return of capital on shares disposed of between its ex-date and pay-date, or with none held | `PT-E-ROC-ENTITLEMENT` | The disposed shares' part has no basis left to reduce, and where it goes instead is not decided (ADR 0039). |
 | Exercising a long put | `PT-E-OPTION-UNSUPPORTED` | The put may have restarted the stock's holding period (IRC §1233(b)), and which case applies is not recorded. |
 | Spec-ID that does not add up | `PT-E-LOT-SELECTION-INVALID` | Topping up from another lot changes the tax treatment silently. |
+| A sale entered before a wash-sale split divided the lot it names | `PT-E-LOT-DESIGNATION-DIVIDED` | The parts carry different bases and holding periods; which was meant is the owner's to say, by reversing and re-entering it (ADR 0037). |
 | A sale recorded before schema 10 whose lots are not settled | `PT-E-LOT-DESIGNATION-UNRESOLVED` | Reading its lot ids as numbered today is the defect that re-pointed sales (ADR 0036). |
 | Average cost mixed with spec-ID | `PT-E-TAX-METHOD-CONFLICT` | Either resolution restates basis on shares already sold. |
 | No rate schedule in force | `PT-E-TAX-NO-RATE-SCHEDULE` | A defaulted zero produces a plausible number that is wrong. |
@@ -397,7 +398,11 @@ are not each other's replacement.
 | Disposed of before the loss sale | Reported for manual handling | — | — |
 
 The matched shares become their own lot, keyed
-`<replacement>~<sale>.<sold lot>`, so no other lot is renumbered. A purchase
+`<replacement>~<sale>.<sold lot>`, so no other lot is renumbered. A sale
+entered before a split divided the lot it designates is refused
+(`PT-E-LOT-DESIGNATION-DIVIDED`). It is reversed and entered again, naming
+the parts as they now stand. A reconstructed block beside a deferral is
+named by `pt validate`, since the custodian's basis may already include it. A purchase
 in January that disallows a December loss restates December's year. The
 purchase's own result says so, and so does a sheltered replacement.
 

@@ -66,6 +66,7 @@ __all__ = [
     "WashSaleMatcher",
     "absorbed_start",
     "candidates",
+    "custodian_overlaps",
     "split_key",
 ]
 
@@ -598,3 +599,54 @@ def _candidate_reason(
     ):
         return CandidateReason.OPTION_ON_UNDERLYING
     return CandidateReason.DIFFERENT_INSTRUMENT
+
+
+# ── custodian-stated bases (decision 7) ──────────────────────────────────────
+
+#: Rungs anchored to the custodian's stated present basis (ADR 0017), which
+#: already carries whatever wash-sale adjustments the custodian made.
+_ANCHORED: Final = frozenset({BasisSource.RECONSTRUCTED, BasisSource.ESTIMATED})
+
+
+def custodian_overlaps(repos: Repositories) -> tuple[str, ...]:
+    """Blocks whose seeded basis may already contain a deferral replay applied.
+
+    ADR 0037, decision 7. A reconstructed or estimated block is anchored to
+    the custodian's present basis, and a custodian adjusts for the wash sales
+    it can see: one account, one security. Where such a block shares an
+    account and an instrument with a replacement replay deferred a loss into,
+    the custodian's figure may already include that deferral, and it would
+    then be counted twice. Which it is, the custodian's lot detail says;
+    nothing here nets it.
+    """
+    found: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for wash in repos.wash_sales.all():
+        if wash.status is not WashSaleStatus.DEFERRED:
+            continue
+        replacement = repos.lots.by_key(wash.replacement_lot_key)
+        if replacement is None:
+            continue
+        for block in repos.lots.acquired_between(
+            {replacement.instrument_id}, date.min, date.max
+        ):
+            if block.account_id != replacement.account_id:
+                continue
+            if block.basis_source not in _ANCHORED:
+                continue
+            if (block.lot_key, replacement.lot_key) in seen:
+                continue
+            seen.add((block.lot_key, replacement.lot_key))
+            account = repos.accounts.get(block.account_id)
+            instrument = repos.instruments.get(block.instrument_id)
+            found.append(
+                f"{instrument.symbol if instrument else block.instrument_id} in "
+                f"{account.name if account else block.account_id}: the "
+                f"{block.basis_source} block {block.lot_key} is anchored to the "
+                "custodian's stated basis, which may already include the "
+                f"{wash.disallowed} deferred into {replacement.lot_key} for the loss "
+                f"of {wash.sale_date.isoformat()}. If the custodian's lot detail "
+                "shows it, correct the seeded row with a reversing entry and a new "
+                "one (ADR 0037, decision 7)."
+            )
+    return tuple(found)

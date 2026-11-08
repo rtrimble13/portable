@@ -102,6 +102,9 @@ E_LOT_SELECTION_INVALID: Final = "PT-E-LOT-SELECTION-INVALID"
 #: ADR 0036. A designation written before schema 10 names lot ids, and its
 #: meaning has not been recorded or not yet decided by the owner.
 E_LOT_DESIGNATION_UNRESOLVED: Final = "PT-E-LOT-DESIGNATION-UNRESOLVED"
+#: ADR 0037, answer 2. A designation written before a wash-sale split divided
+#: the lot it names: which of the parts was meant is the owner's to say.
+E_LOT_DESIGNATION_DIVIDED: Final = "PT-E-LOT-DESIGNATION-DIVIDED"
 #: ADR 0036. A recorded designation is decided once and never changed.
 E_DESIGNATION_IMMUTABLE: Final = "PT-E-DESIGNATION-IMMUTABLE"
 #: ADR 0038. An option event `portable` cannot yet treat correctly, refused
@@ -182,6 +185,7 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_LOT_INSUFFICIENT,
     E_LOT_SELECTION_INVALID,
     E_LOT_DESIGNATION_UNRESOLVED,
+    E_LOT_DESIGNATION_DIVIDED,
     E_DESIGNATION_IMMUTABLE,
     E_OPTION_UNSUPPORTED,
     E_OPTION_ROW_INVALID,

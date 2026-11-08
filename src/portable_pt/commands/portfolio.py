@@ -27,7 +27,7 @@ from portable_core.persistence.connection import (
 )
 from portable_core.persistence.repositories import Repositories
 from portable_core.schema import migrations as M
-from portable_core.services import designations, snapshots
+from portable_core.services import designations, snapshots, wash_sales
 from portable_core.services.replay import ReplayEngine, derived_state_digests
 from portable_pt import state
 from portable_pt.commands._shared import dispatch
@@ -289,7 +289,12 @@ def migrate(
         return CommandResult(
             command="migrate",
             data=data,
-            warnings=_recovery_warnings(recovery) + (outcome.warnings if outcome else ()),
+            warnings=(
+                _recovery_warnings(recovery)
+                + (outcome.warnings if outcome else ())
+                # ADR 0037, decision 7: said on the rebuild after migrating.
+                + (wash_sales.custodian_overlaps(repos) if outcome else ())
+            ),
             portfolio=ctx.portfolio_name(),
         )
 
@@ -425,6 +430,9 @@ def validate(
         for problem in stale:
             problems.append(("valuation", problem))
 
+        # ADR 0037, decision 7. A warning, not a problem: whether the custodian's
+        # figure included the deferral is a fact only its lot detail holds.
+        warnings.extend(wash_sales.custodian_overlaps(repos))
         if not repos.policies.all():
             warnings.append(
                 "no return_policy row: pert will refuse to compute returns until one "
