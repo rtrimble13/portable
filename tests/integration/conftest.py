@@ -57,7 +57,12 @@ CliRunner = Callable[..., CliResult]
 def run_pt(tmp_path: Path) -> CliRunner:
     """Invoke `pt`, JSON by default, against a temp working directory."""
 
-    def run(*args: str, expect: int | None = 0, fmt: str = "json") -> CliResult:
+    def run(
+        *args: str,
+        expect: int | None = 0,
+        fmt: str = "json",
+        extra_env: dict[str, str] | None = None,
+    ) -> CliResult:
         env = dict(os.environ)
         env |= {
             "PYTHONPATH": str(ROOT / "src"),
@@ -72,10 +77,15 @@ def run_pt(tmp_path: Path) -> CliRunner:
         }
         # Never inherit a portfolio path from the developer's environment.
         env.pop("PORTABLE_PORT", None)
+        env |= extra_env or {}
         completed = subprocess.run(
             [sys.executable, "-m", "portable_pt", "--format", fmt, *args],
             capture_output=True,
-            text=True,
+            # What `pt` writes is UTF-8 on every platform
+            # (portable_core.cli.streams). Decoding it with the locale's
+            # encoding instead, the default, would read it as cp1252 on
+            # Windows and hand every test mojibake.
+            encoding="utf-8",
             check=False,
             cwd=tmp_path,
             env=env,
