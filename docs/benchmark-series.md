@@ -11,6 +11,15 @@ already reads. The others are what the assignment command will need for the
 disclosures `docs/gips-standard.md` requires. Producing them now means nothing
 has to change in the tool later.
 
+The tool itself is planned in fafnir's repository, since it reads fafnir through
+`duk` and its levels load back into fafnir:
+[fafnir `doc/plans/index-series-tool.md`](https://github.com/rtrimble13/fafnir/blob/main/doc/plans/index-series-tool.md)
+(proposed, 2026-11-08). That plan recommends a standalone C++ tool, not a part of
+`portable` and not a `.port` file, and names this page as the format it exports.
+The one field it will want added here is `inception_date`, the first live
+calculation, so a history computed before the index existed can be labelled
+backtested (`PORT-GIPS-J04`).
+
 ## The file
 
 One JSON object, keyed by benchmark name. The name is what reports show, so
