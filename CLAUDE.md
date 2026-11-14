@@ -13,7 +13,8 @@ and one set of output conventions. Some tools are pure Python; some are Python f
 over C++ back-ends.
 
 The owner is a CFA charterholder who uses these tools on a real, tax-aware, multi-account
-portfolio and files real taxes from their output. **A silently wrong number is the worst
+portfolio, to plan trades and to cross-check the custodian. Taxes are filed from the
+broker's 1099-B, not from this output, and the owner is the only reader of every report. **A silently wrong number is the worst
 possible failure mode in this repo** — worse than a crash, worse than a missing feature.
 When in doubt, refuse and explain.
 

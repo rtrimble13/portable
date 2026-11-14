@@ -508,6 +508,16 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **The v0.2 roadmap is reordered by what drives a decision** (project review,
+  2026-11-12). After `pert twr`: reconcile it to the custodian, make the sample
+  produce a return, decide an estimate tier, then period returns, benchmarks,
+  money-weighted return, allocation drift, lot-level sale candidates, a cut-down
+  set of risk figures, and a one-page summary. Attribution and position-level
+  analysis move to v1.0; rebalancing trades move to v0.3 beside `po`.
+  Composites, retirement-account rules and the open glossary gaps are closed as
+  not planned. `CLAUDE.md` now says the tool is used for planning and
+  cross-checking, not filing.
+
 - **`PORT-GIPS-D01`'s acceptance tests say "for the sub-period it is charged
   in".** A fee a basis undoes leaves that sub-period's return unchanged, exactly;
   later sub-periods are measured on the capital actually left (ADR 0040 §8,
@@ -679,6 +689,12 @@ Two rules specific to this repository:
   `duk` with `th`, `ca` and `tc` (fafnir's release after 3.0.5).
 
 ### Fixed
+
+- **`pt info --as-of` reported today's cash and open positions under a past
+  date's label.** It read stored derived state, the defect ADR 0021 fixed in
+  every other report. It now reads both as they stood on `--as-of`, and agrees
+  with `pt holdings` for the same date. The transaction count and the last
+  valuation date still describe the file, and the help says so.
 
 - **A return of capital never reduced basis** (ADR 0039).
   - What happened: `pt income roc` recorded the cash, and replay stopped at
