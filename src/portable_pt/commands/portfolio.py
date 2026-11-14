@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -28,7 +29,7 @@ from portable_core.persistence.connection import (
 from portable_core.persistence.repositories import Repositories
 from portable_core.schema import migrations as M
 from portable_core.services import designations, snapshots, wash_sales
-from portable_core.services.replay import ReplayEngine, derived_state_digests
+from portable_core.services.replay import ReplayEngine, derived_state_digests, state_on
 from portable_pt import state
 from portable_pt.commands._shared import dispatch
 
@@ -136,23 +137,35 @@ def init(
 
 @app.command()
 def info() -> None:
-    """Summary: accounts, market value, cash, positions, last valuation."""
+    """Summary: accounts, cash and open positions as of --as-of.
+
+    The transaction count and the last valuation date describe the file, not
+    the date: every ledger row it holds and its latest stored snapshot.
+    """
 
     def action() -> CommandResult:
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
         meta = repos.meta.all()
         accounts = repos.accounts.all()
-        positions = repos.positions.all(open_only=True)
 
         from portable_core.decimals import money_context
         from portable_core.native import implementation
 
+        # Cash and open positions are derived state, so they are read as they
+        # stood on --as-of (ADR 0021). Read from stored state they would be
+        # today's figures under a past date's label.
+        def read() -> tuple[dict[int, Decimal], int]:
+            balances = {
+                a.account_id: repos.valuations.cash(a.account_id, currency=a.currency)[0]
+                for a in accounts
+            }
+            return balances, len(repos.positions.all(open_only=True))
+
+        as_of_state = state_on(repos, ctx.as_of, read)
+        balances, open_positions = as_of_state.results[0]
         with money_context():
-            cash = sum(
-                (repos.valuations.cash(a.account_id, currency=a.currency)[0] for a in accounts),
-                __import__("decimal").Decimal("0.00"),
-            )
+            cash = sum(balances.values(), Decimal("0.00"))
 
         last_valuation = max(
             (
@@ -178,7 +191,7 @@ def info() -> None:
                         "name": a.name,
                         "account_type": str(a.account_type),
                         "custodian": a.custodian,
-                        "cash": repos.valuations.cash(a.account_id, currency=a.currency)[0],
+                        "cash": balances[a.account_id],
                         "status": str(a.status),
                     }
                     for a in accounts
@@ -195,7 +208,7 @@ def info() -> None:
                 "portable_version": __version__,
                 "native_implementation": implementation(),
                 "accounts": len(accounts),
-                "open_positions": len(positions),
+                "open_positions": open_positions,
                 "transactions": repos.transactions.count(),
                 "total_cash": cash,
                 "last_valuation": last_valuation.isoformat() if last_valuation else None,
@@ -204,6 +217,7 @@ def info() -> None:
                 # cache and a missing price there is not an outage.
                 "offline": ctx.options.offline,
             },
+            warnings=tuple(as_of_state.warnings),
             as_of=ctx.as_of,
             portfolio=meta.get("portfolio_name"),
         )

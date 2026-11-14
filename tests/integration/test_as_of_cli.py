@@ -92,6 +92,25 @@ def test_holdings_as_of_a_past_date_lists_what_was_held_then(
     assert held["total_market_value"] == "500500.00"
 
 
+def test_info_as_of_a_past_date_reports_the_cash_and_positions_held_then(
+    run_pt: CliRunner, book: str
+) -> None:
+    """`pt info` printed today's 501,000 under the label `as_of 2024-06-30`."""
+    past = run_pt("--port", book, "--as-of", PAST, "info").data
+    held = run_pt("--port", book, "--as-of", PAST, "holdings").data
+
+    assert past["as_of"] == PAST
+    assert past["total_cash"] == "485000.00"
+    assert [r["cash"] for r in past["rows"]] == ["485000.00"]
+    assert past["open_positions"] == 1, "AAPL; MSFT was not bought until 2025"
+    cash_held = [r["market_value"] for r in held["rows"] if r["symbol"] == "CASH"]
+    assert cash_held == [past["total_cash"]], "info and holdings agree on the same date"
+
+    today = run_pt("--port", book, "--as-of", "2025-03-04", "info").data
+    assert today["total_cash"] == "501000.00"
+    assert today["open_positions"] == 1, "MSFT; AAPL was sold the day before"
+
+
 def test_pnl_as_of_a_past_date_has_no_gain_realized_after_it(
     run_pt: CliRunner, book: str
 ) -> None:
