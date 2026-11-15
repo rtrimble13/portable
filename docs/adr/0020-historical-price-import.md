@@ -5,7 +5,7 @@
   (see "Open questions").
 - **Date:** 2026-10-15
 - **Milestone:** v0.2 — blocks the daily time-weighted return engine and every
-  risk measure after it (`docs/roadmap.md`, the "Then:" list items 1 and 5)
+  risk measure after it (`docs/roadmap.md`, the "Then:" list items 1 and 10)
 - **Governs:** `PORT-GIPS-A01`, `A02`, `A09`, `F01`–`F03`, `G01`, `J03`;
   `CLAUDE.md` invariants 1, 6, 9, 10
 

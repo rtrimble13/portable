@@ -132,29 +132,44 @@ Then:
    from the ex-date, the day's income and fees). Note the 2020 provisions specify the
    required *outcome* and never name a method: cite the archived 2011 Guidance
    Statement on Calculation Methodology for the formula, not a provision number.
-2. **Money-weighted return (XIRR)** — annualized since-inception, daily external
-   cash flows, Newton with a bisection fallback, and an explicit refusal on
-   pathological flow patterns rather than a plausible root. Portfolio-level MWR
-   is solved from **aggregated** flows, never asset-weighted from per-account
-   solves. `PORT-GIPS-C01`–`C05`.
-3. **Multi-period reporting** — MTD, QTD, YTD, 1/3/5/10-year, since-inception,
-   calendar-year table. Sub-one-year returns are never annualized — a
-   requirement, not a convention (`PORT-GIPS-B07`).
-4. **Benchmarks** — blends with explicit rebalancing rules, active return,
-   tracking error, up/down capture. **Total-return series only**
-   (`PORT-GIPS-G01`).
-5. **Risk-adjusted metrics** — Sharpe, Sortino, information ratio, Treynor,
-   Jensen's alpha, beta, M², drawdown. The three-year ex-post standard deviation
-   uses **36 monthly returns** annualized ×√12, computed identically for the
-   benchmark from the same months (`PORT-GIPS-F01`–`F03`).
-6. **Brinson-Fachler attribution** — outside GIPS entirely; cite the
-   practitioner literature and an ADR, not GIPS.
-7. **Position- and security-level analysis** — contribution, turnover, win rate.
-8. **After-tax performance** — following the **USIPC After-Tax Performance
-   Standards**, not GIPS, which removed after-tax at the 2010 edition. Always
-   supplemental information.
-9. **Tearsheet** — modelled on a GIPS Asset Owner Report, with a generated
-   disclosure block.
+2. **Reconcile `pert twr` to the custodian's reported performance**, on the
+   real portfolio (issue 58, P0). Positions, cash and realized gains tie to the
+   custodian; returns do not yet, and everything below is built on them.
+3. **The sample must produce a return** (issue 59) — `examples/sample.port`
+   carries year-end prices only, so `pert twr` refuses it.
+4. **An estimate tier for days that cannot be priced** (issue 60) — an ADR
+   first. A refusal is right for a track record and wrong as the only mode.
+5. **Multi-period reporting** (issue 5) — MTD, QTD, YTD, 1/3/5/10-year,
+   since-inception, calendar-year table. Sub-one-year returns are never
+   annualized — a requirement, not a convention (`PORT-GIPS-B07`).
+6. **Benchmarks** (issue 6) — blends with explicit rebalancing rules, active
+   return, tracking error. **Total-return series only** (`PORT-GIPS-G01`).
+7. **Money-weighted return (XIRR)** (issue 4) — annualized since-inception,
+   daily external cash flows, Newton with a bisection fallback, and an explicit
+   refusal on pathological flow patterns rather than a plausible root.
+   Portfolio-level MWR is solved from **aggregated** flows, never
+   asset-weighted from per-account solves. `PORT-GIPS-C01`–`C05`.
+8. **Policy allocation and drift** (issue 61) — an asset class on every
+   instrument, an effective-dated target, and target against actual with
+   bands. Proposes no trades.
+9. **Lot-level sale candidates** (issue 62) — per open lot: unrealized gain,
+   days to long-term, estimated tax if sold, and whether a loss would be a
+   wash sale. The first tax-aware decision support, ahead of the optimizer.
+10. **Risk figures** (issue 7), cut to what informs a decision: the three-year
+    ex-post standard deviation from **36 monthly returns** annualized ×√12,
+    computed identically for the benchmark from the same months
+    (`PORT-GIPS-F01`–`F03`), Sharpe, and drawdown. Sortino, information ratio,
+    Treynor, Jensen's alpha, beta and M² wait until something needs them.
+11. **A one-page summary** (issue 11) — period returns beside the benchmark,
+    the risk figures, allocation, and the §9.3 disclaimer. The owner is the
+    only reader, so there is no generated disclosure block.
+12. **After-tax performance** (issue 10, P2) — following the **USIPC After-Tax
+    Performance Standards**, not GIPS, which removed after-tax at the 2010
+    edition. Always supplemental information.
+
+This order follows the project review of 2026-11-12: what drives a decision
+comes before what describes a result. Brinson-Fachler attribution and
+position- and security-level analysis moved to v1.0.
 
 **Also v0.2, and P0:** wash-sale detection. Built in ADR 0037: losses paired
 with replacements across every account, in replay. Not detected, and listed on
@@ -177,7 +192,10 @@ reimplementation.**
    account-level tax treatment in asset location, honour spec-ID lot selection
    when generating sells. This is the differentiator.
 5. Constraint surface in the CLI.
-6. Efficient frontier and reporting. **Backtested results must never be linked
+6. **Rebalancing trades** (issue 36) — band-based and cash-flow-driven,
+   sharing the optimizer's objective and trade-proposal format. An ADR on
+   where it lives comes first.
+7. Efficient frontier and reporting. **Backtested results must never be linked
    to the actual track record** (`PORT-GIPS-J04`) and are labelled theoretical
    supplemental information.
 
@@ -200,14 +218,12 @@ Option risk is the likeliest candidate for the first real C++ hot path.
 |---|---|
 | Multi-currency — FX as first-class data, base vs. local decomposition | P1 |
 | MCP server, generated from `pt introspect` and the published schemas | P1 |
-| Further broker adapters — OFX/QFX and other custodians (the first lands in v0.2) | P1 |
+| A second custodian through the tabular adapter, and OFX/QFX if one needs it | P1 |
 | Corporate action auto-ingestion from fafnir | P1 |
 | C++ hot paths — **profile first** | P2 |
-| Retirement account rules — contribution limits, RMDs, penalties | P2 |
-| Performance composites (`PORT-GIPS-E01`–`E10`) — optional under the Asset Owner regime | P2 |
 | Transaction cost analysis using fafnir intraday data | P2 |
-| Portfolio rebalancing — decide whether it is a `pt` subcommand or a fifth CLI | P2 |
-| Close the eight open gaps in `docs/gips-standard.md` §11.2 | P2 |
+| Brinson-Fachler attribution — outside GIPS entirely; cite the practitioner literature and an ADR | P2 |
+| Position- and security-level analysis — contribution, turnover, win rate | P2 |
 
 ---
 
@@ -231,6 +247,9 @@ reference implementation and a differential test
   belongs on top of that, not inside it.
 - **Real-time data.** The domain is portfolio accounting, and end-of-day is the
   right granularity for it.
+- **Composites, retirement-account rules, and report disclosures.** Closed as
+  not planned in the 2026-11-12 review (issues 33, 34, 37): one portfolio, one
+  reader, and a tool used for planning, not filing.
 - **A compliance claim.** Not a roadmap item at any version. Compliance is an
   entity-wide assertion that cannot be made for a single portfolio or by an
   individual, and a lint rule enforces the language.
