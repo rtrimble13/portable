@@ -250,3 +250,90 @@ def test_every_source_package_is_importable() -> None:
 
     for package in ["portable_core", *sorted(CLI_PACKAGES)]:
         importlib.import_module(package)
+
+
+# ── the premise of the pure-Python CI job (ADR 0043) ─────────────────────────
+
+NATIVE_DIR = SRC / "portable_core" / "native"
+
+#: What production code outside `portable_core/native/` may take from it: which
+#: implementation is live and how it was built, so that `pt info` can say
+#: (PORT-GIPS-J03). Nothing here computes a result.
+NATIVE_PROVENANCE: frozenset[str] = frozenset({"HAVE_NATIVE", "build_info", "implementation"})
+
+
+def _absolute(path: Path, node: ast.ImportFrom) -> str:
+    """The absolute module an ``ImportFrom`` in *path* names, resolving dots."""
+    if node.level == 0:
+        return node.module or ""
+    package = path.relative_to(SRC).with_suffix("").parts[:-1]
+    base = package[: len(package) - (node.level - 1)]
+    return ".".join((*base, node.module) if node.module else base)
+
+
+def _reaches_native(path: Path, source: str) -> Iterator[tuple[str, int]]:
+    """Yield ``(import, lineno)`` for each way *source* reaches the extension
+    other than for its provenance."""
+    native = "portable_core.native"
+    for node in ast.walk(ast.parse(source, filename=str(path))):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] == "portable_native" or (
+                    alias.name == native or alias.name.startswith(native + ".")
+                ):
+                    yield f"import {alias.name}", node.lineno
+        elif isinstance(node, ast.ImportFrom):
+            module = _absolute(path, node)
+            for alias in node.names:
+                if (
+                    module.split(".")[0] == "portable_native"
+                    or (module == "portable_core" and alias.name == "native")
+                    or module.startswith(native + ".")
+                    or (module == native and alias.name not in NATIVE_PROVENANCE)
+                ):
+                    yield f"from {module} import {alias.name}", node.lineno
+
+
+def test_production_code_reaches_the_extension_only_for_its_provenance() -> None:
+    """The pure-Python CI job skips the integration tests only while this holds.
+
+    ADR 0043. The no-native job runs ``pytest -m "not integration"``, because
+    no production path computes anything through the extension: outside
+    `portable_core/native/`, code asks only which implementation is live and
+    how it was built. With the extension built or not, every other line the
+    integration tests run is the same Python.
+
+    The first production path that dispatches through `portable_core.native`
+    makes the two builds different products, and this test fails. Then the
+    no-native job in .github/workflows/ci.yml must run the whole suite again,
+    ADR 0043 is superseded, and this test goes with it.
+    """
+    violations = [
+        f"{path.relative_to(ROOT).as_posix()}:{lineno}: {what}"
+        for path in sorted(SRC.rglob("*.py"))
+        if NATIVE_DIR not in path.parents
+        for what, lineno in _reaches_native(path, path.read_text(encoding="utf-8"))
+    ]
+    assert not violations, (
+        "Production code now computes through the native extension, so the "
+        "pure-Python CI job must run the full suite again (ADR 0043):\n" + "\n".join(violations)
+    )
+
+
+def test_a_path_that_computes_through_the_extension_is_caught() -> None:
+    """The shapes that would end ADR 0043's premise, so the rule is known to bite."""
+    path = SRC / "portable_core" / "services" / "example.py"
+    source = "\n".join(
+        [
+            "from portable_core.native import implementation, build_info, HAVE_NATIVE",
+            "from portable_core.native import checksum",
+            "from portable_core import native",
+            "from .. import native",
+            "from ..native import checksum",
+            "import portable_core.native",
+            "import portable_native",
+            "from portable_native import checksum",
+            "from portable_core.native._reference import checksum",
+        ]
+    )
+    assert [line for _, line in _reaches_native(path, source)] == [2, 3, 4, 5, 6, 7, 8, 9]

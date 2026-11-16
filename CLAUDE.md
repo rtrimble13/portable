@@ -422,6 +422,7 @@ test that fails without your change.
   | 0040 | Time-weighted return: daily sub-periods from stored snapshots, Modified Dietz across gaps |
   | 0041 | A bond is held at face, priced by its quote basis, and carries its accrued interest |
   | 0042 | CI runs Linux only, for now |
+  | 0043 | The pure-Python CI job skips the integration tests while nothing computes natively |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

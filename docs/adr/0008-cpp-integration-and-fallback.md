@@ -1,6 +1,6 @@
 # ADR 0008 — C++ integration: optional extension, mandatory Python reference
 
-- **Status:** Accepted. Amended 2026-11-16 by [ADR 0042](0042-ci-runs-linux-only.md): CI runs Linux only, so the first Consequence's Windows matrix no longer holds
+- **Status:** Accepted. Amended 2026-11-16 by [ADR 0042](0042-ci-runs-linux-only.md): CI runs Linux only, so the first Consequence's Windows matrix no longer holds. Amended 2026-11-16 by [ADR 0043](0043-pure-python-job-skips-integration-tests.md): the job with the extension off runs the unit and property tests until production code computes through the extension
 - **Date:** 2026-08-27
 - **Milestone:** v0.1
 

@@ -554,6 +554,15 @@ Two rules specific to this repository:
   the version, and tracing made the 3.12 job the slowest in the matrix. 3.12
   and 3.13 run the suite without it.
 
+- **The pure-Python CI job runs the unit and property tests only** (ADR
+  0043), in seconds rather than the 11m49s of its last full run. No
+  production path computes through the native extension yet, so the
+  integration tests run the same Python with it built or not, and the test
+  matrix runs them. `tests/unit/test_layering.py` holds that premise: it
+  fails when code outside `portable_core/native/` imports more than
+  `HAVE_NATIVE`, `implementation()` or `build_info()` from it, and the job
+  then runs the whole suite again.
+
 - **The sample's spinoff is recorded at fair market values the prices agree
   with.** The parent's was 48.00 against a split-adjusted price near 27, so
   the basis allocation and the market value disagreed. It is now 24.40, the

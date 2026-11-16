@@ -120,6 +120,14 @@ jobs:
   # mode -- it is the reference implementation the differential tests compare
   # against (ADR 0008). If it only ever runs on a developer's laptop it will
   # break and nobody will notice.
+  #
+  # It runs the unit and property tests, not the integration tests (ADR 0043).
+  # No production path computes through the extension yet: outside
+  # portable_core/native/, code only asks which implementation is live. So
+  # the integration tests run the same Python with the extension built or
+  # not, and the test jobs above already run them. The first production path
+  # that dispatches through the extension fails
+  # tests/unit/test_layering.py, and this job runs the whole suite again.
   no-native:
     name: test · pure-Python (no extension)
     runs-on: ubuntu-latest
@@ -140,7 +148,7 @@ jobs:
         run: python -c "from portable_core import native; assert not native.HAVE_NATIVE; assert native.implementation() == 'python'"
 
       - name: pytest
-        run: pytest -q -n auto
+        run: pytest -q -n auto -m "not integration"
 
   # ── C++ ───────────────────────────────────────────────────────────────────
   # Linux only for now (ADR 0042). MSVC's `/Zc:__cplusplus` (ADR 0008) is no
