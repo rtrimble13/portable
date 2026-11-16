@@ -341,8 +341,9 @@ freed space is zeroed, so two runs produce identical bytes. On another SQLite li
 only the header field recording that library's version differs (ADR 0035).
 `tests/integration/test_sample_fixture.py` holds the committed file to a fresh build.
 
-The owner works on **Windows**. CI runs Linux and Windows. Do not introduce
-POSIX-only assumptions — paths, shell invocations, or line endings.
+The owner works on **Windows**. CI runs Linux only (ADR 0042), so nothing in CI catches
+a Windows break: do not introduce POSIX-only assumptions — paths, shell invocations,
+or line endings — and expect the owner's `make check` to be the only Windows run.
 
 **Before declaring any task done:** `make check` is green, and any new invariant has a
 test that fails without your change.
@@ -416,6 +417,7 @@ test that fails without your change.
   | 0039 | Return of capital reduces basis in replay, entitled on the ex-date |
   | 0040 | Time-weighted return: daily sub-periods from stored snapshots, Modified Dietz across gaps |
   | 0041 | A bond is held at face, priced by its quote basis, and carries its accrued interest |
+  | 0042 | CI runs Linux only, for now |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

@@ -1,6 +1,6 @@
 # ADR 0008 — C++ integration: optional extension, mandatory Python reference
 
-- **Status:** Accepted
+- **Status:** Accepted. Amended 2026-11-16 by [ADR 0042](0042-ci-runs-linux-only.md): CI runs Linux only, so the first Consequence's Windows matrix no longer holds
 - **Date:** 2026-08-27
 - **Milestone:** v0.1
 

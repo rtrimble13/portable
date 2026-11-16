@@ -9,6 +9,12 @@ and hid nothing -- which is why the same step was honest on one platform only.
 
 One command per step is right in both shells. A step that needs several sets
 ``shell: bash``, which GitHub runs with ``-eo pipefail`` on Windows as well.
+
+CI runs Linux only for now (ADR 0042), so the real workflow has no Windows job
+for the rule to check. The rule stays, so that Windows cannot come back in the
+shape that hid the failures: the last test below holds it to that shape, and
+the parametrized one applies it to the real workflow the moment a Windows
+runner reappears in it.
 """
 
 from __future__ import annotations
@@ -59,14 +65,18 @@ def _offenders(workflow: dict[str, Any]) -> list[str]:
     return found
 
 
-def test_there_is_a_workflow_with_a_windows_job_to_check() -> None:
-    """The test below passes vacuously if it finds nothing to look at."""
+def test_there_is_a_workflow_with_jobs_to_check() -> None:
+    """The test below passes vacuously if it finds no workflow to look at.
+
+    It no longer requires a Windows job: CI runs Linux only (ADR 0042). That
+    the rule still bites is held by the shape test at the end of this file.
+    """
     jobs = [
         job
         for path in WORKFLOWS
         for job in (yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"] or {}).values()
     ]
-    assert any(_windows_capable(job) for job in jobs)
+    assert jobs
 
 
 @pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)

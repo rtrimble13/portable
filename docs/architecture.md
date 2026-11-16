@@ -327,7 +327,7 @@ integrating `portopt` in v0.3 is a merge rather than a rewrite.
 
 **v0.1 ships scaffolding only.** `portable_native.probe()` proves the toolchain
 end to end — importable after `pip install -e .`, tested from both pytest and
-Catch2, built in CI on Linux and Windows. There is no production C++ yet, by
+Catch2, built in CI on Linux (ADR 0042). There is no production C++ yet, by
 design.
 
 ### The fallback contract — read this before writing any C++

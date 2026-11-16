@@ -52,21 +52,20 @@ jobs:
       - name: mypy
         run: mypy
 
-  # ── The suite, across the platforms the owner and CI actually use ─────────
+  # ── The suite, across the supported Pythons ───────────────────────────────
   #
-  # ONE COMMAND PER `run:` in this job. On Windows a step runs in PowerShell,
-  # which reports only the exit code of a script's *last* command: a step of
-  # `coverage run -m pytest` then `coverage report` went green with "4 failed"
-  # in its own summary. bash stops at the first failure; PowerShell does not,
-  # and these steps run under both.
+  # Linux only for now (ADR 0042). Windows comes back by adding a runner to
+  # this job's matrix and to the cpp job's. If it does: ONE COMMAND PER `run:`.
+  # On Windows a step runs in PowerShell, which reports only the exit code of a
+  # script's *last* command -- a step of `coverage run -m pytest` then
+  # `coverage report` once went green with "4 failed" in its own summary.
   # tests/unit/test_ci_workflow.py holds every Windows-capable job to this.
   test:
-    name: test · py${{ matrix.python }} · ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: test · py${{ matrix.python }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
         python: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
@@ -128,13 +127,11 @@ jobs:
         run: pytest -q
 
   # ── C++ ───────────────────────────────────────────────────────────────────
+  # Linux only for now (ADR 0042). MSVC's `/Zc:__cplusplus` (ADR 0008) is no
+  # longer exercised in CI.
   cpp:
-    name: cpp · ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
+    name: cpp
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

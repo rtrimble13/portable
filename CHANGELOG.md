@@ -508,6 +508,14 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **CI runs on Linux only** (ADR 0042, at the owner's request). The suite
+  takes more than ten minutes a run, and it ran on Linux and Windows × three
+  Pythons, with Catch2 on both. Every job is now `ubuntu-latest`; the Python
+  matrix, the pure-Python job and the `check` gate stay. Windows-only breaks
+  (PowerShell exit codes, cp1252 stdout, MSVC's `__cplusplus`) are no longer
+  caught in CI. `tests/unit/test_ci_workflow.py` keeps its one-command rule
+  for when Windows returns and no longer requires a Windows job to exist.
+
 - **The v0.2 roadmap is reordered by what drives a decision** (project review,
   2026-11-12). After `pert twr`: reconcile it to the custodian, make the sample
   produce a return, decide an estimate tier, then period returns, benchmarks,
