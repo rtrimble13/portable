@@ -61,12 +61,19 @@ jobs:
   # `coverage report` once went green with "4 failed" in its own summary.
   # tests/unit/test_ci_workflow.py holds every Windows-capable job to this.
   test:
-    name: test · py${{ matrix.python }}
+    name: test · py${{ matrix.python }}${{ matrix.coverage && ' · coverage' || '' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python: ["3.11", "3.12", "3.13"]
+        # Coverage is measured on one Python. No code in src/ branches on the
+        # version, so the others would measure the same lines, and tracing is
+        # what made the 3.12 job the slowest in the matrix. 3.11 is the floor
+        # of requires-python.
+        include:
+          - python: "3.11"
+            coverage: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -90,17 +97,23 @@ jobs:
       # -n auto: one pytest-xdist worker per runner core. Coverage goes
       # through pytest-cov, which measures the workers; `coverage run` would
       # measure only the controller, which runs no tests.
+      #
+      # The suite includes the JSON Schema validation of every command's
+      # output (invariant 8, tests/unit/test_json_schemas.py) and the
+      # ledger-replay property (invariant 3,
+      # tests/property/test_replay_reproduces_state.py). Each used to run a
+      # second time as a step of its own; a failure in either fails this step.
       - name: pytest with coverage
+        if: matrix.coverage
         run: pytest -n auto --cov --cov-report=
 
       - name: coverage report
+        if: matrix.coverage
         run: coverage report
 
-      - name: JSON Schema validation
-        run: pytest tests/unit/test_json_schemas.py -q
-
-      - name: Ledger-replay determinism
-        run: pytest tests/property/test_replay_reproduces_state.py -q
+      - name: pytest
+        if: ${{ !matrix.coverage }}
+        run: pytest -n auto
 
   # ── The pure-Python path must not quietly rot ─────────────────────────────
   # PORTABLE_BUILD_NATIVE=OFF is a supported, complete product, not a degraded

@@ -73,7 +73,7 @@ docs:  ## Regenerate docs/schema.md from the DDL comments
 fixtures:  ## Rebuild examples/sample.port and sample_prices.csv from the generator
 	$(BIN)/python scripts/build_sample_portfolio.py --out examples/sample.port --force
 
-check: lint types test schemas  ## Everything CI runs
+check: lint types test  ## Everything CI runs (test includes the schema validation)
 	@echo "check: green"
 
 clean:  ## Remove build and test artifacts

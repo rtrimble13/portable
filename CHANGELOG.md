@@ -546,6 +546,14 @@ Two rules specific to this repository:
   `coverage run` measures only the controller process, which runs no tests.
   To debug one test under pdb, run pytest without `-n`.
 
+- **CI no longer runs the same tests twice.** The test job re-ran the JSON
+  Schema validation and the ledger-replay property as steps of their own
+  after the full suite had run both; those steps are gone, and `make check`
+  drops its matching `schemas` prerequisite (`make schemas` remains).
+  Coverage is measured on Python 3.11 only: nothing in `src/` branches on
+  the version, and tracing made the 3.12 job the slowest in the matrix. 3.12
+  and 3.13 run the suite without it.
+
 - **The sample's spinoff is recorded at fair market values the prices agree
   with.** The parent's was 48.00 against a split-adjusted price near 27, so
   the basis allocation and the market value disagreed. It is now 24.40, the
