@@ -321,10 +321,65 @@ pt --port examples/sample.port lot list --as-of 2025-06-30
 ```
 
 `examples/sample.port` is generated, not hand-made — `make fixtures` rebuilds
-it. A hundred and one transactions across three accounts and five years, including a
+it. A hundred and eight transactions across three accounts and five years, including a
 split, a spinoff, a covered call written and left to expire, a bond bought between
 coupons, a large cash flow, an inter-account transfer, a reversed trade, and a
 mid-history tax rate change.
+
+---
+
+## 14. Measure the return
+
+The sample is already priced and valued. Every instrument it holds has a
+price at each month end, on the day of every external cash flow and the
+trading day before it, and either side of the split and the spinoff. Those
+prices are in `examples/sample_prices.csv`. The file also stores a snapshot
+for every account and every day, as `pt value` would, so `pert` can answer
+straight away:
+
+```bash
+pert --port examples/sample.port twr --as-of 2025-06-30
+pert --port examples/sample.port twr --as-of 2025-06-30 --account "Roth IRA"
+```
+
+```
+Time-weighted return, portfolio, 2021-01-04 to 2025-06-30 (1639 days, cumulative)
+
+Basis                                                                             Return
+------------------------------------------  --------------------------------------------
+Net-of-fees                                                    33.77% (TWR, net-of-fees)
+Gross-of-fees = net-of-external-costs-only                   33.80% (TWR, gross-of-fees)
+Net of all costs (supplemental)             33.77% (TWR, net-of-all-costs, SUPPLEMENTAL)
+```
+
+Four things to read in it:
+
+- **Every figure says what it is**: time-weighted, which basis, which period,
+  and cumulative. Four and a half years is not annualized here, and a period
+  under a year never is.
+- **Net-of-fees leads.** The $120 custody fee is the whole gap between it and
+  gross-of-fees. The margin interest is in neither gap: it is a financing
+  cost, so every basis deducts it.
+- **Two methods, both named.** Days with prices are linked daily. The unpriced
+  days inside a month are bridged by Modified Dietz, and the footnote counts
+  them. A bridge is never allowed across a month end or a large cash flow.
+- **The $6,500 Roth contribution is a flow for each account and not for the
+  portfolio.** It came from the brokerage, so the portfolio return does not
+  see it at all. Ask for the Roth alone and it is a large inflow, valued on
+  the day it arrived.
+
+Now ask for a month the sample has not valued:
+
+```bash
+pert --port examples/sample.port twr --as-of 2026-01-31
+```
+
+```
+error [PT-E-SNAPSHOT-MISSING]: 3 span(s) of days have no stored valuation snapshot
+```
+
+It exits `5`, names the `pt value` command that would fill the gap, and does
+not interpolate a number. That refusal is the feature.
 
 ---
 

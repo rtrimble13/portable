@@ -16,7 +16,7 @@ def main() -> None:
     the bytes `pt` writes do not depend on the console's code page -- see
     :mod:`portable_core.cli.streams`. ``argv`` is normalised so that a global
     flag works after the subcommand as well as before it -- see
-    :mod:`portable_pt.argv`. Exit codes are documented in README.md and in
+    :mod:`portable_core.cli.argv`. Exit codes are documented in README.md and in
     ``pt --help``.
     """
     configure_streams()

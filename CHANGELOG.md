@@ -36,6 +36,7 @@ Two rules specific to this repository:
   - **The generator refuses to build an inconsistent sample**: a trade at a
     price other than its path's on that day, a valuation day left
     incomplete, or a price asked for between a cum and an ex price.
+  - `examples/walkthrough.md` gains a step that runs `pert twr`.
 
 - **`pert twr`: the time-weighted return** (ADR 0040, accepted by the
   owner). `pert` stops being a stub. It reads the snapshots `pt value`
@@ -720,6 +721,14 @@ Two rules specific to this repository:
   `duk` with `th`, `ca` and `tc` (fafnir's release after 3.0.5).
 
 ### Fixed
+
+- **`pert` accepts its global flags after the subcommand** (issue 63, part 1).
+  `pert twr --as-of 2025-06-30` was refused with "No such option", though
+  `CLAUDE.md` says every command takes the global flags anywhere, and the
+  walkthrough says so too. The `argv` normaliser moves from `portable_pt` into
+  `portable_core.cli.argv`. Each CLI passes it its own list of flags, and a
+  test holds each list to the options that CLI's root actually declares, and
+  tries every flag in both positions.
 
 - **`pt info --as-of` reported today's cash and open positions under a past
   date's label.** It read stored derived state, the defect ADR 0021 fixed in
