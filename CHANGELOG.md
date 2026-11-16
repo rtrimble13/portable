@@ -16,6 +16,28 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`examples/sample.port` produces a time-weighted return** (issue 59).
+  `pert twr` refused the committed sample: it held year-end prices only, and
+  no snapshots. The generator now prices every instrument it holds at each
+  month end, on the day of every external cash flow and the trading day
+  before it, and either side of the split and the spinoff, on NYSE trading
+  days only. Between those days the price moves in a straight line between
+  anchors, the anchors being every trade the ledger records and the old
+  marks, which are unchanged. It stores a snapshot for every account and every
+  day, so `pert twr` runs at every level with nothing run first, and links
+  daily sub-periods with Modified Dietz bridges. `pt validate` finds nothing.
+  The file grows from 0.5 MB to 1.6 MB.
+  - **`examples/sample_prices.csv` is generated**, beside the fixture, so it
+    cannot disagree with it. It now holds 300 prices, not 27.
+  - **Two returns are checked against hand arithmetic** from that CSV,
+    reading no snapshot: a month with no flow (Roth IRA, March 2022), and a
+    month with a deposit on a valued day (Rollover IRA, January 2022), which
+    a Modified Dietz bridge across the deposit would have missed by 0.4 bp.
+  - **The generator refuses to build an inconsistent sample**: a trade at a
+    price other than its path's on that day, a valuation day left
+    incomplete, or a price asked for between a cum and an ex price.
+  - `examples/walkthrough.md` gains a step that runs `pert twr`.
+
 - **`pert twr`: the time-weighted return** (ADR 0040, accepted by the
   owner). `pert` stops being a stub. It reads the snapshots `pt value`
   stored, checks each one first, and writes nothing.
@@ -516,6 +538,16 @@ Two rules specific to this repository:
   caught in CI. `tests/unit/test_ci_workflow.py` keeps its one-command rule
   for when Windows returns and no longer requires a Windows job to exist.
 
+- **The sample's spinoff is recorded at fair market values the prices agree
+  with.** The parent's was 48.00 against a split-adjusted price near 27, so
+  the basis allocation and the market value disagreed. It is now 24.40, the
+  ACME price on the ex-date; NEWCO's 12.00 is unchanged and is NEWCO's first
+  price. NEWCO now receives 10.9% of the ACME basis, not 5.9%, and the
+  sample's tax and P&L figures for both move accordingly.
+- **The sample's reinvested dividends buy at the day's price**, not at a flat
+  240.00 that left each new lot worth more or less than the dividend that
+  bought it, a difference a return counted as gain or loss.
+
 - **The v0.2 roadmap is reordered by what drives a decision** (project review,
   2026-11-12). After `pert twr`: reconcile it to the custodian, make the sample
   produce a return, decide an estimate tier, then period returns, benchmarks,
@@ -697,6 +729,14 @@ Two rules specific to this repository:
   `duk` with `th`, `ca` and `tc` (fafnir's release after 3.0.5).
 
 ### Fixed
+
+- **`pert` accepts its global flags after the subcommand** (issue 63, part 1).
+  `pert twr --as-of 2025-06-30` was refused with "No such option", though
+  `CLAUDE.md` says every command takes the global flags anywhere, and the
+  walkthrough says so too. The `argv` normaliser moves from `portable_pt` into
+  `portable_core.cli.argv`. Each CLI passes it its own list of flags, and a
+  test holds each list to the options that CLI's root actually declares, and
+  tries every flag in both positions.
 
 - **`pt info --as-of` reported today's cash and open positions under a past
   date's label.** It read stored derived state, the defect ADR 0021 fixed in
