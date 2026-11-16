@@ -328,7 +328,7 @@ make test-fast                # unit only — the pre-commit subset
 make cpp                      # configure, build, and run Catch2
 make schemas                  # regenerate + validate JSON Schemas
 make docs                     # regenerate docs/schema.md from DDL comments
-make fixtures                 # rebuild examples/sample.port from its generator
+make fixtures                 # rebuild examples/sample.port and sample_prices.csv
 make check                    # everything CI runs
 ```
 
@@ -340,6 +340,10 @@ with `make fixtures`. It is deterministic: every row is stamped from a fixed clo
 freed space is zeroed, so two runs produce identical bytes. On another SQLite library
 only the header field recording that library's version differs (ADR 0035).
 `tests/integration/test_sample_fixture.py` holds the committed file to a fresh build.
+The generator also writes `examples/sample_prices.csv`, the prices the sample was
+valued at, and stores a snapshot for every account and day, so `pert twr` runs on
+the committed file; `tests/integration/test_sample_returns.py` checks two of its
+returns against arithmetic done by hand from that CSV.
 
 The owner works on **Windows**. CI runs Linux and Windows. Do not introduce
 POSIX-only assumptions — paths, shell invocations, or line endings.

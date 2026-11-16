@@ -67,7 +67,7 @@ docs:  ## Regenerate docs/schema.md from the DDL comments
 	$(BIN)/python -m portable_core.schema.docgen --out docs/schema.md
 	@echo "docs/schema.md regenerated"
 
-fixtures:  ## Rebuild examples/sample.port from its generator script
+fixtures:  ## Rebuild examples/sample.port and sample_prices.csv from the generator
 	$(BIN)/python scripts/build_sample_portfolio.py --out examples/sample.port --force
 
 check: lint types test schemas  ## Everything CI runs
