@@ -37,6 +37,7 @@ pytestmark = pytest.mark.integration
 ROOT = repo_root()
 GENERATOR = ROOT / "scripts" / "build_sample_portfolio.py"
 COMMITTED = ROOT / "examples" / "sample.port"
+PRICES = ROOT / "examples" / "sample_prices.csv"
 
 #: The generator's `STAMP`, as stored. Every row in the fixture claims it.
 STAMP = "2026-08-27T00:00:00Z"
@@ -56,7 +57,7 @@ STAMPED_TABLES = frozenset(
     }
 )
 
-REMEDY = "Run `make fixtures` and commit examples/sample.port."
+REMEDY = "Run `make fixtures` and commit examples/sample.port and examples/sample_prices.csv."
 
 
 def _build(out: Path) -> Path:
@@ -189,6 +190,18 @@ def test_committed_fixture_holds_what_a_fresh_build_holds(fresh: Path, tmp_path:
         f"only in a fresh build ({len(missing)}): {missing[:5]}\n"
         f"only in the committed file ({len(extra)}): {extra[:5]}"
     )
+
+
+def test_committed_price_file_is_what_a_fresh_build_writes(fresh: Path) -> None:
+    """`examples/sample_prices.csv` is generated beside the fixture, never edited.
+
+    It holds the prices the fixture was valued at, so a return over the sample
+    can be checked by hand from it. Compared line by line, because a Windows
+    checkout may turn its line endings into CRLF.
+    """
+    committed = PRICES.read_text(encoding="utf-8").splitlines()
+    built = (fresh.parent / "sample_prices.csv").read_text(encoding="utf-8").splitlines()
+    assert committed == built, f"examples/sample_prices.csv has drifted. {REMEDY}"
 
 
 def test_committed_fixture_is_byte_identical_to_a_fresh_build(fresh: Path) -> None:

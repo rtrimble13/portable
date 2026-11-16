@@ -135,8 +135,12 @@ Then:
 2. **Reconcile `pert twr` to the custodian's reported performance**, on the
    real portfolio (issue 58, P0). Positions, cash and realized gains tie to the
    custodian; returns do not yet, and everything below is built on them.
-3. **The sample must produce a return** (issue 59) — `examples/sample.port`
-   carries year-end prices only, so `pert twr` refuses it.
+3. **The sample must produce a return** (issue 59) — *done*. The generator
+   prices every instrument at each month end, at every external flow and the
+   day before it, and either side of each corporate action, writes those
+   prices to `examples/sample_prices.csv`, and stores the snapshots, so
+   `pert twr` runs on the committed file. Two of its returns are checked
+   against hand arithmetic from the CSV.
 4. **An estimate tier for days that cannot be priced** (issue 60) — an ADR
    first. A refusal is right for a track record and wrong as the only mode.
 5. **Multi-period reporting** (issue 5) — MTD, QTD, YTD, 1/3/5/10-year,
