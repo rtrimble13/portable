@@ -87,8 +87,11 @@ jobs:
         # C++, it must fail when the C++ is missing.
         run: python -c "from portable_core import native; assert native.HAVE_NATIVE, 'extension did not build'; print(native.build_info())"
 
+      # -n auto: one pytest-xdist worker per runner core. Coverage goes
+      # through pytest-cov, which measures the workers; `coverage run` would
+      # measure only the controller, which runs no tests.
       - name: pytest with coverage
-        run: coverage run -m pytest
+        run: pytest -n auto --cov --cov-report=
 
       - name: coverage report
         run: coverage report
@@ -124,7 +127,7 @@ jobs:
         run: python -c "from portable_core import native; assert not native.HAVE_NATIVE; assert native.implementation() == 'python'"
 
       - name: pytest
-        run: pytest -q
+        run: pytest -q -n auto
 
   # ── C++ ───────────────────────────────────────────────────────────────────
   # Linux only for now (ADR 0042). MSVC's `/Zc:__cplusplus` (ADR 0008) is no

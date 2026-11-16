@@ -538,6 +538,14 @@ Two rules specific to this repository:
   caught in CI. `tests/unit/test_ci_workflow.py` keeps its one-command rule
   for when Windows returns and no longer requires a Windows job to exist.
 
+- **The suite runs in parallel** (pytest-xdist, `-n auto`). It spends 97% of
+  its time in integration tests that start `pt` once per CLI call, on one
+  core: 13m41s serially, 3m48s on four workers, every test passing.
+  `make test`, `make coverage`, `make test-fast`, the pre-commit hook and CI
+  all pass `-n auto`. Coverage is collected by pytest-cov, since
+  `coverage run` measures only the controller process, which runs no tests.
+  To debug one test under pdb, run pytest without `-n`.
+
 - **The sample's spinoff is recorded at fair market values the prices agree
   with.** The parent's was 48.00 against a split-adjusted price near 27, so
   the basis allocation and the market value disagreed. It is now 24.40, the

@@ -39,8 +39,11 @@ format:  ## Apply ruff formatting and safe fixes
 types:  ## mypy (strict on portable_core)
 	$(BIN)/mypy
 
-test:  ## Full suite: unit + property + integration + golden
-	$(BIN)/coverage run -m pytest
+# -n auto runs one pytest-xdist worker per core: the suite spends nearly all
+# its time starting `pt` in subprocesses, so it scales with cores. To step
+# through one test under pdb, run pytest yourself without -n.
+test:  ## Full suite: unit + property + integration + golden, in parallel
+	$(BIN)/pytest -n auto --cov --cov-report=
 	$(BIN)/coverage report
 	@echo
 	@echo "NOTE: the portable_pt/commands/* modules report 0% here and are NOT"
@@ -48,10 +51,10 @@ test:  ## Full suite: unit + property + integration + golden
 	@echo "      a subprocess, which coverage does not follow. See issue #40."
 
 test-fast:  ## Unit tests only -- the pre-commit subset
-	$(BIN)/pytest -m "unit and not slow" -q
+	$(BIN)/pytest -m "unit and not slow" -q -n auto
 
 coverage:  ## Full suite with an HTML coverage report
-	$(BIN)/coverage run -m pytest
+	$(BIN)/pytest -n auto --cov --cov-report=
 	$(BIN)/coverage html
 	@echo "open htmlcov/index.html"
 
