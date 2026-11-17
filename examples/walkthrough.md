@@ -259,10 +259,14 @@ Wrong — that should have been 100. You cannot delete it, and the database will
 not let you:
 
 ```bash
-pt trade reverse <TXN_ID> --note "wrong quantity" --date 2025-08-01
-pt buy AAPL --qty 100 --price 210.00 --date 2025-08-01 \
-  --account Brokerage --fees 1.00 --fee-class transaction_cost
+pt trade correct <TXN_ID> --qty 100 --reason "wrong quantity" --as-of 2025-08-01
 ```
+
+That writes two entries in one step: a reversal of the original, and the buy
+it should have been. Every field you do not restate keeps the original's
+value, and the output lists what changed. It is the same as running
+`pt trade reverse <TXN_ID>` and then the buy again, but either both entries
+land or neither does.
 
 ```bash
 pt activity --from 2025-08-01 --to 2025-08-31

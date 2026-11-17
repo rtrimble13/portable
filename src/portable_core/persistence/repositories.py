@@ -1117,6 +1117,14 @@ class TransactionRepository(_Repository):
         ).fetchone()
         return None if row is None else mappers.to_transaction(row)
 
+    def reversal_of(self, txn_id: int) -> Transaction | None:
+        """The entry that reverses *txn_id*, if one does: the first, by id."""
+        row = self.con.execute(
+            'SELECT * FROM "transaction" WHERE reverses_txn_id = ? ORDER BY txn_id LIMIT 1',
+            (txn_id,),
+        ).fetchone()
+        return None if row is None else mappers.to_transaction(row)
+
     def in_ledger_order(
         self,
         *,

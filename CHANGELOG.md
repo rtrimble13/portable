@@ -16,6 +16,27 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`pt trade correct`** (issue 38). It reverses a trade and records the one
+  it should have been, both or neither, and `--dry-run` shows both. Each
+  option not given keeps the original's value, and the output lists what
+  changed. Three values are not simply carried over:
+  - **the reference**, which stays with the original;
+  - **the relief method and the lot designation**, which travel together, so
+    restating either drops both;
+  - **the settlement date and a bond's accrued interest**, which are dropped
+    when the date changes.
+
+  The corrected trade is planned after the original drops out of replay, so a
+  corrected sale relieves the lots the wrong one had consumed. Only the four
+  trades can be corrected; anything else is reversed and recorded again by
+  its own command.
+  - **`pt trade reverse` refuses an entry already reversed.** A second
+    reversal did nothing, and read as though it did something.
+  - `pt income reinvest`, listed in issue 38, already exists:
+    `pt income dividend --reinvest-units` and `pt income capital-gain
+    --reinvest-units` record the reinvestment as one row. No second verb is
+    added.
+
 - **`portable config show`** (issue 38). `portable` stops being a stub. It
   prints each setting a command reads, its value, and where it came from: a
   flag, a `PORTABLE_*` variable, `./portable.toml`, `~/.portablerc`, or the

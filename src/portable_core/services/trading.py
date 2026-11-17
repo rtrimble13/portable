@@ -53,7 +53,28 @@ from portable_core.services.lots import (
 )
 from portable_core.services.replay import ReplayEngine
 
-__all__ = ["CommitResult", "TradeIntent", "TradePlan", "TradingService"]
+__all__ = [
+    "CORRECTABLE",
+    "CommitResult",
+    "TradeIntent",
+    "TradePlan",
+    "TradingService",
+    "corrected_intent",
+    "require_correctable",
+    "reversal_of",
+]
+
+#: The entries `pt trade correct` re-enters: the four trades, each of which a
+#: :class:`TradeIntent` describes completely. Anything else is reversed and
+#: recorded again by its own command.
+CORRECTABLE: frozenset[TransactionType] = frozenset(
+    {
+        TransactionType.BUY,
+        TransactionType.SELL,
+        TransactionType.SELL_SHORT,
+        TransactionType.BUY_TO_COVER,
+    }
+)
 
 ZERO = Decimal("0.00")
 
@@ -1009,3 +1030,147 @@ class TradingService:
                 acquired=original_acquired_date.isoformat(),
                 transferred=on.isoformat(),
             )
+
+
+# ── the correction path: a reversing entry, and a new one ───────────────────
+
+
+def reversal_of(
+    repos: Repositories,
+    txn_id: int,
+    *,
+    on: date,
+    note: str | None = None,
+    external_ref: str | None = None,
+) -> Transaction:
+    """The entry that reverses *txn_id*, dated *on*, ready to append.
+
+    The ledger is append-only, so a mistake is corrected with a reversing entry
+    plus a new correct entry, never by editing history (`CLAUDE.md` invariant
+    2). Replay leaves both the original and its reversal out, whatever the
+    reversal's date.
+
+    Raises:
+        ValidationError: for no such entry; for an entry that is itself a
+            reversal, which reversed would re-apply the original; and for an
+            entry already reversed, since a second reversal would do nothing
+            and read as though it did something.
+    """
+    original = repos.transactions.get(txn_id)
+    if original is None:
+        raise ValidationError(
+            f"no transaction {txn_id}",
+            remedy="`pt trade list` shows the ledger.",
+            txn_id=txn_id,
+        )
+    if original.txn_type is TransactionType.REVERSAL:
+        raise ValidationError(
+            f"transaction {txn_id} is itself a reversal",
+            remedy=(
+                "Reversing a reversal would re-apply the original. Record the "
+                "intended entry directly instead."
+            ),
+            txn_id=txn_id,
+        )
+    earlier = repos.transactions.reversal_of(txn_id)
+    if earlier is not None:
+        raise ValidationError(
+            f"transaction {txn_id} was already reversed, by transaction {earlier.txn_id}",
+            remedy="It is no longer in effect. Record the intended entry directly.",
+            txn_id=txn_id,
+            reversed_by=earlier.txn_id,
+        )
+    return Transaction(
+        txn_id=0,
+        account_id=original.account_id,
+        trade_date=on,
+        seq=repos.transactions.next_seq(on),
+        txn_type=TransactionType.REVERSAL,
+        net_cash_effect=-original.net_cash_effect,
+        instrument_id=original.instrument_id,
+        quantity=original.quantity,
+        price=original.price,
+        gross_amount=-original.gross_amount if original.gross_amount is not None else None,
+        reverses_txn_id=txn_id,
+        note=note or f"reverses txn {txn_id}",
+        external_ref=external_ref,
+        source=TransactionSource.DERIVED,
+        created_at=repos.clock.stamp(),
+    )
+
+
+def require_correctable(original: Transaction) -> None:
+    """Refuse anything but one of the four trades, which an intent re-enters."""
+    if original.txn_type not in CORRECTABLE:
+        raise ValidationError(
+            f"transaction {original.txn_id} is a {original.txn_type}, not a trade",
+            remedy=(
+                f"Reverse it with `pt trade reverse {original.txn_id}` and record it "
+                "again with the command that records it."
+            ),
+            txn_id=original.txn_id,
+        )
+
+
+def corrected_intent(
+    original: Transaction,
+    *,
+    account: Account,
+    instrument: Instrument,
+    quantity: Decimal | None = None,
+    price: Decimal | None = None,
+    trade_date: date | None = None,
+    fees: Decimal | None = None,
+    commissions: Decimal | None = None,
+    fee_class: FeeClass | None = None,
+    relief_method: ReliefMethod | None = None,
+    lot_selection: str | None = None,
+    settlement_date: date | None = None,
+    accrued_interest: Decimal | None = None,
+    note: str | None = None,
+    external_ref: str | None = None,
+) -> TradeIntent:
+    """The trade *original* should have been: each field given, else the original's.
+
+    Three fields are never carried over as they stood, each because it would
+    be wrong rather than merely stale:
+
+    - **The external reference.** References are unique per account and the
+      original keeps its own, so the correction has only the one given.
+    - **The relief method and the designation travel together.** Restating
+      either drops both: a FIFO sale must not inherit a spec-ID designation,
+      nor a designated sale a method it never used.
+    - **The settlement date and a bond's accrued interest follow the trade
+      date.** When the date changes they are not inherited, so a bond trade
+      must state its accrued interest again (ADR 0041), and is refused if it
+      does not.
+    """
+    require_correctable(original)
+    assert original.quantity is not None and original.price is not None  # a trade has both
+    same_day = trade_date is None or trade_date == original.trade_date
+    restated_relief = relief_method is not None or lot_selection is not None
+    if accrued_interest is None and same_day and original.accrued_interest is not None:
+        accrued_interest = abs(original.accrued_interest)
+    return TradeIntent(
+        account=account,
+        instrument=instrument,
+        txn_type=original.txn_type,
+        quantity=quantity if quantity is not None else abs(original.quantity),
+        price=price if price is not None else original.price,
+        trade_date=trade_date if trade_date is not None else original.trade_date,
+        fees=fees if fees is not None else original.fees,
+        commissions=commissions if commissions is not None else original.commissions,
+        fee_class=fee_class if fee_class is not None else original.fee_class,
+        relief_method=relief_method if restated_relief else original.relief_method,
+        lot_selection=lot_selection if restated_relief else original.lot_selection,
+        settlement_date=(
+            settlement_date
+            if settlement_date is not None
+            else original.settlement_date
+            if same_day
+            else None
+        ),
+        accrued_interest=accrued_interest,
+        note=note if note is not None else original.note,
+        external_ref=external_ref,
+    )
