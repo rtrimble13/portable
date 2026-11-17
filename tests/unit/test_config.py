@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
 
-from portable_core.config import Source, load_config
+from portable_core.config import DEFAULTS, FLAG_ONLY, Source, load_config
 from portable_core.errors import UsageError
+from portable_core.lint._common import repo_root
 
 pytestmark = pytest.mark.unit
 
@@ -50,9 +52,73 @@ def test_every_value_reports_where_it_came_from(tmp_path: Path) -> None:
     assert config.source_of("format") is Source.USER
     assert config.source_of("no_color") is Source.DEFAULT
 
+
+def test_config_show_names_the_file_or_variable_behind_each_row(tmp_path: Path) -> None:
+    user = write(tmp_path / "rc", 'duk_path = "/opt/duk"\n')
+    config = load_config(
+        {"port": "book.port"},
+        env={"PORTABLE_SOURCE": "fafnir"},
+        user_config=user,
+        project_config=tmp_path / "missing.toml",
+    )
     rows = {row["key"]: row for row in config.to_rows()}
-    assert rows["format"]["origin"] == str(user)
-    assert rows["offline"]["origin"] == "PORTABLE_OFFLINE"
+    assert (rows["port"]["source"], rows["port"]["origin"]) == ("flag", None)
+    assert (rows["source"]["source"], rows["source"]["origin"]) == ("env", "PORTABLE_SOURCE")
+    assert (rows["duk_path"]["source"], rows["duk_path"]["origin"]) == ("user", str(user))
+    assert (rows["price_file"]["source"], rows["price_file"]["value"]) == ("default", None)
+
+
+# ── what config show may claim takes effect ─────────────────────────────────
+
+
+def test_config_show_lists_only_what_a_command_reads(tmp_path: Path) -> None:
+    """Issue 38. A flag-only key in the list would claim an effect it lacks."""
+    user = write(tmp_path / "rc", 'format = "json"\ncolour = "no"\n')
+    config = load_config(env={}, user_config=user, project_config=tmp_path / "none.toml")
+    assert {row["key"] for row in config.to_rows()} == set(DEFAULTS) - set(FLAG_ONLY)
+
+
+def test_a_value_that_takes_no_effect_is_reported_as_ignored(tmp_path: Path) -> None:
+    """A flag-only key or a typo, from a file or a variable -- never a flag."""
+    user = write(tmp_path / "rc", 'format = "json"\ncolour = "no"\nsource = "file"\n')
+    config = load_config(
+        {"quiet": True},
+        env={"PORTABLE_YES": "1", "PORTABLE_DUK_PATH": "duk"},
+        user_config=user,
+        project_config=tmp_path / "none.toml",
+    )
+    assert [(entry.key, entry.source) for entry in config.ignored()] == [
+        ("colour", Source.USER),
+        ("format", Source.USER),
+        ("yes", Source.ENV),
+    ]
+
+
+def test_build_options_are_not_read_as_configuration() -> None:
+    """PORTABLE_BUILD_NATIVE is for the installer; at run time it is no setting."""
+    config = load_config(
+        env={"PORTABLE_BUILD_NATIVE": "OFF"},
+        user_config=Path("/nonexistent"),
+        project_config=Path("/nonexistent"),
+    )
+    assert "build_native" not in config.values
+    assert config.ignored() == []
+
+
+def test_every_key_a_command_reads_is_declared_and_none_is_left_unread() -> None:
+    """What keeps `config show` honest as the code moves.
+
+    Every `config.get("key")` in the source names a key in DEFAULTS that is not
+    flag-only, and every such key is read somewhere. `action_file` was read and
+    undeclared until this test existed.
+    """
+    pattern = re.compile(r"config\.get\(\s*\"([a-z_]+)\"")
+    read: set[str] = set()
+    for path in (repo_root() / "src").rglob("*.py"):
+        if path.parent.name == "config":
+            continue
+        read |= set(pattern.findall(path.read_text(encoding="utf-8")))
+    assert read == set(DEFAULTS) - set(FLAG_ONLY)
 
 
 def test_an_unpassed_flag_does_not_clobber_a_lower_layer(tmp_path: Path) -> None:

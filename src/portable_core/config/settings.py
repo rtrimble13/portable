@@ -14,6 +14,7 @@ from portable_core.errors import UsageError
 
 __all__ = [
     "DEFAULTS",
+    "FLAG_ONLY",
     "Config",
     "ConfigValue",
     "Source",
@@ -24,6 +25,11 @@ __all__ = [
 #: Environment variables are prefixed so that `portable`'s configuration is
 #: distinguishable from everything else in a shell.
 ENV_PREFIX: Final = "PORTABLE_"
+
+#: ``PORTABLE_BUILD_*`` variables are build options, read by CMake and pip when
+#: the package is installed (`docs/architecture.md`), and never at run time.
+#: Read as configuration they would be reported as settings with no effect.
+BUILD_ENV_PREFIX: Final = "PORTABLE_BUILD_"
 
 #: Filename of the user config, resolved against the home directory when it is
 #: needed rather than at import. See :func:`user_config_path`.
@@ -84,11 +90,29 @@ DEFAULTS: Final[dict[str, Any]] = {
     "duk_path": "duk",
     # File provider.
     "price_file": None,
+    "action_file": None,
     "benchmark_file": None,
     # Behaviour.
     "dry_run": False,
     "yes": False,
     "reconcile_tolerance": "0.01",
+}
+
+#: Keys in :data:`DEFAULTS` that no command reads from configuration, with the
+#: flag that sets each one instead. Every command takes these from its own
+#: command line alone, so a value a file or a ``PORTABLE_*`` variable gives one
+#: has no effect, and `portable config show` says so rather than listing it as
+#: in effect. Whether any should be honoured from a file is open: ``yes`` would
+#: then confirm every write unasked.
+FLAG_ONLY: Final[dict[str, str]] = {
+    "format": "--format",
+    "no_color": "--no-color",
+    "quiet": "--quiet",
+    "verbose": "-v",
+    "offline": "--offline",
+    "dry_run": "--dry-run",
+    "yes": "--yes",
+    "reconcile_tolerance": "pt reconcile --tolerance",
 }
 
 #: Keys that hold a secret or a credential. Never written to a config file by
@@ -132,7 +156,12 @@ class Config:
         return Source.DEFAULT if entry is None else entry.source
 
     def to_rows(self) -> list[dict[str, Any]]:
-        """For `portable config show`: value **and** where it came from."""
+        """For `portable config show`: every setting a command reads from
+        configuration, its value, **and** where it came from.
+
+        Not the flag-only keys of :data:`FLAG_ONLY`, nor a key `portable` does
+        not know: listing one would claim an effect it does not have.
+        """
         return [
             {
                 "key": key,
@@ -141,6 +170,21 @@ class Config:
                 "origin": self.values[key].origin,
             }
             for key in sorted(self.values)
+            if key in DEFAULTS and key not in FLAG_ONLY
+        ]
+
+    def ignored(self) -> list[ConfigValue]:
+        """Values a file or variable set that no command reads.
+
+        A flag-only key, or a key no command knows -- most often a typo. Each
+        has no effect, which is worth saying: the person who wrote it expects
+        one.
+        """
+        return [
+            entry
+            for key, entry in sorted(self.values.items())
+            if entry.source in {Source.ENV, Source.PROJECT, Source.USER}
+            and (key in FLAG_ONLY or key not in DEFAULTS)
         ]
 
 
@@ -214,7 +258,7 @@ def load_config(
         resolved[key] = ConfigValue(key, value, Source.PROJECT, str(project_path))
 
     for name, raw in environment.items():
-        if not name.startswith(ENV_PREFIX):
+        if not name.startswith(ENV_PREFIX) or name.startswith(BUILD_ENV_PREFIX):
             continue
         key = name[len(ENV_PREFIX) :].lower()
         resolved[key] = ConfigValue(key, _coerce(key, raw), Source.ENV, name)

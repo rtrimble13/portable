@@ -24,7 +24,7 @@ When in doubt, refuse and explain.
 | `pert` | Performance, attribution, risk-adjusted returns | **partly built** — `pert twr` (ADR 0040); the rest is milestone `v0.2` |
 | `po` | Portfolio optimization (wraps `rtrimble13/po`) | stub — see milestone `v0.3` |
 | `risky` | Risk and scenario analysis | stub — see milestone `v0.4` |
-| `portable` | Commands shared by the family: `portable config show` | stub — see issue #38, milestone `v0.2` |
+| `portable` | Commands shared by the family: `portable config show` | **built** |
 
 **Keep this table current.** If you promote a CLI from stub to built, update it here in
 the same commit.

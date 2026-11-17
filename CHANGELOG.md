@@ -16,6 +16,27 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`portable config show`** (issue 38). `portable` stops being a stub. It
+  prints each setting a command reads, its value, and where it came from: a
+  flag, a `PORTABLE_*` variable, `./portable.toml`, `~/.portablerc`, or the
+  default. Secrets are redacted. It writes nothing, and it takes the family's
+  global flags in either position.
+  - **It lists only what takes effect.** Eight settings are read from
+    configuration. The other eight keys in `DEFAULTS`, such as `format`,
+    `quiet`, `offline` and `yes`, are taken by every command from its own flags
+    alone, and always were. A value a file or variable gives one of them does
+    nothing, so it is reported as a warning naming where it was set, and not
+    listed. A key no command reads, usually a typo, is reported the same way.
+    Whether those keys should be honoured from a file is left open
+    (`docs/architecture.md` §6).
+  - `action_file` is now declared in `DEFAULTS`. The file provider always read
+    it, but `config show` could not have listed it. A test now holds the
+    declared keys to the `config.get(...)` calls in the source.
+  - `PORTABLE_PORT` is reported as coming from the environment. `pt` reads it
+    through its `--port` flag, so a naive report would have said "flag".
+  - `PORTABLE_BUILD_*` variables are installer options, and are no longer read
+    as configuration.
+
 - **`examples/sample.port` produces a time-weighted return** (issue 59).
   `pert twr` refused the committed sample: it held year-end prices only, and
   no snapshots. The generator now prices every instrument it holds at each
