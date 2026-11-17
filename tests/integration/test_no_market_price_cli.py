@@ -13,15 +13,14 @@ from typing import Any
 
 import pytest
 
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, stack_template
 
 pytestmark = pytest.mark.integration
 
 ON = "2024-01-04"
 
 
-@pytest.fixture
-def held(run_pt: CliRunner, portfolio: Path) -> str:
+def _build_held(run_pt: CliRunner, portfolio: Path) -> str:
     """B holds AAPL, which has a price, and CVR, which never will."""
     port = str(portfolio)
     for symbol in ("AAPL", "CVR"):
@@ -31,6 +30,18 @@ def held(run_pt: CliRunner, portfolio: Path) -> str:
     run_pt("--port", port, "price", "set", "AAPL", "--date", ON, "--price", "101.00",
            "--valuation-level", "1")  # fmt: skip
     return port
+
+
+@pytest.fixture(scope="module")
+def held_template(tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path) -> Path:
+    """`_build_held`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_held, start_from=portfolio_template)
+
+
+@pytest.fixture
+def held(held_template: Path, portfolio: Path) -> str:
+    """What `_build_held` builds, copied over `portfolio` for this test."""
+    return str(stack_template(held_template, portfolio))
 
 
 def _snapshot(port: str) -> dict[str, Any]:

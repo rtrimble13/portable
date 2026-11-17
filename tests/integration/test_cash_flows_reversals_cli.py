@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, stack_template
 
 pytestmark = pytest.mark.integration
 
@@ -35,8 +35,7 @@ def _txn_id(port: str, txn_type: str, on: str) -> int:
         con.close()
 
 
-@pytest.fixture
-def corrected(run_pt: CliRunner, portfolio: Path) -> str:
+def _build_corrected(run_pt: CliRunner, portfolio: Path) -> str:
     """A deposit and a transfer, each reversed, beside the fixture's 500,000 deposit."""
     port = str(portfolio)
     run_pt("--port", port, "account", "add", "--name", "IRA", "--type", "tax_deferred",
@@ -50,6 +49,20 @@ def corrected(run_pt: CliRunner, portfolio: Path) -> str:
     run_pt("--port", port, "trade", "reverse", str(_txn_id(port, "transfer", "2024-01-06")),
            "--date", "2024-01-07")  # fmt: skip
     return port
+
+
+@pytest.fixture(scope="module")
+def corrected_template(
+    tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path
+) -> Path:
+    """`_build_corrected`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_corrected, start_from=portfolio_template)
+
+
+@pytest.fixture
+def corrected(corrected_template: Path, portfolio: Path) -> str:
+    """What `_build_corrected` builds, copied over `portfolio` for this test."""
+    return str(stack_template(corrected_template, portfolio))
 
 
 def _flows(run_pt: CliRunner, port: str, level: str, last: str) -> list[tuple[str, str, str]]:

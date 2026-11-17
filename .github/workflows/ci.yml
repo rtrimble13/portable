@@ -52,22 +52,28 @@ jobs:
       - name: mypy
         run: mypy
 
-  # ── The suite, across the platforms the owner and CI actually use ─────────
+  # ── The suite, across the supported Pythons ───────────────────────────────
   #
-  # ONE COMMAND PER `run:` in this job. On Windows a step runs in PowerShell,
-  # which reports only the exit code of a script's *last* command: a step of
-  # `coverage run -m pytest` then `coverage report` went green with "4 failed"
-  # in its own summary. bash stops at the first failure; PowerShell does not,
-  # and these steps run under both.
+  # Linux only for now (ADR 0042). Windows comes back by adding a runner to
+  # this job's matrix and to the cpp job's. If it does: ONE COMMAND PER `run:`.
+  # On Windows a step runs in PowerShell, which reports only the exit code of a
+  # script's *last* command -- a step of `coverage run -m pytest` then
+  # `coverage report` once went green with "4 failed" in its own summary.
   # tests/unit/test_ci_workflow.py holds every Windows-capable job to this.
   test:
-    name: test · py${{ matrix.python }} · ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: test · py${{ matrix.python }}${{ matrix.coverage && ' · coverage' || '' }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
         python: ["3.11", "3.12", "3.13"]
+        # Coverage is measured on one Python. No code in src/ branches on the
+        # version, so the others would measure the same lines, and tracing is
+        # what made the 3.12 job the slowest in the matrix. 3.11 is the floor
+        # of requires-python.
+        include:
+          - python: "3.11"
+            coverage: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -88,23 +94,42 @@ jobs:
         # C++, it must fail when the C++ is missing.
         run: python -c "from portable_core import native; assert native.HAVE_NATIVE, 'extension did not build'; print(native.build_info())"
 
+      # -n auto: one pytest-xdist worker per runner core; --dist loadfile
+      # keeps each test file on one worker, so each portfolio template is
+      # built once (tests/integration/conftest.py). Coverage goes
+      # through pytest-cov, which measures the workers; `coverage run` would
+      # measure only the controller, which runs no tests.
+      #
+      # The suite includes the JSON Schema validation of every command's
+      # output (invariant 8, tests/unit/test_json_schemas.py) and the
+      # ledger-replay property (invariant 3,
+      # tests/property/test_replay_reproduces_state.py). Each used to run a
+      # second time as a step of its own; a failure in either fails this step.
       - name: pytest with coverage
-        run: coverage run -m pytest
+        if: matrix.coverage
+        run: pytest -n auto --dist loadfile --cov --cov-report=
 
       - name: coverage report
+        if: matrix.coverage
         run: coverage report
 
-      - name: JSON Schema validation
-        run: pytest tests/unit/test_json_schemas.py -q
-
-      - name: Ledger-replay determinism
-        run: pytest tests/property/test_replay_reproduces_state.py -q
+      - name: pytest
+        if: ${{ !matrix.coverage }}
+        run: pytest -n auto --dist loadfile
 
   # ── The pure-Python path must not quietly rot ─────────────────────────────
   # PORTABLE_BUILD_NATIVE=OFF is a supported, complete product, not a degraded
   # mode -- it is the reference implementation the differential tests compare
   # against (ADR 0008). If it only ever runs on a developer's laptop it will
   # break and nobody will notice.
+  #
+  # It runs the unit and property tests, not the integration tests (ADR 0043).
+  # No production path computes through the extension yet: outside
+  # portable_core/native/, code only asks which implementation is live. So
+  # the integration tests run the same Python with the extension built or
+  # not, and the test jobs above already run them. The first production path
+  # that dispatches through the extension fails
+  # tests/unit/test_layering.py, and this job runs the whole suite again.
   no-native:
     name: test · pure-Python (no extension)
     runs-on: ubuntu-latest
@@ -125,16 +150,14 @@ jobs:
         run: python -c "from portable_core import native; assert not native.HAVE_NATIVE; assert native.implementation() == 'python'"
 
       - name: pytest
-        run: pytest -q
+        run: pytest -q -n auto -m "not integration"
 
   # ── C++ ───────────────────────────────────────────────────────────────────
+  # Linux only for now (ADR 0042). MSVC's `/Zc:__cplusplus` (ADR 0008) is no
+  # longer exercised in CI.
   cpp:
-    name: cpp · ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
+    name: cpp
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

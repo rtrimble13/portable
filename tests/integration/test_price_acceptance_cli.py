@@ -14,15 +14,14 @@ from typing import Any
 
 import pytest
 
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, stack_template
 
 pytestmark = pytest.mark.integration
 
 YEAR_END = "2024-12-31"
 
 
-@pytest.fixture
-def book(run_pt: CliRunner, portfolio: Path) -> str:
+def _build_book(run_pt: CliRunner, portfolio: Path) -> str:
     """AAPL and MSFT held over 2024; more AAPL bought after the year-end."""
     port = str(portfolio)
     for symbol in ("AAPL", "MSFT"):
@@ -38,6 +37,18 @@ def book(run_pt: CliRunner, portfolio: Path) -> str:
         run_pt("--port", port, "price", "set", symbol, "--price", price, "--date",
                "2024-12-30", "--valuation-level", "1")  # fmt: skip
     return port
+
+
+@pytest.fixture(scope="module")
+def book_template(tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path) -> Path:
+    """`_build_book`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_book, start_from=portfolio_template)
+
+
+@pytest.fixture
+def book(book_template: Path, portfolio: Path) -> str:
+    """What `_build_book` builds, copied over `portfolio` for this test."""
+    return str(stack_template(book_template, portfolio))
 
 
 def _statement(tmp_path: Path, aapl_value: str = "25042.00") -> str:

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, stack_template
 
 pytestmark = [pytest.mark.integration]
 
@@ -56,8 +56,7 @@ def _stored_basis(port: Path) -> str:
         con.close()
 
 
-@pytest.fixture
-def traded(run_pt: CliRunner, portfolio: Path) -> Path:
+def _build_traded(run_pt: CliRunner, portfolio: Path) -> Path:
     run_pt("--port", str(portfolio), "instrument", "add", "AAPL", "--type", "equity")
     run_pt(
         "--port",
@@ -74,6 +73,18 @@ def traded(run_pt: CliRunner, portfolio: Path) -> Path:
         "2024-01-03",
     )
     return portfolio
+
+
+@pytest.fixture(scope="module")
+def traded_template(tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path) -> Path:
+    """`_build_traded`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_traded, start_from=portfolio_template)
+
+
+@pytest.fixture
+def traded(traded_template: Path, portfolio: Path) -> Path:
+    """What `_build_traded` builds, copied over `portfolio` for this test."""
+    return stack_template(traded_template, portfolio)
 
 
 def test_validate_passes_on_a_consistent_portfolio(run_pt: CliRunner, traded: Path) -> None:

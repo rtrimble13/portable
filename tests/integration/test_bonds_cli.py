@@ -13,20 +13,31 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, stack_template
 
 pytestmark = pytest.mark.integration
 
 BOND = "T-4.25-2030"
 
 
-@pytest.fixture
-def bond(run_pt: CliRunner, portfolio: Path) -> str:
+def _build_bond(run_pt: CliRunner, portfolio: Path) -> str:
     port = str(portfolio)
     run_pt("--port", port, "instrument", "add", BOND, "--type", "bond", "--issuer",
            "US Treasury", "--coupon", "0.0425", "--coupon-frequency", "2",
            "--maturity", "2030-05-15", "--face", "1000")  # fmt: skip
     return port
+
+
+@pytest.fixture(scope="module")
+def bond_template(tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path) -> Path:
+    """`_build_bond`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_bond, start_from=portfolio_template)
+
+
+@pytest.fixture
+def bond(bond_template: Path, portfolio: Path) -> str:
+    """What `_build_bond` builds, copied over `portfolio` for this test."""
+    return str(stack_template(bond_template, portfolio))
 
 
 def _buy(run_pt: CliRunner, port: str, *extra: str, expect: int = 0) -> dict[str, object]:

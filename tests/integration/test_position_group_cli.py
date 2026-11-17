@@ -14,13 +14,12 @@ from pathlib import Path
 import pytest
 
 from portable_core.schema import migrations as M
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, stack_template
 
 pytestmark = pytest.mark.integration
 
 
-@pytest.fixture
-def held(run_pt: CliRunner, portfolio: Path) -> str:
+def _build_held(run_pt: CliRunner, portfolio: Path) -> str:
     port = str(portfolio)
     for symbol in ("AAPL", "MSFT", "NVDA"):
         run_pt("--port", port, "instrument", "add", symbol, "--type", "equity")
@@ -28,6 +27,18 @@ def held(run_pt: CliRunner, portfolio: Path) -> str:
         run_pt("--port", port, "buy", symbol, "--qty", "10", "--price", "100.00", "--date", on,
                "-a", "B")  # fmt: skip
     return port
+
+
+@pytest.fixture(scope="module")
+def held_template(tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path) -> Path:
+    """`_build_held`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_held, start_from=portfolio_template)
+
+
+@pytest.fixture
+def held(held_template: Path, portfolio: Path) -> str:
+    """What `_build_held` builds, copied over `portfolio` for this test."""
+    return str(stack_template(held_template, portfolio))
 
 
 def _positions(run_pt: CliRunner, port: str) -> dict[str, tuple[int, str]]:

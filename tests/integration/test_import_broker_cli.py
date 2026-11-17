@@ -19,17 +19,15 @@ from pathlib import Path
 import pytest
 
 from portable_core.lint._common import repo_root
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, copy_template
 
 pytestmark = [pytest.mark.integration]
 
 EXAMPLE = repo_root() / "examples" / "importers" / "example-brokerage"
 
 
-@pytest.fixture
-def portfolio(run_pt: CliRunner, tmp_path: Path) -> Path:
+def _build_portfolio(run_pt: CliRunner, path: Path) -> Path:
     """A portfolio that knows the accounts, instruments and cutover prices."""
-    path = tmp_path / "p.port"
 
     def run(*args: str) -> None:
         run_pt("--port", str(path), *args).ok()
@@ -55,6 +53,18 @@ def portfolio(run_pt: CliRunner, tmp_path: Path) -> Path:
     run("price", "set", "VTI", "--price", "201.00", "--date", "2025-01-21")
     run("price", "set", "MSFT", "--price", "410.00", "--date", "2025-01-21")
     return path
+
+
+@pytest.fixture(scope="module")
+def e2e_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """`_build_portfolio`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_portfolio, name="p.port")
+
+
+@pytest.fixture
+def portfolio(e2e_template: Path, tmp_path: Path) -> Path:
+    """What `_build_portfolio` builds, copied into this test's directory."""
+    return copy_template(e2e_template, tmp_path / "p.port")
 
 
 def _stated(tmp_path: Path, adapter: Path = EXAMPLE) -> Path:

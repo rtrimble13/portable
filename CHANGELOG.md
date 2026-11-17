@@ -530,6 +530,55 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **CI runs on Linux only** (ADR 0042, at the owner's request). The suite
+  takes more than ten minutes a run, and it ran on Linux and Windows × three
+  Pythons, with Catch2 on both. Every job is now `ubuntu-latest`; the Python
+  matrix, the pure-Python job and the `check` gate stay. Windows-only breaks
+  (PowerShell exit codes, cp1252 stdout, MSVC's `__cplusplus`) are no longer
+  caught in CI. `tests/unit/test_ci_workflow.py` keeps its one-command rule
+  for when Windows returns and no longer requires a Windows job to exist.
+
+- **The suite runs in parallel** (pytest-xdist, `-n auto`). It spends 97% of
+  its time in integration tests that start `pt` once per CLI call, on one
+  core: 13m41s serially, 3m48s on four workers, every test passing.
+  `make test`, `make coverage`, `make test-fast`, the pre-commit hook and CI
+  all pass `-n auto`. Coverage is collected by pytest-cov, since
+  `coverage run` measures only the controller process, which runs no tests.
+  To debug one test under pdb, run pytest without `-n`.
+
+- **CI no longer runs the same tests twice.** The test job re-ran the JSON
+  Schema validation and the ledger-replay property as steps of their own
+  after the full suite had run both; those steps are gone, and `make check`
+  drops its matching `schemas` prerequisite (`make schemas` remains).
+  Coverage is measured on Python 3.11 only: nothing in `src/` branches on
+  the version, and tracing made the 3.12 job the slowest in the matrix. 3.12
+  and 3.13 run the suite without it.
+
+- **The pure-Python CI job runs the unit and property tests only** (ADR
+  0043), in seconds rather than the 11m49s of its last full run. No
+  production path computes through the native extension yet, so the
+  integration tests run the same Python with it built or not, and the test
+  matrix runs them. `tests/unit/test_layering.py` holds that premise: it
+  fails when code outside `portable_core/native/` imports more than
+  `HAVE_NATIVE`, `implementation()` or `build_info()` from it, and the job
+  then runs the whole suite again.
+
+- **Integration fixtures build each portfolio once and copy it.** Before
+  every test, fixtures rebuilt the same portfolio through the CLI: 518 of
+  the 756 seconds the integration tests took, four `pt` calls for
+  `portfolio` and up to a dozen for the fixtures stacked on it. Each now
+  builds a template once per module (per session for `portfolio`) and
+  copies the file into each test: `make test` runs the suite in 1m46s on
+  four workers, from 4m12s. A template is refused if a SQLite sidecar is left
+  beside it or a stored value names the directory it was built in, the two
+  ways a copy could differ from building in place. A stacked copy is refused
+  unless `portfolio` is still the untouched base, since replacing the file
+  would discard what another fixture wrote to it.
+  `tests/integration/test_templates.py` compares a copy with an in-place
+  build, row for row, apart from the wall-clock stamps. The full suite runs
+  with `--dist loadfile`, which keeps a test file on one worker so each
+  template is built once.
+
 - **The sample's spinoff is recorded at fair market values the prices agree
   with.** The parent's was 48.00 against a split-adjusted price near 27, so
   the basis allocation and the market value disagreed. It is now 24.40, the

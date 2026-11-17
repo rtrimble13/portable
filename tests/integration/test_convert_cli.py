@@ -14,14 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, copy_template
 
 pytestmark = [pytest.mark.integration]
 
 
-@pytest.fixture
-def held(run_pt: CliRunner, tmp_path: Path) -> Path:
-    path = tmp_path / "demo.port"
+def _build_held(run_pt: CliRunner, path: Path) -> Path:
     run_pt("init", str(path), "--name", "Demo", "--inception", "2022-01-01").ok()
     run_pt(
         "--port",
@@ -89,6 +87,18 @@ def held(run_pt: CliRunner, tmp_path: Path) -> Path:
         "2023-02-01",
     ).ok()
     return path
+
+
+@pytest.fixture(scope="module")
+def held_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """`_build_held`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_held, name="demo.port")
+
+
+@pytest.fixture
+def held(held_template: Path, tmp_path: Path) -> Path:
+    """What `_build_held` builds, copied into this test's directory."""
+    return copy_template(held_template, tmp_path / "demo.port")
 
 
 def _lots(path: Path) -> list[dict[str, object]]:

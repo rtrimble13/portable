@@ -39,8 +39,13 @@ format:  ## Apply ruff formatting and safe fixes
 types:  ## mypy (strict on portable_core)
 	$(BIN)/mypy
 
-test:  ## Full suite: unit + property + integration + golden
-	$(BIN)/coverage run -m pytest
+# -n auto runs one pytest-xdist worker per core: the suite spends nearly all
+# its time starting `pt` in subprocesses, so it scales with cores. --dist
+# loadfile keeps each test file on one worker, so a portfolio template
+# (tests/integration/conftest.py) is built once, not once per worker. To
+# step through one test under pdb, run pytest yourself without -n.
+test:  ## Full suite: unit + property + integration + golden, in parallel
+	$(BIN)/pytest -n auto --dist loadfile --cov --cov-report=
 	$(BIN)/coverage report
 	@echo
 	@echo "NOTE: the portable_pt/commands/* modules report 0% here and are NOT"
@@ -48,10 +53,10 @@ test:  ## Full suite: unit + property + integration + golden
 	@echo "      a subprocess, which coverage does not follow. See issue #40."
 
 test-fast:  ## Unit tests only -- the pre-commit subset
-	$(BIN)/pytest -m "unit and not slow" -q
+	$(BIN)/pytest -m "unit and not slow" -q -n auto
 
 coverage:  ## Full suite with an HTML coverage report
-	$(BIN)/coverage run -m pytest
+	$(BIN)/pytest -n auto --dist loadfile --cov --cov-report=
 	$(BIN)/coverage html
 	@echo "open htmlcov/index.html"
 
@@ -70,7 +75,7 @@ docs:  ## Regenerate docs/schema.md from the DDL comments
 fixtures:  ## Rebuild examples/sample.port and sample_prices.csv from the generator
 	$(BIN)/python scripts/build_sample_portfolio.py --out examples/sample.port --force
 
-check: lint types test schemas  ## Everything CI runs
+check: lint types test  ## Everything CI runs (test includes the schema validation)
 	@echo "check: green"
 
 clean:  ## Remove build and test artifacts

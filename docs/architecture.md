@@ -327,7 +327,7 @@ integrating `portopt` in v0.3 is a merge rather than a rewrite.
 
 **v0.1 ships scaffolding only.** `portable_native.probe()` proves the toolchain
 end to end — importable after `pip install -e .`, tested from both pytest and
-Catch2, built in CI on Linux and Windows. There is no production C++ yet, by
+Catch2, built in CI on Linux (ADR 0042). There is no production C++ yet, by
 design.
 
 ### The fallback contract — read this before writing any C++
@@ -344,6 +344,12 @@ is right.
   prints which functions went unverified rather than passing quietly.
 - **No native-only functionality.** The extension may only make existing Python
   faster. `PORTABLE_BUILD_NATIVE=OFF` must be a complete, correct product.
+- **The first production path through the extension widens CI.** Until one
+  exists, the pure-Python CI job skips the integration tests, which run the
+  same Python either way (ADR 0043). `tests/unit/test_layering.py` fails when
+  code outside `portable_core/native/` imports anything from it but
+  `HAVE_NATIVE`, `implementation()` and `build_info()`. The job then runs the
+  whole suite again, and ADR 0043 is superseded.
 - **`Decimal` does not cross the pybind11 boundary.** When a money hot path is
   eventually moved, it moves as integer or string arithmetic with an explicit,
   tested conversion — never as `double`. Invariant 1 does not stop at the

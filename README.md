@@ -211,7 +211,7 @@ make docs        # regenerate docs/schema.md from the DDL comments
 make check       # everything CI runs
 ```
 
-CI runs Linux and Windows across Python 3.11 and 3.12. Contributions:
+CI runs Linux across Python 3.11, 3.12 and 3.13. Contributions:
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---

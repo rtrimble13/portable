@@ -6,6 +6,7 @@
 # commit, with `make check` green.
 click==8.3.0
 coverage==7.15.4
+execnet==2.1.2
 hypothesis==6.165.10
 jsonschema==4.26.0
 markdown-it-py==4.0.0
@@ -16,6 +17,8 @@ pathspec==1.1.1
 pluggy==1.6.0
 Pygments==2.19.2
 pytest==9.1.1
+pytest-cov==7.1.0
+pytest-xdist==3.8.0
 PyYAML==6.0.3
 rich==15.0.0
 ruff==0.16.5

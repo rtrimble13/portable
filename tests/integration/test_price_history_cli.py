@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, stack_template
 
 pytestmark = pytest.mark.integration
 
@@ -40,23 +40,39 @@ def _price_file(tmp_path: Path) -> Path:
     return path
 
 
-@pytest.fixture
-def book(
-    run_pt: CliRunner, portfolio: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> str:
-    """AAPL held Jan-Feb and sold; MSFT held from Feb; NVDA known but never held."""
+def _build_book(run_pt: CliRunner, portfolio: Path) -> str:
+    """AAPL held Jan-Feb and sold; MSFT held from Feb; NVDA known but never held.
+
+    Built with the price file named, as the tests run: `check_template` would
+    refuse the template if anything stored pointed at it.
+    """
     port = str(portfolio)
-    monkeypatch.setenv("PORTABLE_PRICE_FILE", str(_price_file(tmp_path)))
+    env = {"PORTABLE_PRICE_FILE": str(_price_file(portfolio.parent))}
     for symbol in ("AAPL", "MSFT", "NVDA"):
-        run_pt("--port", port, "instrument", "add", symbol, "--type", "equity")
+        run_pt("--port", port, "instrument", "add", symbol, "--type", "equity", extra_env=env)
     for verb, symbol, qty, on in (
         ("buy", "AAPL", "100", "2024-01-03"),
         ("sell", "AAPL", "100", "2024-03-01"),
         ("buy", "MSFT", "10", "2024-02-01"),
     ):
         run_pt("--port", port, verb, symbol, "--qty", qty, "--price", "100.00", "--date", on,
-               "-a", "B")  # fmt: skip
+               "-a", "B", extra_env=env)  # fmt: skip
     return port
+
+
+@pytest.fixture(scope="module")
+def book_template(tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path) -> Path:
+    """`_build_book`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_book, start_from=portfolio_template)
+
+
+@pytest.fixture
+def book(
+    book_template: Path, portfolio: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> str:
+    """What `_build_book` builds, copied over `portfolio`, with this test's price file."""
+    monkeypatch.setenv("PORTABLE_PRICE_FILE", str(_price_file(tmp_path)))
+    return str(stack_template(book_template, portfolio))
 
 
 def _dates(run_pt: CliRunner, port: str, symbol: str) -> list[str]:

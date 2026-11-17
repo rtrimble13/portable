@@ -12,6 +12,8 @@ mypy>=1.11
 
 # test
 pytest>=8.0
+pytest-xdist>=3.6   # -n auto: the suite is bound by `pt` subprocesses, so one worker per core
+pytest-cov>=7.0     # coverage across xdist workers; `coverage run` measures only the controller
 hypothesis>=6.100
 coverage[toml]>=7.5
 jsonschema>=4.22
