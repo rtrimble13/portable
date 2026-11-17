@@ -105,3 +105,36 @@ def test_a_report_without_a_bond_says_nothing_about_bonds(
     run_pt: CliRunner, portfolio: Path
 ) -> None:
     assert run_pt("--port", str(portfolio), "tax", "--year", "2024").data["bonds"] is None
+
+
+def test_a_bond_is_held_in_the_bond_role(run_pt: CliRunner, bond: str) -> None:
+    """Issue 63: `pt holdings` listed a Treasury note as `long_stock`.
+
+    The role is derived state, so replay must give the same label the live
+    write gave: `pt validate` compares the two, and `pt rebuild` keeps it.
+    """
+    _buy(run_pt, bond, "--accrued-interest", "42.73")
+
+    def role() -> str:
+        rows = run_pt("--port", bond, "holdings", "--as-of", "2024-06-30").data["rows"]
+        return str(next(row["role"] for row in rows if row["symbol"] == BOND))
+
+    assert role() == "bond"
+    run_pt("--port", bond, "validate")
+    run_pt("--port", bond, "rebuild", "--yes")
+    assert role() == "bond"
+
+
+def test_the_tax_table_lists_nested_figures_as_lines(run_pt: CliRunner, bond: str) -> None:
+    """Issue 63: `basis_provenance`, `bonds` and `wash_sales` printed as reprs."""
+    _buy(run_pt, bond, "--accrued-interest", "42.73")
+    run_pt("--port", bond, "sell", BOND, "--qty", "10000", "--price", "102.00",
+           "--date", "2024-08-20", "--settlement", "2024-08-21",
+           "--accrued-interest", "113.18", "-a", "B")  # fmt: skip
+
+    text = run_pt("--port", bond, "tax", "--year", "2024", fmt="table").stdout
+    assert "{'" not in text and "['" not in text
+    lines = text.splitlines()
+    assert lines[lines.index("bonds") + 1] == f"  held          {BOND}"
+    assert "    - bond premium amortization (IRC §171)" in lines
+    assert "  - basis_source  derived" in lines

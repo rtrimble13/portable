@@ -60,6 +60,9 @@ because the trailing zeros carry the significance the source asserted.
 
 A blank and a zero must never look the same. An unpriced holding reports
 `"market_value": null` — not `"0.00"`, which would say the position is worthless.
+Nor may an empty list look like a missing one: in `table` and `markdown` an empty
+list or object reads `(none)`, never `—`. A wash-sale check that found nothing
+and a figure nobody supplied are different facts.
 
 ### `disclaimer` is a field, not a footer
 
@@ -134,6 +137,35 @@ pasting into notes or an LLM context window.
 **`table`** — the human default. Rich-rendered and colour-aware; degrades to
 plain text automatically on a non-TTY or under `NO_COLOR`, so piping into a file
 yields clean text without anybody remembering a flag.
+
+**Nested data, in `table` and `markdown`.** A command's `data` often holds
+structures: `pt tax` carries a list of per-rung provenance rows, the bonds it
+held, and what its wash-sale check does not detect. An error's context can hold
+a list of problems. All of these render through
+`formatters/nested.py`, once, as indented key and value lines. In `markdown`
+they render as a nested list. They never print as a Python `repr`:
+
+```text
+basis_provenance
+  - basis_source  derived
+    gain          15250.68
+bonds
+  held          T-4.25-2030
+  not_computed
+    - bond premium amortization (IRC §171)
+unreportable      (none)
+```
+
+- Keys are sorted at every depth, as `json` sorts them. Lists keep their order.
+- A list holds one item to a line. The exception is a list where every item is a
+  single token, such as a date or a symbol. Those items run together, separated
+  by commas, and wrap at a fixed 76 columns. The width is never read from the
+  terminal, so the output stays deterministic. An item containing a space or a
+  comma is never joined this way.
+- A scalar is its canonical text (`6000.00`, never `Decimal('6000.00')`). A
+  return goes through the return rules below, so a return nested in `data` is
+  labelled and cannot be annualized under a year.
+- `json` keeps the structure exactly. This rendering is for reading only.
 
 ---
 

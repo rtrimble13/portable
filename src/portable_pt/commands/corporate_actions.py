@@ -24,7 +24,6 @@ import typer
 from portable_core.decimals import from_text, money_context
 from portable_core.domain.enums import (
     InstrumentType,
-    LegRole,
     PositionStatus,
     StrategyType,
     TransactionSource,
@@ -43,6 +42,7 @@ from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.providers import as_corporate_action_provider
 from portable_core.services import price_history
 from portable_core.services.corporate_actions import CorporateActionEngine
+from portable_core.services.positions import leg_role_for
 from portable_pt import state
 from portable_pt.commands._shared import RefOpt, dispatch, resolve_date
 
@@ -298,7 +298,7 @@ def spinoff(
                         leg_id=0,
                         position_id=position_id,
                         instrument_id=child.instrument_id,
-                        role=LegRole.LONG_STOCK,
+                        role=leg_role_for(child, short=False),
                         sign=1,
                         quantity=Decimal(0),
                         opened_date=on,
@@ -481,7 +481,7 @@ def convert(
                         leg_id=0,
                         position_id=position_id,
                         instrument_id=target.instrument_id,
-                        role=LegRole.LONG_STOCK,
+                        role=leg_role_for(target, short=False),
                         sign=1,
                         quantity=Decimal(0),
                         opened_date=on,
