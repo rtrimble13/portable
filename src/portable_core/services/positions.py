@@ -19,11 +19,11 @@ from portable_core.decimals import money_context
 from portable_core.domain.enums import (
     LegRole,
     LotStatus,
+    OptionRight,
     PositionStatus,
     StrategyType,
-    TransactionType,
 )
-from portable_core.domain.models import Lot, Position, PositionLeg
+from portable_core.domain.models import Instrument, Lot, Position, PositionLeg
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import E_INVARIANT_BROKEN, E_POSITION_CLOSED
 
@@ -52,28 +52,29 @@ class FlipSplit:
         return self.opening_quantity > 0
 
 
-def leg_role_for(
-    txn_type: TransactionType,
-    *,
-    is_option: bool,
-    is_short: bool,
-    option_right: str | None = None,
-) -> LegRole:
-    """The role a new leg takes, from the trade that created it.
+def leg_role_for(instrument: Instrument, *, short: bool) -> LegRole:
+    """The role a new leg takes, from what it holds and the side it opens.
 
     The role is not decoration: it is what lets the engines know that *this*
     short call is written against *that* stock, which is what makes assignment
     a within-position operation.
+
+    Every site that creates a leg asks here -- an opening trade, a spinoff's
+    new shares, a conversion's target -- so no site can label a leg by
+    assumption. A bond leg is ``bond`` whichever side it is on: the leg's
+    ``sign`` carries the side, and ``long_stock`` on a Treasury note is a
+    label that says something false (issue 63).
     """
-    if is_option:
-        if option_right == "call":
-            return LegRole.SHORT_CALL if is_short else LegRole.LONG_CALL
-        if option_right == "put":
-            return LegRole.SHORT_PUT if is_short else LegRole.LONG_PUT
+    if instrument.is_option:
+        right = instrument.option.option_right if instrument.option else None
+        if right is OptionRight.CALL:
+            return LegRole.SHORT_CALL if short else LegRole.LONG_CALL
+        if right is OptionRight.PUT:
+            return LegRole.SHORT_PUT if short else LegRole.LONG_PUT
         return LegRole.OTHER
-    if txn_type in {TransactionType.SELL_SHORT, TransactionType.BUY_TO_COVER}:
-        return LegRole.SHORT_STOCK
-    return LegRole.LONG_STOCK
+    if instrument.is_bond:
+        return LegRole.BOND
+    return LegRole.SHORT_STOCK if short else LegRole.LONG_STOCK
 
 
 class PositionEngine:

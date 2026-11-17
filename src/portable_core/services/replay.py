@@ -62,6 +62,7 @@ from portable_core.domain.models import (
 from portable_core.errors import ValidationError
 from portable_core.errors.kinds import (
     E_CASH_NOT_CONSERVED,
+    E_INVARIANT_BROKEN,
     E_LOT_DESIGNATION_DIVIDED,
     E_LOT_DESIGNATION_UNRESOLVED,
     E_OPTION_ROW_INVALID,
@@ -577,20 +578,12 @@ class ReplayEngine:
                 )
             )
             counters["positions"] += 1
-            role = leg_role_for(
-                txn.txn_type,
-                is_option=instrument.is_option,
-                is_short=is_short,
-                option_right=(
-                    str(instrument.option.option_right) if instrument.option else None
-                ),
-            )
             leg_id = self.repos.positions.add_leg(
                 PositionLeg(
                     leg_id=0,
                     position_id=position_id,
                     instrument_id=txn.instrument_id,
-                    role=role,
+                    role=leg_role_for(instrument, short=is_short),
                     sign=-1 if is_short else 1,
                     quantity=ZERO,
                     opened_date=txn.trade_date,
@@ -1408,7 +1401,7 @@ class ReplayEngine:
                 leg_id=0,
                 position_id=position_id,
                 instrument_id=action.target_instrument_id,
-                role=LegRole.LONG_STOCK,
+                role=self._new_leg_role(action.target_instrument_id),
                 sign=1,
                 quantity=ZERO,
                 opened_date=txn.trade_date,
@@ -1509,13 +1502,28 @@ class ReplayEngine:
                 leg_id=0,
                 position_id=position_id,
                 instrument_id=instrument_id,
-                role=LegRole.LONG_STOCK,
+                role=self._new_leg_role(instrument_id),
                 sign=1,
                 quantity=ZERO,
                 opened_date=txn.trade_date,
             )
         )
         return position_id, leg_id
+
+    def _new_leg_role(self, instrument_id: int) -> LegRole:
+        """The role of a long leg a corporate action opens on *instrument_id*.
+
+        Read from the instrument, as an opening trade's is, so a spinoff or a
+        conversion that delivers a bond does not label it ``long_stock``.
+        """
+        instrument = self.repos.instruments.get(instrument_id)
+        if instrument is None:  # pragma: no cover -- foreign keys
+            raise ValidationError(
+                f"instrument {instrument_id} is named by a corporate action but does not exist",
+                code=E_INVARIANT_BROKEN,
+                remedy="Run `pt validate`: the file's foreign keys do not hold.",
+            )
+        return leg_role_for(instrument, short=False)
 
     def _refresh_leg(self, leg_id: int, on: date) -> None:
         """Re-materialize a leg's quantity from its lots, and close it if empty.

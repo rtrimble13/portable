@@ -779,6 +779,19 @@ Two rules specific to this repository:
   test holds each list to the options that CLI's root actually declares, and
   tries every flag in both positions.
 
+- **A bond was held in the role `long_stock`** (issue 63, part 2). The role
+  enum always had `bond`; nothing assigned it, because a new leg's role was
+  read from the trade alone. `leg_role_for` now reads the instrument, and all
+  five places that open a leg ask it: an opening trade, and the new shares of
+  a spinoff or a conversion, both as the command writes them and as replay
+  rebuilds them. Every other role is unchanged, and a test pins each one.
+  - **A file holding a bond fails `pt validate` until `pt rebuild`**, with
+    `PT-E-REPLAY-MISMATCH` on `position_leg`. The role is derived state, and
+    a replay now labels the leg differently from the stored row. `pt rebuild`
+    relabels it and keeps the valuation snapshots (ADR 0024). No migration
+    is needed, because the schema has allowed `bond` since 0001.
+  - `examples/sample.port` is regenerated, and its Treasury note is a `bond`.
+
 - **`pt info --as-of` reported today's cash and open positions under a past
   date's label.** It read stored derived state, the defect ADR 0021 fixed in
   every other report. It now reads both as they stood on `--as-of`, and agrees
