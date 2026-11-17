@@ -16,6 +16,30 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`pt account update` and `pt instrument update`** (issue 38).
+  - **`pt account update`** changes an account's custodian, alias or note.
+    Four other fields are accepted only so that each can be refused with its
+    reason:
+    - the **name**, because it is part of every imported row's identity
+      (ADR 0033), and the next `--incremental` import would append the
+      custodian's rows a second time;
+    - the **default relief method**, because replay relieves every sale
+      recorded without a method by it, so past gains would change;
+    - the **cash treatment** and **fractional shares**, because valuation and
+      replay read them and they have no effective date.
+
+    Issue 38 said only the wiring was missing. The whole allow-list would have
+    shipped three ways to rewrite history.
+  - **`pt instrument update`** corrects the fields `pt instrument sync` lists
+    differences in, and the classification `pt holdings --by` groups on: name,
+    exchange, CUSIP, ISIN, FIGI, sector, industry, asset class and country.
+    Before this there was no way to act on what sync reported. An identifier
+    another instrument already holds is refused, since resolution falls back
+    to identifiers and would become ambiguous. `InstrumentRepository.update`
+    is new: issue 38 assumed it existed.
+  - In both, an empty value clears a field (stored as null), the output names
+    what changed, and nothing in the ledger moves.
+
 - **`pt trade correct`** (issue 38). It reverses a trade and records the one
   it should have been, both or neither, and `--dry-run` shows both. Each
   option not given keeps the original's value, and the output lists what

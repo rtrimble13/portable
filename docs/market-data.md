@@ -295,7 +295,9 @@ pt --port p.port -S fafnir instrument sync
   the wrong ticker is another security's and the correction refuses once any
   is stored ([ADR 0034](adr/0034-a-wrong-symbol-is-corrected-not-renamed.md)).
   A rename the master never recorded is a correction followed by `pt ca
-  symbol-change`.
+  symbol-change`. Any other field -- the name, the exchange, a CUSIP, ISIN or
+  FIGI, the country -- is corrected with `pt instrument update SYMBOL --field
+  VALUE`, which refuses an identifier another instrument already holds.
 
 What fails, and how: a symbol the provider has no data for is a warning, and the
 run goes on. A provider that cannot be reached -- or that cannot do what was

@@ -14,6 +14,7 @@ from portable_core.errors.kinds import E_PRICE_MISSING
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.providers import as_security_master
 from portable_core.services import price_history, restatement, security_master
+from portable_core.services.reference_data import update_instrument
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, resolve_date
 
@@ -602,6 +603,57 @@ def sync(
                 "unresolved": len(unresolved),
             },
             warnings=tuple(warnings),
+            as_of=ctx.as_of,
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
+@app.command()
+def update(
+    symbol: Annotated[str, typer.Argument(help="The instrument, by its symbol on --as-of.")],
+    name: Annotated[str | None, typer.Option("--name")] = None,
+    exchange: Annotated[str | None, typer.Option("--exchange")] = None,
+    cusip: Annotated[str | None, typer.Option("--cusip")] = None,
+    isin: Annotated[str | None, typer.Option("--isin")] = None,
+    figi: Annotated[str | None, typer.Option("--figi")] = None,
+    sector: Annotated[str | None, typer.Option("--sector")] = None,
+    industry: Annotated[str | None, typer.Option("--industry")] = None,
+    asset_class: Annotated[str | None, typer.Option("--asset-class")] = None,
+    country: Annotated[str | None, typer.Option("--country")] = None,
+) -> None:
+    """Correct an instrument's description or identifiers. An empty value clears one.
+
+    The fields `pt instrument sync` compares with the security master, and the
+    classification `pt holdings --by` groups on. No ledger row and no figure
+    changes. An identifier already held by another instrument is refused: a
+    statement or an import naming it could resolve to either. The symbol is
+    corrected with `pt instrument correct-symbol`, and the type is not changed
+    at all, because it decides how the instrument is valued.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        instrument = repos.instruments.resolve(symbol, on=ctx.as_of)
+        given = {
+            "name": name,
+            "exchange": exchange,
+            "cusip": cusip,
+            "isin": isin,
+            "figi": figi,
+            "sector": sector,
+            "industry": industry,
+            "asset_class": asset_class,
+            "country": country,
+        }
+        with ctx.write():
+            changed = update_instrument(repos, instrument, given)
+        return CommandResult(
+            command="instrument update",
+            data={"symbol": instrument.symbol, "changed": changed},
+            warnings=() if changed else ("every value given is the one already recorded",),
             as_of=ctx.as_of,
             portfolio=ctx.portfolio_name(),
         )
