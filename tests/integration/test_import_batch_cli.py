@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, stack_template
 
 pytestmark = [pytest.mark.integration]
 
@@ -58,10 +58,21 @@ SELL = _append(
 DROP = {"action": "drop", "rule": "sweep:cash-equivalent (ADR 0013)", "source_row": {"a": "b"}}
 
 
-@pytest.fixture
-def ready(run_pt: CliRunner, portfolio: Path) -> Path:
+def _build_ready(run_pt: CliRunner, portfolio: Path) -> Path:
     run_pt("--port", str(portfolio), "instrument", "add", "AAPL", "--type", "equity").ok()
     return portfolio
+
+
+@pytest.fixture(scope="module")
+def ready_template(tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path) -> Path:
+    """`_build_ready`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_ready, start_from=portfolio_template)
+
+
+@pytest.fixture
+def ready(ready_template: Path, portfolio: Path) -> Path:
+    """What `_build_ready` builds, copied over `portfolio` for this test."""
+    return stack_template(ready_template, portfolio)
 
 
 def _ledger_size(run_pt: CliRunner, port: Path) -> int:

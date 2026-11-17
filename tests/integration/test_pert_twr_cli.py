@@ -17,7 +17,13 @@ from typing import Any
 
 import pytest
 
-from tests.integration.conftest import ROOT, CliResult, CliRunner
+from tests.integration.conftest import (
+    ROOT,
+    CliResult,
+    CliRunner,
+    build_template,
+    stack_template,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -71,8 +77,7 @@ def _price(run_pt: CliRunner, port: str, on: str, px: str, symbol: str = "XYZ") 
            "--valuation-level", "1")  # fmt: skip
 
 
-@pytest.fixture
-def invested(run_pt: CliRunner, portfolio: Path) -> str:
+def _build_invested(run_pt: CliRunner, portfolio: Path) -> str:
     """500,000 deposited on 01-02; 1,000 XYZ bought at 100 on 01-03.
 
     XYZ closes at 100 on 01-03, 101 on 01-04, 99 on 01-05. Valued 01-02 to 01-05.
@@ -85,6 +90,20 @@ def invested(run_pt: CliRunner, portfolio: Path) -> str:
     for on, px in (("2024-01-03", "100"), ("2024-01-04", "101"), ("2024-01-05", "99")):
         _price(run_pt, port, on, px)
     return port
+
+
+@pytest.fixture(scope="module")
+def invested_template(
+    tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path
+) -> Path:
+    """`_build_invested`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_invested, start_from=portfolio_template)
+
+
+@pytest.fixture
+def invested(invested_template: Path, portfolio: Path) -> str:
+    """What `_build_invested` builds, copied over `portfolio` for this test."""
+    return str(stack_template(invested_template, portfolio))
 
 
 def _value(run_pt: CliRunner, port: str, last: str = "2024-01-05") -> None:

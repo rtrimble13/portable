@@ -563,6 +563,22 @@ Two rules specific to this repository:
   `HAVE_NATIVE`, `implementation()` or `build_info()` from it, and the job
   then runs the whole suite again.
 
+- **Integration fixtures build each portfolio once and copy it.** Before
+  every test, fixtures rebuilt the same portfolio through the CLI: 518 of
+  the 756 seconds the integration tests took, four `pt` calls for
+  `portfolio` and up to a dozen for the fixtures stacked on it. Each now
+  builds a template once per module (per session for `portfolio`) and
+  copies the file into each test: `make test` runs the suite in 1m46s on
+  four workers, from 4m12s. A template is refused if a SQLite sidecar is left
+  beside it or a stored value names the directory it was built in, the two
+  ways a copy could differ from building in place. A stacked copy is refused
+  unless `portfolio` is still the untouched base, since replacing the file
+  would discard what another fixture wrote to it.
+  `tests/integration/test_templates.py` compares a copy with an in-place
+  build, row for row, apart from the wall-clock stamps. The full suite runs
+  with `--dist loadfile`, which keeps a test file on one worker so each
+  template is built once.
+
 - **The sample's spinoff is recorded at fair market values the prices agree
   with.** The parent's was 48.00 against a split-adjusted price near 27, so
   the basis allocation and the market value disagreed. It is now 24.40, the

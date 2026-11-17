@@ -12,15 +12,14 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, stack_template
 
 pytestmark = [pytest.mark.integration, pytest.mark.gips]
 
 ON = "2024-03-01"
 
 
-@pytest.fixture
-def transferred(run_pt: CliRunner, portfolio: Path) -> str:
+def _build_transferred(run_pt: CliRunner, portfolio: Path) -> str:
     """B (funded 500,000 by the fixture) receives 20,000 from S (funded 50,000)."""
     port = str(portfolio)
     run_pt(
@@ -36,6 +35,20 @@ def transferred(run_pt: CliRunner, portfolio: Path) -> str:
         "--date", ON,
     )  # fmt: skip
     return port
+
+
+@pytest.fixture(scope="module")
+def transferred_template(
+    tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path
+) -> Path:
+    """`_build_transferred`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_transferred, start_from=portfolio_template)
+
+
+@pytest.fixture
+def transferred(transferred_template: Path, portfolio: Path) -> str:
+    """What `_build_transferred` builds, copied over `portfolio` for this test."""
+    return str(stack_template(transferred_template, portfolio))
 
 
 def test_the_receiving_account_records_the_transfer_as_its_inflow(

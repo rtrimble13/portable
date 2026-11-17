@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, stack_template
 
 pytestmark = pytest.mark.integration
 
@@ -28,8 +28,7 @@ def _query(port: str, sql: str) -> list[tuple[object, ...]]:
         con.close()
 
 
-@pytest.fixture
-def sold(run_pt: CliRunner, portfolio: Path) -> str:
+def _build_sold(run_pt: CliRunner, portfolio: Path) -> str:
     """A 1,000.00 short-term gain in B, taxed at 0.37 + 0.05 + 0.038."""
     port = str(portfolio)
     run_pt("--port", port, "instrument", "add", "AAPL", "--type", "equity")
@@ -38,6 +37,18 @@ def sold(run_pt: CliRunner, portfolio: Path) -> str:
     run_pt("--port", port, "sell", "AAPL", "-a", "B", "--qty", "10", "--price", "200.00",
            "--date", "2024-06-03")  # fmt: skip
     return port
+
+
+@pytest.fixture(scope="module")
+def sold_template(tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path) -> Path:
+    """`_build_sold`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_sold, start_from=portfolio_template)
+
+
+@pytest.fixture
+def sold(sold_template: Path, portfolio: Path) -> str:
+    """What `_build_sold` builds, copied over `portfolio` for this test."""
+    return str(stack_template(sold_template, portfolio))
 
 
 def _tax(run_pt: CliRunner, port: str) -> str:
@@ -98,8 +109,7 @@ def test_a_second_schedule_for_one_date_is_refused_by_name(
     assert error["message"] == "B already has a tax rate schedule effective 2024-01-01"
 
 
-@pytest.fixture
-def valued(run_pt: CliRunner, portfolio: Path) -> str:
+def _build_valued(run_pt: CliRunner, portfolio: Path) -> str:
     """The fixture's 500,000.00 deposit on 2024-01-02, valued with no policy."""
     port = str(portfolio)
     run_pt("--port", port, "instrument", "add", "AAPL", "--type", "equity")
@@ -109,6 +119,18 @@ def valued(run_pt: CliRunner, portfolio: Path) -> str:
            "--valuation-level", "1")  # fmt: skip
     run_pt("--port", port, "value", "--from", "2024-01-02", "--to", "2024-01-03")
     return port
+
+
+@pytest.fixture(scope="module")
+def valued_template(tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path) -> Path:
+    """`_build_valued`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_valued, start_from=portfolio_template)
+
+
+@pytest.fixture
+def valued(valued_template: Path, portfolio: Path) -> str:
+    """What `_build_valued` builds, copied over `portfolio` for this test."""
+    return str(stack_template(valued_template, portfolio))
 
 
 def _policy(port: str, on: str, *extra: str) -> tuple[str, ...]:

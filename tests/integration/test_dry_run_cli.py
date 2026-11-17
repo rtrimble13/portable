@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, stack_template
 
 pytestmark = pytest.mark.integration
 
@@ -41,8 +41,7 @@ def _contents(port: str) -> dict[str, list[tuple[Any, ...]]]:
         con.close()
 
 
-@pytest.fixture
-def book(run_pt: CliRunner, portfolio: Path) -> str:
+def _build_book(run_pt: CliRunner, portfolio: Path) -> str:
     """B holds AAPL and MSFT, priced and valued for two days; IRA is funded."""
     port = str(portfolio)
     run_pt("--port", port, "account", "add", "--name", "IRA", "--type", "tax_deferred",
@@ -58,6 +57,18 @@ def book(run_pt: CliRunner, portfolio: Path) -> str:
                    "--valuation-level", "1")  # fmt: skip
     run_pt("--port", port, "value", "--from", "2024-01-04", "--to", "2024-01-05")
     return port
+
+
+@pytest.fixture(scope="module")
+def book_template(tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path) -> Path:
+    """`_build_book`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_book, start_from=portfolio_template)
+
+
+@pytest.fixture
+def book(book_template: Path, portfolio: Path) -> str:
+    """What `_build_book` builds, copied over `portfolio` for this test."""
+    return str(stack_template(book_template, portfolio))
 
 
 def _txn(port: str, txn_type: str) -> str:

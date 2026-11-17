@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import CliResult, CliRunner
+from tests.integration.conftest import (
+    CliResult,
+    CliRunner,
+    build_template,
+    stack_template,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -52,8 +57,7 @@ def _stable(run_pt: CliRunner, port: str, on: str, *years: str) -> None:
     assert book() == before, "a rebuild changed the book"
 
 
-@pytest.fixture
-def port(run_pt: CliRunner, portfolio: Path) -> str:
+def _build_port(run_pt: CliRunner, portfolio: Path) -> str:
     port = str(portfolio)
     run_pt("--port", port, "instrument", "add", "XYZ", "--type", "equity")
     run_pt("--port", port, "account", "add", "--name", "IRA", "--type", "tax_deferred",
@@ -61,6 +65,18 @@ def port(run_pt: CliRunner, portfolio: Path) -> str:
     run_pt("--port", port, "cash", "transfer", "--from", "B", "--to", "IRA",
            "--amount", "50000", "--date", "2024-01-02")  # fmt: skip
     return port
+
+
+@pytest.fixture(scope="module")
+def port_template(tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path) -> Path:
+    """`_build_port`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_port, start_from=portfolio_template)
+
+
+@pytest.fixture
+def port(port_template: Path, portfolio: Path) -> str:
+    """What `_build_port` builds, copied over `portfolio` for this test."""
+    return str(stack_template(port_template, portfolio))
 
 
 def test_a_repurchase_after_a_loss_defers_it_into_the_new_basis(

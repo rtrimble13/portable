@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, stack_template
 
 pytestmark = pytest.mark.integration
 
@@ -37,8 +37,7 @@ def _price(run_pt: CliRunner, port: str, symbol: str, price: str, on: str) -> No
     )  # fmt: skip
 
 
-@pytest.fixture
-def book(run_pt: CliRunner, portfolio: Path) -> str:
+def _build_book(run_pt: CliRunner, portfolio: Path) -> str:
     """The reproduction from ADR 0021, priced on 2024-06-28 and around the sale."""
     port = str(portfolio)
     for symbol in ("AAPL", "MSFT"):
@@ -51,6 +50,18 @@ def book(run_pt: CliRunner, portfolio: Path) -> str:
     _price(run_pt, port, "AAPL", "198.00", "2025-03-02")
     _price(run_pt, port, "MSFT", "390.00", "2025-03-04")
     return port
+
+
+@pytest.fixture(scope="module")
+def book_template(tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path) -> Path:
+    """`_build_book`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_book, start_from=portfolio_template)
+
+
+@pytest.fixture
+def book(book_template: Path, portfolio: Path) -> str:
+    """What `_build_book` builds, copied over `portfolio` for this test."""
+    return str(stack_template(book_template, portfolio))
 
 
 @pytest.mark.gips

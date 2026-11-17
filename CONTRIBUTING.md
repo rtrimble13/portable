@@ -96,7 +96,15 @@ make check        # everything CI runs
   the suite. When you implement a requirement, **link the test name into that
   requirement's `Test` line**, so the document doubles as a coverage map.
 - **Integration** — end-to-end through the real CLI against a real `.port` file,
-  asserting on parsed JSON.
+  asserting on parsed JSON. A fixture that builds a portfolio through the CLI
+  builds it **once**, as a template, and each test gets a copy: write its calls
+  as `_build_<name>(run_pt, portfolio)`, then wrap it in a module-scoped
+  `build_template` fixture and a per-test `stack_template` one, as the files in
+  `tests/integration/` do (`copy_template` for a fixture that makes its own
+  file). Rebuilding per test was most of the suite's runtime.
+  `tests/integration/conftest.py` refuses a template that a copy would not
+  reproduce, and `tests/integration/test_templates.py` holds a copy to an
+  in-place build.
 - **Golden files** — so formatting regressions show up in a diff.
 
 **A note on the coverage number.** `portable_pt/commands/*` reports 0%. Those

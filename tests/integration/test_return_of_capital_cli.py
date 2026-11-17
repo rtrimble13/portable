@@ -17,7 +17,12 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import CliResult, CliRunner
+from tests.integration.conftest import (
+    CliResult,
+    CliRunner,
+    build_template,
+    stack_template,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -56,10 +61,21 @@ def _stable(run_pt: CliRunner, port: str, on: str, year: str) -> Book:
     return before
 
 
-@pytest.fixture
-def port(run_pt: CliRunner, portfolio: Path) -> str:
+def _build_port(run_pt: CliRunner, portfolio: Path) -> str:
     run_pt("--port", str(portfolio), "instrument", "add", "XYZ", "--type", "equity")
     return str(portfolio)
+
+
+@pytest.fixture(scope="module")
+def port_template(tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path) -> Path:
+    """`_build_port`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_port, start_from=portfolio_template)
+
+
+@pytest.fixture
+def port(port_template: Path, portfolio: Path) -> str:
+    """What `_build_port` builds, copied over `portfolio` for this test."""
+    return str(stack_template(port_template, portfolio))
 
 
 def test_return_of_capital_reduces_basis_and_so_raises_the_later_gain(

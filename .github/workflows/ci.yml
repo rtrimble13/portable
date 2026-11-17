@@ -94,7 +94,9 @@ jobs:
         # C++, it must fail when the C++ is missing.
         run: python -c "from portable_core import native; assert native.HAVE_NATIVE, 'extension did not build'; print(native.build_info())"
 
-      # -n auto: one pytest-xdist worker per runner core. Coverage goes
+      # -n auto: one pytest-xdist worker per runner core; --dist loadfile
+      # keeps each test file on one worker, so each portfolio template is
+      # built once (tests/integration/conftest.py). Coverage goes
       # through pytest-cov, which measures the workers; `coverage run` would
       # measure only the controller, which runs no tests.
       #
@@ -105,7 +107,7 @@ jobs:
       # second time as a step of its own; a failure in either fails this step.
       - name: pytest with coverage
         if: matrix.coverage
-        run: pytest -n auto --cov --cov-report=
+        run: pytest -n auto --dist loadfile --cov --cov-report=
 
       - name: coverage report
         if: matrix.coverage
@@ -113,7 +115,7 @@ jobs:
 
       - name: pytest
         if: ${{ !matrix.coverage }}
-        run: pytest -n auto
+        run: pytest -n auto --dist loadfile
 
   # ── The pure-Python path must not quietly rot ─────────────────────────────
   # PORTABLE_BUILD_NATIVE=OFF is a supported, complete product, not a degraded

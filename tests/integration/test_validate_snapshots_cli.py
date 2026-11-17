@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, stack_template
 
 pytestmark = pytest.mark.integration
 
@@ -51,8 +51,7 @@ def _snapshots(port: str) -> list[tuple[object, ...]]:
     )
 
 
-@pytest.fixture
-def valued(run_pt: CliRunner, portfolio: Path) -> str:
+def _build_valued(run_pt: CliRunner, portfolio: Path) -> str:
     """Two accounts, one holding, priced and valued over three days."""
     port = str(portfolio)
     run_pt("--port", port, "account", "add", "--name", "IRA", "--type", "tax_deferred",
@@ -67,6 +66,18 @@ def valued(run_pt: CliRunner, portfolio: Path) -> str:
                "--valuation-level", "1")  # fmt: skip
     run_pt("--port", port, "value", "--from", DAYS[0], "--to", DAYS[-1])
     return port
+
+
+@pytest.fixture(scope="module")
+def valued_template(tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path) -> Path:
+    """`_build_valued`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_valued, start_from=portfolio_template)
+
+
+@pytest.fixture
+def valued(valued_template: Path, portfolio: Path) -> str:
+    """What `_build_valued` builds, copied over `portfolio` for this test."""
+    return str(stack_template(valued_template, portfolio))
 
 
 def test_a_valued_portfolio_validates(run_pt: CliRunner, valued: str) -> None:

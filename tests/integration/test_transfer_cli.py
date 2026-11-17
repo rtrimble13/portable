@@ -16,15 +16,13 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, copy_template
 
 pytestmark = [pytest.mark.integration]
 
 
-@pytest.fixture
-def seeded(run_pt: CliRunner, tmp_path: Path) -> Path:
+def _build_seeded(run_pt: CliRunner, path: Path) -> Path:
     """A portfolio with one tax-deferred account and one ETF."""
-    path = tmp_path / "demo.port"
     run_pt("init", str(path), "--name", "Demo", "--inception", "2022-01-01").ok()
     run_pt(
         "--port",
@@ -50,6 +48,18 @@ def seeded(run_pt: CliRunner, tmp_path: Path) -> Path:
         "etf",
     ).ok()
     return path
+
+
+@pytest.fixture(scope="module")
+def seeded_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """`_build_seeded`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_seeded, name="demo.port")
+
+
+@pytest.fixture
+def seeded(seeded_template: Path, tmp_path: Path) -> Path:
+    """What `_build_seeded` builds, copied into this test's directory."""
+    return copy_template(seeded_template, tmp_path / "demo.port")
 
 
 def _lots(path: Path) -> list[dict[str, object]]:

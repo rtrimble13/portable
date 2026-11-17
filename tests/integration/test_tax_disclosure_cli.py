@@ -17,13 +17,12 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, copy_template
 
 pytestmark = [pytest.mark.integration]
 
 
-@pytest.fixture
-def seeded(run_pt: CliRunner, tmp_path: Path) -> Path:
+def _build_seeded(run_pt: CliRunner, path: Path) -> Path:
     """One anchored lot and one with no derivable basis, both sold in 2024.
 
     AAA: 100 shares, custodian basis 6,000, 40 sold at 150 -> proceeds 6,000,
@@ -32,7 +31,6 @@ def seeded(run_pt: CliRunner, tmp_path: Path) -> Path:
     ZZZ: 50 shares seeded at cutover value 5,000 with NO basis, all sold at 120
     -> proceeds 6,000. The 1,000 difference is the change since the cutover.
     """
-    path = tmp_path / "d.port"
 
     def run(*args: str) -> None:
         run_pt("--port", str(path), *args).ok()
@@ -119,6 +117,18 @@ def seeded(run_pt: CliRunner, tmp_path: Path) -> Path:
         "fifo",
     )
     return path
+
+
+@pytest.fixture(scope="module")
+def seeded_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """`_build_seeded`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_seeded, name="d.port")
+
+
+@pytest.fixture
+def seeded(seeded_template: Path, tmp_path: Path) -> Path:
+    """What `_build_seeded` builds, copied into this test's directory."""
+    return copy_template(seeded_template, tmp_path / "d.port")
 
 
 def test_the_unreportable_gain_reaches_no_total(run_pt: CliRunner, seeded: Path) -> None:

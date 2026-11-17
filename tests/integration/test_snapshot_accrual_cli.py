@@ -22,13 +22,12 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import CliRunner
+from tests.integration.conftest import CliRunner, build_template, stack_template
 
 pytestmark = pytest.mark.integration
 
 
-@pytest.fixture
-def holding(run_pt: CliRunner, portfolio: Path) -> str:
+def _build_holding(run_pt: CliRunner, portfolio: Path) -> str:
     """100 XYZ bought on 2024-02-01 with a 5.00 commission, priced through 02-12."""
     port = str(portfolio)
     run_pt("--port", port, "instrument", "add", "XYZ", "--type", "equity")
@@ -39,6 +38,20 @@ def holding(run_pt: CliRunner, portfolio: Path) -> str:
         run_pt("--port", port, "price", "set", "XYZ", "--price", px, "--date", on,
                "--valuation-level", "1")  # fmt: skip
     return port
+
+
+@pytest.fixture(scope="module")
+def holding_template(
+    tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path
+) -> Path:
+    """`_build_holding`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_holding, start_from=portfolio_template)
+
+
+@pytest.fixture
+def holding(holding_template: Path, portfolio: Path) -> str:
+    """What `_build_holding` builds, copied over `portfolio` for this test."""
+    return str(stack_template(holding_template, portfolio))
 
 
 def _dividend(run_pt: CliRunner, port: str, *extra: str) -> None:

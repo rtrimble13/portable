@@ -19,7 +19,12 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import CliResult, CliRunner
+from tests.integration.conftest import (
+    CliResult,
+    CliRunner,
+    build_template,
+    stack_template,
+)
 
 pytestmark = [pytest.mark.integration]
 
@@ -27,8 +32,7 @@ CP1252 = {"PYTHONIOENCODING": "cp1252"}
 UTF8 = {"PYTHONIOENCODING": "utf-8"}
 
 
-@pytest.fixture
-def held(run_pt: CliRunner, portfolio: Path) -> Path:
+def _build_held(run_pt: CliRunner, portfolio: Path) -> Path:
     """One lot of a fund with a sibling share class to convert it into."""
     for symbol in ("FUNDI", "FUNDR"):
         run_pt(
@@ -57,6 +61,18 @@ def held(run_pt: CliRunner, portfolio: Path) -> Path:
         "2024-02-01",
     )
     return portfolio
+
+
+@pytest.fixture(scope="module")
+def held_template(tmp_path_factory: pytest.TempPathFactory, portfolio_template: Path) -> Path:
+    """`_build_held`'s portfolio, built once per module."""
+    return build_template(tmp_path_factory, _build_held, start_from=portfolio_template)
+
+
+@pytest.fixture
+def held(held_template: Path, portfolio: Path) -> Path:
+    """What `_build_held` builds, copied over `portfolio` for this test."""
+    return stack_template(held_template, portfolio)
 
 
 def _convert(

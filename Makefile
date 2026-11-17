@@ -40,10 +40,12 @@ types:  ## mypy (strict on portable_core)
 	$(BIN)/mypy
 
 # -n auto runs one pytest-xdist worker per core: the suite spends nearly all
-# its time starting `pt` in subprocesses, so it scales with cores. To step
-# through one test under pdb, run pytest yourself without -n.
+# its time starting `pt` in subprocesses, so it scales with cores. --dist
+# loadfile keeps each test file on one worker, so a portfolio template
+# (tests/integration/conftest.py) is built once, not once per worker. To
+# step through one test under pdb, run pytest yourself without -n.
 test:  ## Full suite: unit + property + integration + golden, in parallel
-	$(BIN)/pytest -n auto --cov --cov-report=
+	$(BIN)/pytest -n auto --dist loadfile --cov --cov-report=
 	$(BIN)/coverage report
 	@echo
 	@echo "NOTE: the portable_pt/commands/* modules report 0% here and are NOT"
@@ -54,7 +56,7 @@ test-fast:  ## Unit tests only -- the pre-commit subset
 	$(BIN)/pytest -m "unit and not slow" -q -n auto
 
 coverage:  ## Full suite with an HTML coverage report
-	$(BIN)/pytest -n auto --cov --cov-report=
+	$(BIN)/pytest -n auto --dist loadfile --cov --cov-report=
 	$(BIN)/coverage html
 	@echo "open htmlcov/index.html"
 
