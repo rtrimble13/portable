@@ -792,6 +792,28 @@ Two rules specific to this repository:
     is needed, because the schema has allowed `bond` since 0001.
   - `examples/sample.port` is regenerated, and its Treasury note is a `bond`.
 
+- **Nested figures printed as Python structures** (issue 63, part 3). Under
+  its table, `pt tax` printed `basis_provenance`, `bonds` and `wash_sales` as
+  Python dicts and lists. On a terminal, where the colour path renders, it
+  printed `Decimal('15250.68')`. Markdown did the same, and so did an error's
+  context, which is how `pt validate` listed its problems. One renderer,
+  `formatters/nested.py`, now serves the three human formats and errors on
+  stderr. Each structure prints as indented key and value lines
+  (`docs/output-formats.md`).
+  - Keys are sorted at every depth, as `--format json` sorts them. An empty
+    list reads `(none)` and null reads `—`, so a wash-sale check that found
+    nothing no longer looks the same as a missing figure.
+  - A list of dates or symbols runs together, wrapped at a fixed width. On
+    the sample, the 261 stale-price days of `pert twr` take 44 lines rather
+    than one to a line.
+  - **A return inside `data` goes through the return rules**
+    (`PORT-GIPS-B07`, `PORT-GIPS-H04`). `pert twr` printed its `returns` as
+    bare 34-digit fractions, and the guard against annualizing under a year
+    never saw them. They now read `36.68% (TWR, net-of-fees)`.
+  - The colour path escapes Rich markup in values and footnotes, so a
+    bracket in a figure is printed rather than read as a style.
+  - `--format json` and `--format csv` are unchanged.
+
 - **`pt info --as-of` reported today's cash and open positions under a past
   date's label.** It read stored derived state, the defect ADR 0021 fixed in
   every other report. It now reads both as they stood on `--as-of`, and agrees

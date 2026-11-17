@@ -123,3 +123,18 @@ def test_a_bond_is_held_in_the_bond_role(run_pt: CliRunner, bond: str) -> None:
     run_pt("--port", bond, "validate")
     run_pt("--port", bond, "rebuild", "--yes")
     assert role() == "bond"
+
+
+def test_the_tax_table_lists_nested_figures_as_lines(run_pt: CliRunner, bond: str) -> None:
+    """Issue 63: `basis_provenance`, `bonds` and `wash_sales` printed as reprs."""
+    _buy(run_pt, bond, "--accrued-interest", "42.73")
+    run_pt("--port", bond, "sell", BOND, "--qty", "10000", "--price", "102.00",
+           "--date", "2024-08-20", "--settlement", "2024-08-21",
+           "--accrued-interest", "113.18", "-a", "B")  # fmt: skip
+
+    text = run_pt("--port", bond, "tax", "--year", "2024", fmt="table").stdout
+    assert "{'" not in text and "['" not in text
+    lines = text.splitlines()
+    assert lines[lines.index("bonds") + 1] == f"  held          {BOND}"
+    assert "    - bond premium amortization (IRC §171)" in lines
+    assert "  - basis_source  derived" in lines

@@ -20,6 +20,7 @@ from typing import Any, TypeVar
 
 from portable_core.errors import ExitCode, PortableError
 from portable_core.formatters import CommandResult, OutputFormat, render
+from portable_core.formatters.nested import text_lines
 
 __all__ = ["configure_logging", "emit", "run_command"]
 
@@ -116,8 +117,10 @@ def render_error(
     if error.remedy:
         sys.stderr.write(f"  {error.remedy}\n")
     if error.context:
-        for key in sorted(error.context):
-            sys.stderr.write(f"  {key}: {error.context[key]}\n")
+        # Through the formatter, as a command's data is: a list of problems
+        # printed with an f-string reached the reader as a Python repr.
+        for line in text_lines(error.context):
+            sys.stderr.write(f"  {line}\n")
 
 
 def run_command(

@@ -25,7 +25,8 @@ from portable_core.formatters.model import (
     CommandResult,
     OutputFormat,
 )
-from portable_core.formatters.numbers import NULL_TEXT, human, machine
+from portable_core.formatters.nested import markdown_lines, text_lines
+from portable_core.formatters.numbers import human, machine
 
 __all__ = ["render", "supports_color"]
 
@@ -73,7 +74,7 @@ def render(
         case OutputFormat.MARKDOWN:
             text = _render_markdown(result)
         case OutputFormat.TABLE:
-            text = _render_table(result, no_color=supports_color(out, no_color=no_color))
+            text = _render_table(result, color=supports_color(out, no_color=no_color))
 
     out.write(text)
     return text
@@ -121,8 +122,6 @@ def _render_csv(result: CommandResult) -> str:
 
 def _csv_value(value: Any) -> str:
     """A CSV cell. Empty for null -- and empty is never the same as 0."""
-    from portable_core.formatters.numbers import machine
-
     if value is None:
         return ""
     rendered = machine(value)
@@ -156,8 +155,7 @@ def _render_markdown(result: CommandResult) -> str:
         lines.append("")
 
     if result.data:
-        for key in sorted(result.data):
-            lines.append(f"- **{key}**: {result.data[key]}")
+        lines.extend(markdown_lines(result.data))
         lines.append("")
 
     if result.table is not None and result.table.footnotes:
@@ -206,13 +204,15 @@ def _wrap_disclaimer(disclaimer: str) -> list[str]:
 # ── table (the human default) ────────────────────────────────────────────────
 
 
-def _render_table(result: CommandResult, *, no_color: bool) -> str:
+def _render_table(result: CommandResult, *, color: bool) -> str:
     """Rich-rendered when colour is available, plain text otherwise.
 
     The plain path is not a fallback nobody exercises: it is what CI, a pipe,
     and ``NO_COLOR`` all get, so it is the one rendered by default in tests.
+    The colour path is what a person at a terminal sees, so both render
+    ``data`` through the same :func:`text_lines`.
     """
-    if no_color:
+    if color:
         return _render_rich(result)
     return _render_plain(result)
 
@@ -255,14 +255,7 @@ def _render_plain(result: CommandResult) -> str:
             lines.append("")
 
     if result.data:
-        width = max((len(k) for k in result.data), default=0)
-        for key in sorted(result.data):
-            # Through `machine` first: a nested structure printed raw shows
-            # `Decimal('6000.00')` to a human reading a terminal, which is a
-            # repr, not a number. Flat values are unaffected -- the canonical
-            # text and `str()` agree for anything already quantized.
-            value = machine(result.data[key])
-            lines.append(f"{key.ljust(width)}  {NULL_TEXT if value is None else value}")
+        lines.extend(text_lines(result.data))
         lines.append("")
 
     if result.disclaimer:
@@ -275,6 +268,7 @@ def _render_rich(result: CommandResult) -> str:
     """The colour path. Falls back to plain if Rich is unavailable."""
     try:
         from rich.console import Console
+        from rich.markup import escape
         from rich.table import Table as RichTable
     except ImportError:  # pragma: no cover -- rich is a hard dependency
         return _render_plain(result)
@@ -295,12 +289,15 @@ def _render_rich(result: CommandResult) -> str:
             )
         console.print(rich_table)
         for note in result.table.footnotes:
-            console.print(f"[dim]{note}[/dim]")
+            console.print(f"[dim]{escape(note)}[/dim]")
 
     if result.data:
-        for key in sorted(result.data):
-            value = result.data[key]
-            console.print(f"[bold]{key}[/bold]  {NULL_TEXT if value is None else value}")
+        # Escaped: Rich reads `[...]` in a printed string as markup, so a value
+        # holding brackets would lose them, or restyle what follows.
+        for line in text_lines(
+            result.data, key=lambda name: f"[bold]{escape(name)}[/bold]", text=escape
+        ):
+            console.print(line)
 
     if result.disclaimer:
         console.print()
