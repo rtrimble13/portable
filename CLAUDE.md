@@ -399,7 +399,7 @@ test that fails without your change.
   | 0017 | Cutover reconstruction by roll-back, and where each basis came from |
   | 0018 | The minimum broker dataset, and capability-gated import |
   | 0019 | A migration may rebuild a table, and what that costs |
-  | 0020 | Historical price import: requirements and open questions (proposed) |
+  | 0020 | Historical price import: requirements and open questions (accepted in part) |
   | 0021 | Derived state as of a past date: the corrected ledger, replayed and rolled back |
   | 0022 | Amending a shipped migration — only when both texts leave the same file |
   | 0023 | A change of grouping is a ledger row, naming positions by their opening transaction |

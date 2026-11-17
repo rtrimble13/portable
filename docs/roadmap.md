@@ -18,7 +18,8 @@ will have, a GitHub issue; the labels are `area:core`, `area:pt`, `area:pert`,
   `PortableError` hierarchy.
 - Three market data providers, with a price cache carrying full provenance.
 - C++ scaffolding proven end to end, with the pure-Python fallback contract.
-- Both project lint rules, and CI across Linux and Windows.
+- Both project lint rules, and CI: across Linux and Windows at v0.1, on Linux
+  only since [ADR 0042](adr/0042-ci-runs-linux-only.md).
 
 ---
 
@@ -116,11 +117,14 @@ fixtures has been validated against the easy case. Designed in
    only real test of item 4** — the first one always fits.
 
 Then, **historical price import**
-([ADR 0020](adr/0020-historical-price-import.md), proposed): a price on every
-instrument ever held, for every account-day since inception. Nothing below
-computes a return until that history is priced and reconciled, and ADR 0020's
-open questions — whether a fafnir instance exists, what it carries for mutual
-funds and delisted symbols, which benchmark — are the owner's to answer first.
+([ADR 0020](adr/0020-historical-price-import.md), accepted in part): a price on
+every instrument ever held, for every account-day since inception. Nothing below
+computes a return until that history is priced and reconciled. The owner has
+decided the source (fafnir through `duk`, files for the rest, ADR 0032) and,
+for now, the benchmark (cash at 0%, ADR 0030). The warehouse exists, and `duk`
+reaches it from the owner's machine over an SSH tunnel. What it carries for the
+mutual funds and delisted symbols held is answered on the real portfolio, in
+issue 58.
 
 Then:
 
