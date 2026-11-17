@@ -40,6 +40,7 @@ from portable_core.errors.kinds import (
     E_CASH_INSUFFICIENT,
     E_FEE_CLASS_MISSING,
     E_FRACTIONAL_SHARE,
+    E_LOT_SELECTION_INVALID,
     E_WITHHOLDING_INVALID,
 )
 from portable_core.persistence.repositories import Repositories
@@ -143,6 +144,29 @@ class TradingService:
 
     # ── planning ─────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _designation_is_spec(intent: TradeIntent) -> TradeIntent:
+        """A designation is specific identification, and the row records it so.
+
+        Lot selection reads a designation only under spec-ID. So `--lots` on an
+        account whose default is FIFO was stored and then ignored: the sale
+        relieved FIFO, replay agreed, and `pt validate` saw nothing. A batch
+        row already records SPEC beside its lots and refuses another method
+        with them (`import_batch._lots`); a trade typed at the command line now
+        follows the same rule.
+        """
+        if not intent.lot_selection:
+            return intent
+        if intent.relief_method not in (None, ReliefMethod.SPEC):
+            raise ValidationError(
+                "--lots designates the lots consumed, which is specific "
+                f"identification; it cannot be combined with --method {intent.relief_method}",
+                code=E_LOT_SELECTION_INVALID,
+                remedy="Drop --method to relieve the lots named, or drop --lots.",
+                relief_method=str(intent.relief_method),
+            )
+        return replace(intent, relief_method=ReliefMethod.SPEC)
+
     def plan(self, intent: TradeIntent) -> TradePlan:
         """Validate and compute, writing nothing.
 
@@ -151,6 +175,7 @@ class TradingService:
         share the custodian cannot hold, a sale with no matching lot.
         """
         warnings: list[str] = []
+        intent = self._designation_is_spec(intent)
         self._check_account(intent)
         self._check_quantity(intent)
         self._check_fee_class(intent)

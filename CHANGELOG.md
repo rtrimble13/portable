@@ -792,6 +792,20 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **`--lots` was ignored on an account whose default relief is not
+  spec-ID.** Lot selection reads a designation only under specific
+  identification. So `pt sell XYZ --lots 2:50` on a FIFO account stored the
+  designation and then relieved FIFO, and live state and replay agreed, so
+  `pt validate` saw nothing. With lots at 50 and 60 and a sale of 50 at 70,
+  the gain was 1,000.00 where the designation said 500.00. A designation now
+  records `spec` on the row, as a batch row's `lots` always did, and `--lots`
+  with another `--method` is refused (`PT-E-LOT-SELECTION-INVALID`). A row
+  written before this fix still carries no method, so replay still relieves it
+  by the account's default. In an account whose default is not spec-ID, any
+  sale whose `pt trade show` has a `lot_selection` was relieved by the default,
+  unless it was entered with `--method spec`. `pt trade correct` re-enters
+  one with its designation.
+
 - **`pert` accepts its global flags after the subcommand** (issue 63, part 1).
   `pert twr --as-of 2025-06-30` was refused with "No such option", though
   `CLAUDE.md` says every command takes the global flags anywhere, and the
