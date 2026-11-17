@@ -141,8 +141,12 @@ Then:
    prices to `examples/sample_prices.csv`, and stores the snapshots, so
    `pert twr` runs on the committed file. Two of its returns are checked
    against hand arithmetic from the CSV.
-4. **An estimate tier for days that cannot be priced** (issue 60) — an ADR
-   first. A refusal is right for a track record and wrong as the only mode.
+4. **An estimate tier for days that cannot be priced** (issue 60) — proposed
+   in [ADR 0044](adr/0044-estimated-returns-over-unpriced-days.md), awaiting the
+   owner. A carried price, only under `pert twr --estimate MAX_SHARE`, only on
+   days the measured path refuses, marked `ESTIMATED` on every return and never
+   linked into the track record. A judged estimate (`pt price set --estimate`)
+   already counts, as `PORT-GIPS-A09` allows; a carried price is not one.
 5. **Multi-period reporting** (issue 5) — MTD, QTD, YTD, 1/3/5/10-year,
    since-inception, calendar-year table. Sub-one-year returns are never
    annualized — a requirement, not a convention (`PORT-GIPS-B07`).
