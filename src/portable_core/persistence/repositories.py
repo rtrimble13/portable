@@ -316,6 +316,52 @@ class AccountRepository(_Repository):
 
 
 class InstrumentRepository(_Repository):
+    #: Columns `update` will write: description and identifiers. Interpolated
+    #: into SQL, so the set is fixed here, as for accounts. Never the symbol
+    #: (ADR 0034), the type, or anything a valuation reads.
+    _UPDATABLE = frozenset(
+        {
+            "name",
+            "exchange",
+            "cusip",
+            "isin",
+            "figi",
+            "sector",
+            "industry",
+            "asset_class",
+            "country",
+        }
+    )
+
+    def update(self, instrument_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        unknown = sorted(set(fields) - self._UPDATABLE)
+        if unknown:
+            raise ValidationError(
+                f"cannot update instrument column(s): {', '.join(unknown)}",
+                code="PT-E-USAGE",
+                remedy=f"Updatable columns are: {', '.join(sorted(self._UPDATABLE))}.",
+                unknown=unknown,
+            )
+        keys = sorted(fields)
+        assignments = ", ".join(f"{key} = ?" for key in keys)
+        self.con.execute(
+            f"UPDATE instrument SET {assignments}, updated_at = ? "  # noqa: S608 -- keys are allow-listed above
+            "WHERE instrument_id = ?",
+            (*(fields[k] for k in keys), self.clock.stamp(), instrument_id),
+        )
+
+    def holding_identifier(self, column: str, value: str) -> Instrument | None:
+        """The instrument whose *column* (cusip, isin or figi) is *value*, if any."""
+        if column not in {"cusip", "isin", "figi"}:  # pragma: no cover -- fixed callers
+            raise ValueError(column)
+        row = self.con.execute(
+            f"SELECT * FROM instrument WHERE {column} = ? ORDER BY instrument_id LIMIT 1",  # noqa: S608 -- column is one of three literals
+            (value,),
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
     def set_market_price(self, instrument_id: int, has_market_price: bool) -> None:
         """Say whether anything quotes this instrument (ADR 0028)."""
         self.con.execute(
@@ -1114,6 +1160,14 @@ class TransactionRepository(_Repository):
     def get(self, txn_id: int) -> Transaction | None:
         row = self.con.execute(
             'SELECT * FROM "transaction" WHERE txn_id = ?', (txn_id,)
+        ).fetchone()
+        return None if row is None else mappers.to_transaction(row)
+
+    def reversal_of(self, txn_id: int) -> Transaction | None:
+        """The entry that reverses *txn_id*, if one does: the first, by id."""
+        row = self.con.execute(
+            'SELECT * FROM "transaction" WHERE reverses_txn_id = ? ORDER BY txn_id LIMIT 1',
+            (txn_id,),
         ).fetchone()
         return None if row is None else mappers.to_transaction(row)
 

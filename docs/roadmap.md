@@ -18,7 +18,8 @@ will have, a GitHub issue; the labels are `area:core`, `area:pt`, `area:pert`,
   `PortableError` hierarchy.
 - Three market data providers, with a price cache carrying full provenance.
 - C++ scaffolding proven end to end, with the pure-Python fallback contract.
-- Both project lint rules, and CI across Linux and Windows.
+- Both project lint rules, and CI: across Linux and Windows at v0.1, on Linux
+  only since [ADR 0042](adr/0042-ci-runs-linux-only.md).
 
 ---
 
@@ -116,11 +117,14 @@ fixtures has been validated against the easy case. Designed in
    only real test of item 4** — the first one always fits.
 
 Then, **historical price import**
-([ADR 0020](adr/0020-historical-price-import.md), proposed): a price on every
-instrument ever held, for every account-day since inception. Nothing below
-computes a return until that history is priced and reconciled, and ADR 0020's
-open questions — whether a fafnir instance exists, what it carries for mutual
-funds and delisted symbols, which benchmark — are the owner's to answer first.
+([ADR 0020](adr/0020-historical-price-import.md), accepted in part): a price on
+every instrument ever held, for every account-day since inception. Nothing below
+computes a return until that history is priced and reconciled. The owner has
+decided the source (fafnir through `duk`, files for the rest, ADR 0032) and,
+for now, the benchmark (cash at 0%, ADR 0030). The warehouse exists, and `duk`
+reaches it from the owner's machine over an SSH tunnel. What it carries for the
+mutual funds and delisted symbols held is answered on the real portfolio, in
+issue 58.
 
 Then:
 
@@ -141,8 +145,12 @@ Then:
    prices to `examples/sample_prices.csv`, and stores the snapshots, so
    `pert twr` runs on the committed file. Two of its returns are checked
    against hand arithmetic from the CSV.
-4. **An estimate tier for days that cannot be priced** (issue 60) — an ADR
-   first. A refusal is right for a track record and wrong as the only mode.
+4. **An estimate tier for days that cannot be priced** (issue 60) — proposed
+   in [ADR 0044](adr/0044-estimated-returns-over-unpriced-days.md), awaiting the
+   owner. A carried price, only under `pert twr --estimate MAX_SHARE`, only on
+   days the measured path refuses, marked `ESTIMATED` on every return and never
+   linked into the track record. A judged estimate (`pt price set --estimate`)
+   already counts, as `PORT-GIPS-A09` allows; a carried price is not one.
 5. **Multi-period reporting** (issue 5) — MTD, QTD, YTD, 1/3/5/10-year,
    since-inception, calendar-year table. Sub-one-year returns are never
    annualized — a requirement, not a convention (`PORT-GIPS-B07`).

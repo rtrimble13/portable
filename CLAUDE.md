@@ -24,7 +24,7 @@ When in doubt, refuse and explain.
 | `pert` | Performance, attribution, risk-adjusted returns | **partly built** — `pert twr` (ADR 0040); the rest is milestone `v0.2` |
 | `po` | Portfolio optimization (wraps `rtrimble13/po`) | stub — see milestone `v0.3` |
 | `risky` | Risk and scenario analysis | stub — see milestone `v0.4` |
-| `portable` | Commands shared by the family: `portable config show` | stub — see issue #38, milestone `v0.2` |
+| `portable` | Commands shared by the family: `portable config show` | **built** |
 
 **Keep this table current.** If you promote a CLI from stub to built, update it here in
 the same commit.
@@ -399,7 +399,7 @@ test that fails without your change.
   | 0017 | Cutover reconstruction by roll-back, and where each basis came from |
   | 0018 | The minimum broker dataset, and capability-gated import |
   | 0019 | A migration may rebuild a table, and what that costs |
-  | 0020 | Historical price import: requirements and open questions (proposed) |
+  | 0020 | Historical price import: requirements and open questions (accepted in part) |
   | 0021 | Derived state as of a past date: the corrected ledger, replayed and rolled back |
   | 0022 | Amending a shipped migration — only when both texts leave the same file |
   | 0023 | A change of grouping is a ledger row, naming positions by their opening transaction |
@@ -423,6 +423,7 @@ test that fails without your change.
   | 0041 | A bond is held at face, priced by its quote basis, and carries its accrued interest |
   | 0042 | CI runs Linux only, for now |
   | 0043 | The pure-Python CI job skips the integration tests while nothing computes natively |
+  | 0044 | A return over unpriced days is estimated only on request, marked, and never linked into the track record (proposed) |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

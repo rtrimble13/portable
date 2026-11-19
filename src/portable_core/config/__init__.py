@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from portable_core.config.settings import (
     DEFAULTS,
+    FLAG_ONLY,
     Config,
     ConfigValue,
     Source,
@@ -33,6 +34,7 @@ from portable_core.config.settings import (
 
 __all__ = [
     "DEFAULTS",
+    "FLAG_ONLY",
     "Config",
     "ConfigValue",
     "Source",

@@ -16,6 +16,72 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`pt account update` and `pt instrument update`** (issue 38).
+  - **`pt account update`** changes an account's custodian, alias or note.
+    Four other fields are accepted only so that each can be refused with its
+    reason:
+    - the **name**, because it is part of every imported row's identity
+      (ADR 0033), and the next `--incremental` import would append the
+      custodian's rows a second time;
+    - the **default relief method**, because replay relieves every sale
+      recorded without a method by it, so past gains would change;
+    - the **cash treatment** and **fractional shares**, because valuation and
+      replay read them and they have no effective date.
+
+    Issue 38 said only the wiring was missing. The whole allow-list would have
+    shipped three ways to rewrite history.
+  - **`pt instrument update`** corrects the fields `pt instrument sync` lists
+    differences in, and the classification `pt holdings --by` groups on: name,
+    exchange, CUSIP, ISIN, FIGI, sector, industry, asset class and country.
+    Before this there was no way to act on what sync reported. An identifier
+    another instrument already holds is refused, since resolution falls back
+    to identifiers and would become ambiguous. `InstrumentRepository.update`
+    is new: issue 38 assumed it existed.
+  - In both, an empty value clears a field (stored as null), the output names
+    what changed, and nothing in the ledger moves.
+
+- **`pt trade correct`** (issue 38). It reverses a trade and records the one
+  it should have been, both or neither, and `--dry-run` shows both. Each
+  option not given keeps the original's value, and the output lists what
+  changed. Three values are not simply carried over:
+  - **the reference**, which stays with the original;
+  - **the relief method and the lot designation**, which travel together, so
+    restating either drops both;
+  - **the settlement date and a bond's accrued interest**, which are dropped
+    when the date changes.
+
+  The corrected trade is planned after the original drops out of replay, so a
+  corrected sale relieves the lots the wrong one had consumed. Only the four
+  trades can be corrected; anything else is reversed and recorded again by
+  its own command.
+  - **`pt trade reverse` refuses an entry already reversed.** A second
+    reversal did nothing, and read as though it did something.
+  - `pt income reinvest`, listed in issue 38, already exists:
+    `pt income dividend --reinvest-units` and `pt income capital-gain
+    --reinvest-units` record the reinvestment as one row. No second verb is
+    added.
+
+- **`portable config show`** (issue 38). `portable` stops being a stub. It
+  prints each setting a command reads, its value, and where it came from: a
+  flag, a `PORTABLE_*` variable, `./portable.toml`, `~/.portablerc`, or the
+  default. Secrets are redacted. It writes nothing, and it takes the family's
+  global flags in either position.
+  - **It lists only what takes effect.** Eight settings are read from
+    configuration. The other eight keys in `DEFAULTS`, such as `format`,
+    `quiet`, `offline` and `yes`, are taken by every command from its own flags
+    alone, and always were. A value a file or variable gives one of them does
+    nothing, so it is reported as a warning naming where it was set, and not
+    listed. A key no command reads, usually a typo, is reported the same way.
+    Whether those keys should be honoured from a file is left open
+    (`docs/architecture.md` §6).
+  - `action_file` is now declared in `DEFAULTS`. The file provider always read
+    it, but `config show` could not have listed it. A test now holds the
+    declared keys to the `config.get(...)` calls in the source.
+  - `PORTABLE_PORT` is reported as coming from the environment. `pt` reads it
+    through its `--port` flag, so a naive report would have said "flag".
+  - `PORTABLE_BUILD_*` variables are installer options, and are no longer read
+    as configuration.
+
 - **`examples/sample.port` produces a time-weighted return** (issue 59).
   `pert twr` refused the committed sample: it held year-end prices only, and
   no snapshots. The generator now prices every instrument it holds at each
@@ -770,6 +836,20 @@ Two rules specific to this repository:
   `duk` with `th`, `ca` and `tc` (fafnir's release after 3.0.5).
 
 ### Fixed
+
+- **`--lots` was ignored on an account whose default relief is not
+  spec-ID.** Lot selection reads a designation only under specific
+  identification. So `pt sell XYZ --lots 2:50` on a FIFO account stored the
+  designation and then relieved FIFO, and live state and replay agreed, so
+  `pt validate` saw nothing. With lots at 50 and 60 and a sale of 50 at 70,
+  the gain was 1,000.00 where the designation said 500.00. A designation now
+  records `spec` on the row, as a batch row's `lots` always did, and `--lots`
+  with another `--method` is refused (`PT-E-LOT-SELECTION-INVALID`). A row
+  written before this fix still carries no method, so replay still relieves it
+  by the account's default. In an account whose default is not spec-ID, any
+  sale whose `pt trade show` has a `lot_selection` was relieved by the default,
+  unless it was entered with `--method spec`. `pt trade correct` re-enters
+  one with its designation.
 
 - **`pert` accepts its global flags after the subcommand** (issue 63, part 1).
   `pert twr --as-of 2025-06-30` was refused with "No such option", though

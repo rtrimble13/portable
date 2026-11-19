@@ -180,3 +180,42 @@ def test_pt_migrate_puts_a_drifted_sale_to_the_owner(run_pt: CliRunner, tmp_path
         "--reason", "second thoughts",
         expect=4,
     )  # fmt: skip
+
+
+def _two_lots(run_pt: CliRunner, portfolio: Path) -> tuple[str, int]:
+    """XYZ bought at 50 and at 60 in account B, whose default relief is FIFO."""
+    port = str(portfolio)
+    run_pt("--port", port, "instrument", "add", "XYZ", "--type", "equity")
+    for price, day in (("50", "2024-02-01"), ("60", "2024-03-01")):
+        run_pt("--port", port, "buy", "XYZ", "-a", "B", "--qty", "100", "--price", price,
+               "--date", day)  # fmt: skip
+    lots = run_pt("--port", port, "lot", "list", "XYZ").data["rows"]
+    return port, next(lot["lot_id"] for lot in lots if D(lot["basis"]) == D("6000.00"))
+
+
+def test_a_designation_on_a_fifo_account_relieves_the_lots_it_names(
+    run_pt: CliRunner, portfolio: Path
+) -> None:
+    """`--lots` was stored and ignored where the default is FIFO: 1,000.00, not 500.00.
+
+    Lot selection reads a designation only under spec-ID. Live and replay
+    agreed, so `pt validate` could not see it.
+    """
+    port, at_60 = _two_lots(run_pt, portfolio)
+    sold = run_pt("--port", port, "sell", "XYZ", "-a", "B", "--qty", "50", "--price", "70",
+                  "--date", "2024-04-01", "--lots", f"{at_60}:50").data  # fmt: skip
+    assert sold["relief_method"] == "spec"
+    assert D(run_pt("--port", port, "tax", "--year", "2024").data["total_gain"]) == D("500.00")
+    run_pt("--port", port, "rebuild", "--yes")
+    assert D(run_pt("--port", port, "tax", "--year", "2024").data["total_gain"]) == D("500.00")
+    run_pt("--port", port, "validate")
+
+
+def test_a_designation_with_another_method_is_refused(
+    run_pt: CliRunner, portfolio: Path
+) -> None:
+    port, at_60 = _two_lots(run_pt, portfolio)
+    error = run_pt("--port", port, "sell", "XYZ", "-a", "B", "--qty", "50", "--price", "70",
+                   "--date", "2024-04-01", "--lots", f"{at_60}:50", "--method", "fifo",
+                   expect=4).json()["error"]  # fmt: skip
+    assert error["code"] == "PT-E-LOT-SELECTION-INVALID"

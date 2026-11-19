@@ -11,7 +11,6 @@ import typer
 from portable_core.domain.enums import (
     FeeClass,
     ReliefMethod,
-    TransactionSource,
     TransactionType,
 )
 from portable_core.domain.models import Instrument, Transaction
@@ -22,7 +21,14 @@ from portable_core.providers import as_daily_range_provider
 from portable_core.services import trade_check
 from portable_core.services.regrouping import Regroup, record_regroup
 from portable_core.services.replay import ReplayEngine, state_on
-from portable_core.services.trading import TradeIntent, TradePlan, TradingService
+from portable_core.services.trading import (
+    TradeIntent,
+    TradePlan,
+    TradingService,
+    corrected_intent,
+    require_correctable,
+    reversal_of,
+)
 from portable_pt import state
 from portable_pt.commands._shared import (
     RefOpt,
@@ -429,43 +435,10 @@ def reverse(
     def action() -> CommandResult:
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
-        original = repos.transactions.get(txn_id)
-        if original is None:
-            raise ValidationError(
-                f"no transaction {txn_id}",
-                remedy="`pt trade list` shows the ledger.",
-                txn_id=txn_id,
-            )
-        if original.txn_type is TransactionType.REVERSAL:
-            raise ValidationError(
-                f"transaction {txn_id} is itself a reversal",
-                remedy=(
-                    "Reversing a reversal would re-apply the original. Record the "
-                    "intended entry directly instead."
-                ),
-                txn_id=txn_id,
-            )
-
         reversal_date = resolve_date(on, ctx)
-        reversal = Transaction(
-            txn_id=0,
-            account_id=original.account_id,
-            trade_date=reversal_date,
-            seq=repos.transactions.next_seq(reversal_date),
-            txn_type=TransactionType.REVERSAL,
-            net_cash_effect=-original.net_cash_effect,
-            instrument_id=original.instrument_id,
-            quantity=original.quantity,
-            price=original.price,
-            gross_amount=(
-                -original.gross_amount if original.gross_amount is not None else None
-            ),
-            reverses_txn_id=txn_id,
-            note=note or f"reverses txn {txn_id}",
-            external_ref=ref,
-            source=TransactionSource.DERIVED,
-            created_at=repos.clock.stamp(),
-        )
+        reversal = reversal_of(repos, txn_id, on=reversal_date, note=note, external_ref=ref)
+        original = repos.transactions.get(txn_id)
+        assert original is not None  # reversal_of refuses a missing entry
 
         payload = {
             "reverses_txn_id": txn_id,
@@ -692,6 +665,162 @@ def show(txn_id: Annotated[int, typer.Argument()]) -> None:
                 "created_at": txn.created_at,
             },
             portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
+@app.command()
+def correct(
+    txn_id: Annotated[int, typer.Argument(help="The trade to correct.")],
+    account: Annotated[
+        str | None, typer.Option("--account", "-a", help="Default: the original's.")
+    ] = None,
+    qty: Annotated[str | None, typer.Option("--qty", help="Default: the original's.")] = None,
+    price: Annotated[
+        str | None, typer.Option("--price", help="Default: the original's.")
+    ] = None,
+    date_text: Annotated[
+        str | None, typer.Option("--date", "-d", help="Trade date. Default: the original's.")
+    ] = None,
+    fees: Annotated[str | None, typer.Option("--fees", help="Default: the original's.")] = None,
+    commission: Annotated[
+        str | None, typer.Option("--commission", help="Default: the original's.")
+    ] = None,
+    fee_class: FeeClassOpt = None,
+    method: MethodOpt = None,
+    lots: LotsOpt = None,
+    settlement: Annotated[
+        str | None,
+        typer.Option("--settlement", help="Default: the original's, if the date is unchanged."),
+    ] = None,
+    accrued_interest: Annotated[
+        str | None,
+        typer.Option(
+            "--accrued-interest",
+            help="A bond trade. Default: the original's, if the date is unchanged.",
+        ),
+    ] = None,
+    note: Annotated[
+        str | None, typer.Option("--note", help="The corrected entry's note.")
+    ] = None,
+    reason: Annotated[
+        str | None,
+        typer.Option("--reason", help="Why the original was wrong. Recorded on the reversal."),
+    ] = None,
+    ref: RefOpt = None,
+) -> None:
+    """Correct a trade: reverse it and record what it should have been, in one step.
+
+    Equivalent to `pt trade reverse` followed by the trade again, but atomic:
+    both entries land or neither does, and `--dry-run` shows both. The
+    original stays in the ledger, reversed, and nothing is edited (CLAUDE.md
+    invariant 2).
+
+    Each option not given keeps the original's value, except three. The
+    reference is never reused, because the original keeps its own. The relief
+    method and lot designation travel together, so restating either drops
+    both. The settlement date and a bond's accrued interest are dropped when
+    the date changes. A designation that no longer fits the corrected quantity
+    is refused, as it is on any sale. The account and the instrument default
+    to the original's; the transaction type cannot change.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        reversal = reversal_of(
+            repos,
+            txn_id,
+            on=ctx.as_of,
+            note=reason or f"reverses txn {txn_id}, corrected by the entry after it",
+        )
+        original = repos.transactions.get(txn_id)
+        assert original is not None  # reversal_of refuses a missing entry
+        require_correctable(original)
+        assert original.instrument_id is not None  # a trade names its instrument
+        instrument = repos.instruments.get(original.instrument_id)
+        original_account = repos.accounts.get(original.account_id)
+        found_account = repos.accounts.resolve(account) if account else original_account
+        assert instrument is not None and found_account is not None  # foreign keys
+        assert original_account is not None
+        intent = corrected_intent(
+            original,
+            account=found_account,
+            instrument=instrument,
+            quantity=money_arg(qty, what="--qty") if qty is not None else None,
+            price=money_arg(price, what="--price") if price is not None else None,
+            trade_date=resolve_date(date_text, ctx) if date_text else None,
+            fees=money_arg(fees, what="--fees") if fees is not None else None,
+            commissions=(
+                money_arg(commission, what="--commission") if commission is not None else None
+            ),
+            fee_class=FeeClass(fee_class) if fee_class else None,
+            relief_method=ReliefMethod(method) if method else None,
+            lot_selection=lots,
+            settlement_date=(
+                resolve_date(settlement, ctx, what="--settlement") if settlement else None
+            ),
+            accrued_interest=(
+                money_arg(accrued_interest, what="--accrued-interest")
+                if accrued_interest is not None
+                else None
+            ),
+            note=note,
+            external_ref=ref,
+        )
+
+        with ctx.write():
+            reversal_id = repos.transactions.append(reversal)
+            # The original drops out of replay, so the corrected trade is
+            # planned against the book as it stands without it: a corrected
+            # sale relieves the lots the wrong one had consumed.
+            ReplayEngine(repos).rebuild()
+            service = TradingService(repos)
+            plan = service.plan(intent)
+            committed = service.commit(plan)
+
+        from dataclasses import replace
+
+        result = _plan_result(intent.txn_type, instrument.symbol, plan, ctx.portfolio_name())
+        changed = {
+            field: {"was": was, "now": now}
+            for field, was, now in (
+                ("account", original_account.name, found_account.name),
+                ("quantity", abs(original.quantity or 0), plan.intent.quantity),
+                ("price", original.price, plan.intent.price),
+                (
+                    "trade_date",
+                    original.trade_date.isoformat(),
+                    plan.intent.trade_date.isoformat(),
+                ),
+                ("fees", original.fees, plan.intent.fees),
+                ("commissions", original.commissions, plan.intent.commissions),
+                (
+                    "net_cash_effect",
+                    original.net_cash_effect,
+                    committed.transaction.net_cash_effect,
+                ),
+            )
+            if was != now
+        }
+        return replace(
+            result,
+            command="trade correct",
+            data={
+                **result.data,
+                "txn_id": committed.transaction.txn_id,
+                "corrects_txn_id": txn_id,
+                "reversal_txn_id": reversal_id,
+                "changed": changed,
+            },
+            warnings=(
+                *result.warnings,
+                *committed.notices,
+                f"Transaction {txn_id} is reversed by {reversal_id} and replaced by "
+                f"{committed.transaction.txn_id}. Derived state was rebuilt from the ledger, "
+                "so figures that depend on lot relief may have changed.",
+            ),
         )
 
     dispatch(action)

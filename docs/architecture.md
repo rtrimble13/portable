@@ -212,11 +212,23 @@ Layered, highest precedence first:
 
 `portable config show --format json` prints the effective configuration **and
 where each value came from**. Secrets are never read from a config file when an
-environment variable is available, and are never logged.
+environment variable is available, are never logged, and are redacted in the
+output.
 
-*Not built yet.* `Config.to_rows()` computes all of it, secrets redacted, but
-nothing calls it: `portable` is a stub that says so and exits 1 until issue #38
-adds the command.
+**It lists only what takes effect.** A command reads eight settings from
+configuration: `port`, `source`, `price_file`, `action_file`, `benchmark_file`,
+`fafnir_dsn`, `duk_path` and `staleness_tolerance_days`. The other keys in
+`DEFAULTS` (`format`, `no_color`, `quiet`, `verbose`, `offline`, `dry_run`,
+`yes`, `reconcile_tolerance`) are set per command by their flags alone
+(`FLAG_ONLY` in `config/settings.py`). A value a file or a `PORTABLE_*` variable
+gives one of them does nothing, so `config show` reports it as a warning rather
+than a row. A key no command knows, usually a typo, is reported the same way.
+Whether any flag-only key should be honoured from a file is open: `yes` would then
+confirm every write unasked. A unit test holds the eight to the
+`config.get(...)` calls in the source, so the list cannot drift.
+
+`PORTABLE_BUILD_*` variables are build options for the installer, and are not
+read as configuration at all.
 
 **What is deliberately *not* configuration:** the large-cash-flow and materiality
 thresholds. Those are effective-dated rows in the `.port` file (`return_policy`),

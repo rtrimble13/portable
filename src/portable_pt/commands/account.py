@@ -12,6 +12,7 @@ from portable_core.domain.models import Account, TaxRateSchedule
 from portable_core.errors import ValidationError
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.services import restatement
+from portable_core.services.reference_data import refuse_account_change, update_account
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, resolve_date
 
@@ -225,6 +226,64 @@ def show(account: Annotated[str, typer.Argument(help="Account name or id.")]) ->
                 "note": found.note,
             },
             as_of=ctx.as_of,
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
+#: Help for the `account update` options that are accepted in order to refuse.
+_REFUSED = "Refused, with the reason: it would rewrite history."
+
+
+@app.command()
+def update(
+    account: Annotated[str, typer.Argument(help="Account name or id.")],
+    custodian: Annotated[str | None, typer.Option("--custodian")] = None,
+    alias: Annotated[
+        str | None,
+        typer.Option("--alias", help="An account number ALIAS, never the real number."),
+    ] = None,
+    note: Annotated[str | None, typer.Option("--note")] = None,
+    name: Annotated[str | None, typer.Option("--name", help=_REFUSED)] = None,
+    relief_method: Annotated[str | None, typer.Option("--relief-method", help=_REFUSED)] = None,
+    cash_treatment: Annotated[
+        str | None, typer.Option("--cash-treatment", help=_REFUSED)
+    ] = None,
+    allows_fractional: Annotated[
+        bool | None,
+        typer.Option("--allows-fractional/--no-allows-fractional", help=_REFUSED),
+    ] = None,
+) -> None:
+    """Change an account's custodian, alias or note. An empty value clears one.
+
+    Its name, default relief method, cash treatment and fractional-share rule
+    are refused, each with its reason. The name is part of every imported
+    row's identity (ADR 0033), and the other three are read by replay or
+    valuation with no effective date, so a change would restate what was
+    already reported.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        found = repos.accounts.resolve(account)
+        for field, asked, current in (
+            ("name", name, found.name),
+            ("default_relief_method", relief_method, str(found.default_relief_method)),
+            ("cash_treatment", cash_treatment, str(found.cash_treatment)),
+            ("allows_fractional", allows_fractional, found.allows_fractional),
+        ):
+            if asked is not None and asked != current:
+                refuse_account_change(found, field)
+        with ctx.write():
+            changed = update_account(
+                repos, found, {"custodian": custodian, "account_alias": alias, "note": note}
+            )
+        return CommandResult(
+            command="account update",
+            data={"account": found.name, "changed": changed},
+            warnings=() if changed else ("every value given is the one already recorded",),
             portfolio=ctx.portfolio_name(),
         )
 

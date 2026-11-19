@@ -30,6 +30,7 @@ import typer
 from typer.main import get_command
 from typer.testing import CliRunner
 
+import portable_core.cli.portable_cmd
 import portable_pert
 import portable_pert.app
 import portable_pert.argv
@@ -45,6 +46,11 @@ SAMPLE = ROOT / "examples" / "sample.port"
 CLIS = {
     "pt": (portable_pt.app.app, portable_pt.argv, ["info"]),
     "pert": (portable_pert.app.app, portable_pert.argv, ["twr", "--from", "2021-01-04"]),
+    "portable": (
+        portable_core.cli.portable_cmd.app,
+        portable_core.cli.portable_cmd,
+        ["config", "show"],
+    ),
 }
 
 #: A value each value-taking global flag accepts on the sample.
@@ -164,5 +170,15 @@ def test_pert_accepts_as_of_after_the_subcommand(tmp_path: Path) -> None:
                         "--as-of", "2025-06-30", "--format", "json")  # fmt: skip
     before = _run_module(portable_pert, tmp_path, "--port", str(sample), "--as-of",
                          "2025-06-30", "--format", "json", "twr")  # fmt: skip
+    assert after.returncode == 0, after.stderr
+    assert _comparable(after.stdout) == _comparable(before.stdout)
+
+
+def test_portable_accepts_format_after_the_subcommand(tmp_path: Path) -> None:
+    """`portable config show --format json`, run as a person runs it."""
+    after = _run_module(portable_core.cli.portable_cmd, tmp_path, "config", "show",
+                        "--format", "json", "--as-of", "2026-01-02")  # fmt: skip
+    before = _run_module(portable_core.cli.portable_cmd, tmp_path, "--format", "json",
+                         "--as-of", "2026-01-02", "config", "show")  # fmt: skip
     assert after.returncode == 0, after.stderr
     assert _comparable(after.stdout) == _comparable(before.stdout)

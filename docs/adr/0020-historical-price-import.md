@@ -1,8 +1,19 @@
 # ADR 0020 — Historical price import: requirements and open questions
 
-- **Status:** Proposed — this records requirements and open questions, not yet
-  a committed design. Several sub-decisions are explicitly left to the owner
-  (see "Open questions").
+- **Status:** Accepted in part. The owner decided four of its requirements,
+  and each is built:
+  - R1: fafnir through `duk`, with files for the rest (ADR 0029, ADR 0032);
+  - R7: the no-market-price flag (ADR 0028);
+  - R8, for now: cash at 0% (ADR 0030);
+  - R10: prices accepted against the statements (ADR 0031).
+
+  Still open:
+  - R3's conversion step;
+  - R8's real benchmark series;
+  - open question 2, what `duk` returns for the mutual funds and delisted
+    symbols held, which `pt instrument sync -S fafnir` answers on the real
+    portfolio (issue 58);
+  - open question 5, the 2022-05-18 floor.
 - **Date:** 2026-10-15
 - **Milestone:** v0.2 — blocks the daily time-weighted return engine and every
   risk measure after it (`docs/roadmap.md`, the "Then:" list items 1 and 10)

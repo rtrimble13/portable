@@ -50,22 +50,3 @@ def test_every_declared_console_script_resolves_to_a_callable(name: str) -> None
         target = getattr(target, part)
 
     assert callable(target), f"{name} = {entry.value!r} is not callable"
-
-
-def test_portable_is_an_honest_stub(capsys: pytest.CaptureFixture[str]) -> None:
-    """CLAUDE.md invariant 10: it says it is not built, links its issue, and fails.
-
-    Nothing goes to stdout (invariant 8): there is no result, so a consumer
-    reading stdout must see none rather than help text it might parse.
-    """
-    # Imported here, not at the top: if the module were missing, the test above
-    # must still run and say which script is broken, not fail collection.
-    from portable_core.cli import portable_cmd
-
-    assert portable_cmd.main() == 1
-
-    out, err = capsys.readouterr()
-    assert out == ""
-    assert "NOT YET IMPLEMENTED" in err
-    assert portable_cmd.ISSUE_URL in err
-    assert "portable config show" in err
