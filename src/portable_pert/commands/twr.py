@@ -13,22 +13,52 @@ from typing import Annotated, Any
 import typer
 
 from portable_core.disclaimer import GIPS_DISCLAIMER
-from portable_core.domain.returns import BASES, Basis, ReturnMethod, TimeWeightedReturn
+from portable_core.domain.returns import (
+    BASES,
+    Basis,
+    Disclosures,
+    ReturnMethod,
+    TimeWeightedReturn,
+)
 from portable_core.formatters import Column, ColumnKind, CommandResult, ReturnValue, Table
 from portable_core.services.returns import time_weighted_return
 from portable_pert import state
 
-__all__ = ["twr"]
+__all__ = ["BASES_NOTE", "BASIS_LABELS", "FLOW_TIMING", "disclosure_data", "twr"]
 
 #: ADR 0040 §3, answer 1. Recorded on every result as the method.
 FLOW_TIMING = "inflows at the start of the day, outflows at the end"
 
-_LABELS = {
+#: How each basis is named in a table, beside its value (PORT-GIPS-H04).
+BASIS_LABELS = {
     Basis.NET_OF_FEES: "Net-of-fees",
     Basis.NET_OF_EXTERNAL_COSTS_ONLY: "Net-of-external-costs-only",
     Basis.GROSS_OF_FEES: "Gross-of-fees",
     Basis.NET_OF_ALL_COSTS: "Net of all costs (supplemental)",
 }
+
+
+#: What each basis deducts (PORT-GIPS-D01, ADR 0040 §8), said beside every return.
+BASES_NOTE = (
+    "Transaction costs and fund expenses inside NAV are deducted at every basis; "
+    "net-of-fees deducts custody and other internal management costs; "
+    "gross-of-fees adds back external management fees too. Other administrative "
+    "costs reduce only the supplemental net-of-all-costs figure."
+)
+
+
+def disclosure_data(disclosures: Disclosures) -> dict[str, Any]:
+    """What a return's report must say beside it (ADR 0040 §10), for JSON."""
+    return {
+        "large_flow_days": [d.isoformat() for d in disclosures.large_flow_days],
+        "estimated_days": [d.isoformat() for d in disclosures.estimated_days],
+        "stale_price_days": [d.isoformat() for d in disclosures.stale_price_days],
+        "level5_value": disclosures.level5_value,
+        "level5_share": disclosures.level5_share,
+        "unpriced_holdings": list(disclosures.unpriced_holdings),
+        "margin_interest_deducted_at_every_basis": disclosures.margin_interest,
+        "reclaimable_withholding_not_accrued": disclosures.reclaimable_withholding,
+    }
 
 
 def twr(
@@ -83,7 +113,7 @@ def _value(result: TimeWeightedReturn, basis: Basis) -> ReturnValue:
         period_start=result.start - timedelta(days=1),
         period_end=result.end,
         is_supplemental=basis is Basis.NET_OF_ALL_COSTS,
-        label=_LABELS[basis],
+        label=BASIS_LABELS[basis],
     )
 
 
@@ -98,7 +128,7 @@ def _render(result: TimeWeightedReturn, *, daily: bool, portfolio: str | None) -
             "basis": (
                 "Gross-of-fees = net-of-external-costs-only"
                 if combined and basis is Basis.GROSS_OF_FEES
-                else _LABELS[basis]
+                else BASIS_LABELS[basis]
             ),
             "return": _value(result, basis),
         }
@@ -131,17 +161,7 @@ def _render(result: TimeWeightedReturn, *, daily: bool, portfolio: str | None) -
         # ADR 0044 §2. Nothing is estimated until `--estimate` exists, and the
         # field is there from the first `twr-2.0` so a consumer reads it.
         "estimate": None,
-        "disclosures": {
-            "large_flow_days": [d.isoformat() for d in disclosures.large_flow_days],
-            "estimated_days": [d.isoformat() for d in disclosures.estimated_days],
-            "stale_price_days": [d.isoformat() for d in disclosures.stale_price_days],
-            "level5_value": disclosures.level5_value,
-            "level5_share": disclosures.level5_share,
-            "unpriced_holdings": list(disclosures.unpriced_holdings),
-            "margin_interest_deducted_at_every_basis": disclosures.margin_interest,
-            "reclaimable_withholding_not_accrued": disclosures.reclaimable_withholding,
-            "notes": list(notes),
-        },
+        "disclosures": {**disclosure_data(disclosures), "notes": list(notes)},
     }
     if daily:
         data["series"] = [
@@ -236,12 +256,7 @@ def _notes(result: TimeWeightedReturn) -> tuple[str, ...]:
             "Valued daily, so every cash flow fell on a valuation date and the "
             f"large-flow threshold did not bind ({large} day(s) with a large flow)."
         )
-    notes.append(
-        "Transaction costs and fund expenses inside NAV are deducted at every basis; "
-        "net-of-fees deducts custody and other internal management costs; "
-        "gross-of-fees adds back external management fees too. Other administrative "
-        "costs reduce only the supplemental net-of-all-costs figure."
-    )
+    notes.append(BASES_NOTE)
     if disclosures.margin_interest:
         notes.append("Margin interest is a financing cost, deducted at every basis.")
     if disclosures.unpriced_holdings:

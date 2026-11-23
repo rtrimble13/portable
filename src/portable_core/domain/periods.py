@@ -24,19 +24,26 @@ Two rules, each easy to get wrong in a way no test of an ordinary date catches:
 from __future__ import annotations
 
 import calendar
+import enum
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 from portable_core.domain.dates import month_end
 
 __all__ = [
     "FiscalYearEnd",
+    "PeriodKind",
+    "TrackRecord",
+    "Window",
     "Years",
     "at_least_a_year",
+    "last_month_end_before",
     "shift_years",
     "years",
 ]
+
+_DAY = timedelta(days=1)
 
 #: A common year: its February ends on the 28th, which is how a fiscal year
 #: ending in February is written (`02-28`, the last day in every year).
@@ -148,3 +155,70 @@ class FiscalYearEnd:
     def in_year(self, year: int) -> date:
         """The day the fiscal year ending in *year* ends."""
         return month_end(date(year, self.month, 1))
+
+    def last_end_before(self, day: date) -> date:
+        """The last fiscal year end strictly before *day*."""
+        end = self.in_year(day.year)
+        return end if end < day else self.in_year(day.year - 1)
+
+    def quarter_months(self) -> frozenset[int]:
+        """The four months a fiscal quarter ends in: the year end's, and every third back."""
+        return frozenset((self.month - 1 - 3 * step) % 12 + 1 for step in range(4))
+
+    def last_quarter_end_before(self, day: date) -> date:
+        """The last fiscal quarter end strictly before *day*."""
+        months = self.quarter_months()
+        end = last_month_end_before(day)
+        while end.month not in months:
+            end = last_month_end_before(end)
+        return end
+
+
+def last_month_end_before(day: date) -> date:
+    """The last month end strictly before *day*: when *day* is one, the month's before."""
+    return day.replace(day=1) - _DAY
+
+
+class PeriodKind(enum.StrEnum):
+    """What a row of a period table measures. ADR 0045 §2."""
+
+    MONTH_TO_DATE = "month_to_date"
+    QUARTER_TO_DATE = "quarter_to_date"
+    YEAR_TO_DATE = "year_to_date"
+    #: A fixed number of years to the table's end. Never shortened.
+    TRAILING = "trailing"
+    SINCE_INCEPTION = "since_inception"
+    FISCAL_YEAR = "fiscal_year"
+
+
+@dataclass(frozen=True, slots=True)
+class Window:
+    """A row's period as asked for: from the end of *after* to the end of *through*.
+
+    What is measured can be shorter. A row is clipped to the track record it
+    belongs to, and labelled partial when it is (``PORT-GIPS-H02``).
+    """
+
+    kind: PeriodKind
+    label: str
+    after: date
+    through: date
+    #: The years of a trailing row; None for every other kind.
+    years: int | None = None
+
+    @property
+    def first(self) -> date:
+        """The first day the window covers."""
+        return self.after + _DAY
+
+
+@dataclass(frozen=True, slots=True)
+class TrackRecord:
+    """From the first day something was held to the last, before nothing was. ADR 0045 §4.
+
+    ``PORT-GIPS-H06``: one record is never linked to the next. *termination*
+    is None while the record runs to the end of what was read.
+    """
+
+    inception: date
+    termination: date | None

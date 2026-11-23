@@ -1,13 +1,14 @@
 # ADR 0045 — Multi-period returns: one walk, rows that stand alone, and a record that breaks where nothing was held
 
-- **Status:** Accepted (owner, 2026-11-23), with the recommended answers to all five questions. Implemented so far:
+- **Status:** Accepted (owner, 2026-11-23), with the recommended answers to all five questions. Implemented in full:
   - §1, `walk` and `window` in `portable_core/services/returns.py`, held to `pert twr` by `tests/integration/test_twr_windows.py`;
   - §4, the break, in the same module, tested by `tests/integration/test_track_record_breaks.py`;
   - §7's `twr-2.0`, published;
   - §5, in `portable_core/domain/periods.py` (the anniversary, the year count) and `services/periods.py` (`annualize`), with the formatter's guard reading the same rule;
-  - §2's fiscal year end, `FiscalYearEnd`, refused by `pt init` unless it is a month end.
+  - §2's fiscal year end, `FiscalYearEnd`, refused by `pt init` unless it is a month end;
+  - §2, §3, §6, §8: `pert periods`, in `services/periods.py` and `portable_pert/commands/periods.py`, with `schemas/periods-1.0.json` and golden files in `tests/golden/periods/`.
 
-  The periods themselves (§2's table, §3, §6, §8), `pert periods`, and `pert`'s own check of a stored fiscal year end are not yet. Accepted with [ADR 0044](0044-estimated-returns-over-unpriced-days.md), so the two share `twr-2.0` (§7)
+  The as-built decisions are under §9. Accepted with [ADR 0044](0044-estimated-returns-over-unpriced-days.md), so the two share `twr-2.0` (§7)
 - **Date:** 2026-11-23; accepted 2026-11-23
 - **Milestone:** v0.2, issue 5 (P1)
 - **Governs:** `PORT-GIPS-A04`, `B04`, `B07`, `H01`, `H02`, `H03`, `H04`, `H06`; `CLAUDE.md` "Do not annualize sub-one-year returns", invariants 6, 9, 10
@@ -300,6 +301,32 @@ rows as they were, because the termination date does not move.
   and the records, and annualises.
 - `formatters/numbers.py`: the guard reads `domain/periods.py`.
 - `portable_pert/commands/periods.py`: thin.
+
+**As built.** Decided while building, within the decisions above:
+
+- **A fixed-length row has its own refusal,** `PT-E-PERIOD-OUTSIDE-RECORD`.
+  `pert twr` over the same dates moves a start before inception, so this is
+  the one refusal a row does not share with it.
+- **The rows to date are clipped to the current record,** like since
+  inception. A year to date spanning a break starts at the restart,
+  labelled `restart`, rather than being refused across it. A row wholly
+  after a record ended is measured as asked, and refused as holding nothing.
+- **A track record is never read from an unreliable day.** A piece that
+  reads a missing or stale snapshot never holds nothing. Its zero may be a
+  missing value, and a false break would clip every row to a record that
+  never began. A window over it was already refused for the snapshot.
+- **A row's partial reasons are derived from what it measured** against its
+  window: a later start is `inception` (first record) or `restart`, and an
+  earlier end is `termination`. Since inception after a restart is not
+  partial: its window starts with the record.
+- **The human formats carry the table and its footnotes, not `data`**
+  (`CommandResult.human_data`). Each null or partial row is numbered and
+  explained, a break is a row of its own, and holdings valued at zero,
+  margin interest and estimated price days are footnoted across the table.
+- **A return in CSV is its value,** with ` SUPPLEMENTAL` or ` ESTIMATED` in
+  the cell when it is either. Building this found that `pert twr`'s CSV
+  wrote Python reprs, now fixed. JSON and CSV also check the sub-year
+  guard, which they skipped.
 
 ## Test obligations
 

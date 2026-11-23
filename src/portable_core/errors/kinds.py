@@ -163,6 +163,9 @@ E_RETURN_TOTAL_LOSS: Final = "PT-E-RETURN-TOTAL-LOSS"
 #: ADR 0045 §2, PORT-GIPS-A04. A fiscal year end that is not the last day of
 #: a month.
 E_FISCAL_YEAR_END: Final = "PT-E-FISCAL-YEAR-END"
+#: ADR 0045 §2. A fixed-length period the track record does not cover all of:
+#: its figure over fewer days would be a different number under its label.
+E_PERIOD_OUTSIDE_RECORD: Final = "PT-E-PERIOD-OUTSIDE-RECORD"
 #: An effective-dated config row that would change a figure already recorded,
 #: offered without `--restate` (ADR 0025).
 E_RESTATES_HISTORY: Final = "PT-E-RESTATES-HISTORY"
@@ -249,6 +252,7 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_RETURN_NOTHING_HELD,
     E_RETURN_TOTAL_LOSS,
     E_FISCAL_YEAR_END,
+    E_PERIOD_OUTSIDE_RECORD,
     E_RESTATES_HISTORY,
     E_PRICE_MISSING,
     E_PRICE_STALE,

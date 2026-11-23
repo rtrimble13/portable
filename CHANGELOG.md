@@ -16,6 +16,34 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`pert periods`** (issue 5, ADR 0045): the time-weighted return over every
+  period from one walk of the history.
+  - **The rows.** Month, quarter and year to date; 1, 3, 5 and 10 years;
+    since inception; and every fiscal year from the stored fiscal year end
+    (`PORT-GIPS-H01`, `A04`). A complete year's row is the same bytes
+    whatever day the table ends on.
+  - **Each row is `pert twr` over its dates.** It has the same value or the
+    same refusal, and `tests/integration/test_pert_periods_cli.py` holds
+    every row of the sample to it.
+  - **Clipped to its track record.** A row is clipped to the track record it
+    belongs to and labelled partial when it is (`PORT-GIPS-H02`), so a table
+    never links two records (`H06`).
+  - **A fixed-length row is never shortened.** A 3-year row over a younger
+    record is null with **`PT-E-PERIOD-OUTSIDE-RECORD`**. The sample's 5-year
+    row is one: the sample began three days into the five years.
+  - **Never zero.** A row that cannot be measured is null with its reason,
+    never zero, and gets a warning. The command fails only when no row can
+    be measured.
+  - **Annualized from a year.** A row of a year or more is shown cumulative
+    and annualized, and a shorter one cumulative only (`PORT-GIPS-B07`).
+  - **Assets beside each row.** Each row carries the ending value and the
+    accounts holding value then (`PORT-GIPS-H03`).
+
+  JSON is `schemas/periods-1.0.json`, with every basis and every row's
+  disclosures. `table` and `markdown` show one basis (`--basis`, net-of-fees
+  by default) with footnotes, not the JSON detail. The sample's table is
+  held to golden files in all four formats, under `tests/golden/periods/`.
+
 - **Annualising, by anniversary** (ADR 0045 §5): `services.periods.annualize`.
   The rate is `exp(ln(1 + R) / N) − 1` in the return engine's decimal
   context. N counts whole anniversaries, plus the part year left over
@@ -608,6 +636,20 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **JSON and CSV refuse an annualized return under a year, as `table` and
+  `markdown` always did** (`PORT-GIPS-B07`). They render a `ReturnValue`
+  without going through `render_return`, so they skipped its guard. Nothing
+  annualized before `pert periods`, so nothing changes.
+- **A command can keep its detail out of `table` and `markdown`**
+  (`CommandResult.human_data`). `pert periods` does. Its JSON carries every
+  row's disclosures, about 90 KB on the sample, and its table carries the
+  rows and the footnotes a reader needs.
+- **A track record is never read from a missing or stale snapshot.** A
+  stretch that reads such a snapshot does not count as holding nothing,
+  however its values sum. A zero there may be a missing value, and a false
+  break would clip every row of a table to a record that never began. Any
+  period over the stretch was already refused for the snapshot, so `pert twr`
+  is unchanged.
 - **A year is counted by anniversary, not as 365 days** (ADR 0045 §5,
   `PORT-GIPS-B07`). The formatter's guard let any period of 365 days or more
   be annualised. The period from the end of 2023-12-31 to the end of
@@ -930,6 +972,11 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **`pert twr --format csv` wrote Python dict reprs in its return cells.**
+  `{'value': '0.0151...', 'method': 'twr', ...}` is not even JSON, and a
+  spreadsheet could do nothing with it. A return in CSV is now its value at
+  full precision, with ` SUPPLEMENTAL` or ` ESTIMATED` appended when it is
+  either. The column header names its method and basis.
 - **`--lots` was ignored on an account whose default relief is not
   spec-ID.** Lot selection reads a designation only under specific
   identification. So `pt sell XYZ --lots 2:50` on a FIFO account stored the

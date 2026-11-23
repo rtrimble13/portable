@@ -383,7 +383,7 @@ Getting the transfer row wrong is the classic error: a $100k transfer between th
 **Source** — Firms **2.A.24.f (A)**; Asset Owners **22.A.21.f (A)**.
 **What GIPS says** — "Geometrically link periodic and sub-period returns."
 **What `portable` must do** — `R = ∏(1 + rᵢ) − 1`. Never sum sub-period returns; never average them arithmetically. Compute in `Decimal` throughout — this is a return path, so `CLAUDE.md` invariant 1 applies and there is no float anywhere in it.
-**Test** — property test: for any generated sequence of sub-period returns, the linked return equals the direct start-to-end return when there are no flows, to within the documented rounding tolerance.
+**Test** — property test: for any generated sequence of sub-period returns, the linked return equals the direct start-to-end return when there are no flows, to within the documented rounding tolerance. A period computed as a window of a longer walk equals the same period walked alone, value for value and refusal for refusal (`test_port_gips_b04_a_window_of_a_walk_is_the_walk_of_the_window`, `test_a_row_is_pert_twr_over_its_window`), and a period's rows link to its longer rows (`test_port_gips_b04_the_rows_link_to_one_another`) (ADR 0045 §1).
 
 ---
 
@@ -705,7 +705,8 @@ What a GIPS Asset Owner Report must contain, and therefore what a `pert` tearshe
 
 **Source** — Asset Owners **24.A.1.a (A)**; contrast Firms **4.A.1.a (A)**.
 **What GIPS says** — asset owners: **at least one year** of compliant performance (or since inception if shorter), then **add one year each year until a minimum of ten years** is presented. Firms: at least **five** years initially, building to ten.
-**What `portable` must do** — Show every annual period since inception, capped at nothing. The tearsheet's calendar-year table is the natural home. `pert` backlog item 3 (MTD/QTD/YTD/1/3/5/10-year/since-inception) satisfies and exceeds this.
+**What `portable` must do** — Show every annual period since inception, capped at nothing. `pert periods` (ADR 0045) does, beside MTD, QTD, YTD, 1, 3, 5 and 10 years and since inception.
+**Test** — `test_port_gips_h01_every_period_since_inception`.
 
 **`PORT-GIPS-H02` — Annual returns, and the partial first and last periods · CORE**
 
@@ -718,7 +719,8 @@ What a GIPS Asset Owner Report must contain, and therefore what a `pert` tearshe
 
 **Source** — Asset Owners **24.A.1.g, .h, .i (A)**; footnotes: (g) and (i) required for periods ending on/after 31 Dec 2020. Firms **4.A.1.f–h (A)**, fn 5 on total firm assets.
 **What GIPS says** — number of total funds or portfolios in the composite; total fund or composite assets; total asset owner assets — each **as of each annual period end**.
-**What `portable` must do** — Every annual return row carries ending market value and the number of accounts contributing. A return without the asset base beside it is uninterpretable.
+**What `portable` must do** — Every annual return row carries ending market value and the number of accounts contributing. A return without the asset base beside it is uninterpretable. `pert periods` counts the accounts holding value on the row's last day (ADR 0045 §6).
+**Test** — `test_every_annual_row_carries_its_assets`.
 
 **`PORT-GIPS-H04` — Label everything · CORE**
 

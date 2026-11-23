@@ -35,6 +35,7 @@ from typing import Final
 
 from portable_core.domain.enums import FeeClass, FlowLevel, TransactionType
 from portable_core.domain.models import Account, Transaction, ValuationSnapshot
+from portable_core.domain.periods import TrackRecord
 from portable_core.domain.returns import (
     BASES,
     Basis,
@@ -77,6 +78,7 @@ __all__ = [
     "fee_addback",
     "link",
     "time_weighted_return",
+    "track_records",
     "walk",
     "window",
 ]
@@ -225,6 +227,9 @@ class _Day:
     flows: tuple[TimedFlow, ...]
     #: Per basis, the fees undone on this day.
     undone: dict[Basis, Decimal]
+    #: Every snapshot the day needs is stored and still holds (ADR 0024). A
+    #: day that is not may read as holding nothing when it did not.
+    reliable: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,11 +245,19 @@ class _Piece:
     through: date
     subperiod: SubPeriod | None
     refusal: Exception | None
+    #: A day it reads, either end included, has a snapshot missing or stale.
+    uncertain: bool = False
 
     @property
     def held_nothing(self) -> bool:
-        """Nothing held and nothing moving: a gap in the track record (ADR 0045 §4)."""
-        return self.subperiod is None and self.refusal is None
+        """Nothing held and nothing moving: a gap in the track record (ADR 0045 §4).
+
+        Never on a stretch read from a missing or stale snapshot. Its zero may
+        be the absence of a value rather than a value of nothing, and a break
+        there would clip every row to a record that did not begin. A window
+        over the stretch is refused for the snapshot before it is cut.
+        """
+        return self.subperiod is None and self.refusal is None and not self.uncertain
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,16 +333,16 @@ def time_weighted_return(
 def walk(
     repos: Repositories,
     *,
-    first: date,
+    first: date | None = None,
     through: date,
     account: Account | None = None,
     staleness_days: int,
 ) -> Walk:
     """Read and check *account*'s days, or the portfolio's, from *first* to *through*.
 
-    *first* is the earliest day any window of the walk will start on. A
-    start before inception moves to inception, as a window's does. Every
-    window must lie inside the walk (:func:`window`).
+    *first* is the earliest day any window of the walk will start on, and
+    inception when omitted. A start before inception moves to inception, as
+    a window's does. Every window must lie inside the walk (:func:`window`).
     """
     level = FlowLevel.ACCOUNT if account is not None else FlowLevel.PORTFOLIO
     accounts = [account] if account is not None else repos.accounts.all()
@@ -337,7 +350,8 @@ def walk(
     begun = _begun(repos, accounts, through)
     if not begun:
         raise _nothing_to_measure(through)
-    first_day = max(first, min(begun.values()))
+    inception = min(begun.values())
+    first_day = max(first, inception) if first is not None else inception
     if first_day > through:
         raise ValueError(f"a walk from {first_day} to {through} covers no day")
     anchor = first_day - _DAY
@@ -348,7 +362,10 @@ def walk(
         for txn in effective_ledger(repos.transactions.in_ledger_order())
         if first_day <= txn.trade_date <= through and txn.account_id in begun
     )
-    days, fee_refusals = _days(stored, begun, rows, level, anchor, through)
+    problems = tuple(snapshots.problems_between(repos, set(begun), anchor, through))
+    days, fee_refusals = _days(
+        stored, begun, rows, level, anchor, through, {problem.on for problem in problems}
+    )
     return Walk(
         repos=repos,
         level=level,
@@ -358,7 +375,7 @@ def walk(
         anchor=anchor,
         through=through,
         stored=stored,
-        problems=tuple(snapshots.problems_between(repos, set(begun), anchor, through)),
+        problems=problems,
         blocked=price_acceptance.blocked_from(
             price_acceptance.check_recorded(repos, staleness_days=staleness_days)
         ),
@@ -440,6 +457,29 @@ def window(walked: Walk, *, start: date | None, end: date) -> TimeWeightedReturn
             repos, stored, measured, linked.subperiods, linked.start, linked.end
         ),
     )
+
+
+def track_records(walked: Walk) -> tuple[TrackRecord, ...]:
+    """The walk's track records, in order. ADR 0045 §4, PORT-GIPS-H06.
+
+    A record begins on the first day after a stretch with nothing held, or at
+    the first piece. It ends on the last day before the next such stretch,
+    the day its value went to nothing. The termination of a record is decided
+    by the days up to the next stretch alone, so walking further, past a
+    restart, never moves it (PORT-GIPS-A04).
+    """
+    records: list[TrackRecord] = []
+    inception: date | None = None
+    for piece in walked.pieces:
+        if piece.held_nothing:
+            if inception is not None:
+                records.append(TrackRecord(inception, piece.after))
+                inception = None
+        elif inception is None:
+            inception = piece.after + _DAY
+    if inception is not None:
+        records.append(TrackRecord(inception, None))
+    return tuple(records)
 
 
 def _begun(repos: Repositories, accounts: Sequence[Account], end: date) -> dict[int, date]:
@@ -598,8 +638,11 @@ def _days(
     level: FlowLevel,
     anchor: date,
     end: date,
+    stale: set[date],
 ) -> tuple[tuple[_Day, ...], dict[int, GipsRefusalError]]:
     """Each day from *anchor* to *end*, summed across the accounts begun by then.
+
+    *stale* holds the days on which a stored snapshot no longer holds.
 
     Also the rows whose fee no basis can treat, which every window holding
     them refuses (PORT-GIPS-D05). Their fees are left out of the day, which
@@ -643,6 +686,7 @@ def _days(
                 and all(snapshot.is_complete for snapshot in present),
                 flows=flows,
                 undone=fees_on.get(day, dict.fromkeys(BASES, _ZERO)),
+                reliable=len(present) == len(held) and day not in stale,
             )
         )
     return tuple(series), refused
@@ -666,10 +710,13 @@ def _pieces(repos: Repositories, days: Sequence[_Day]) -> tuple[_Piece, ...]:
         between.append(day)
         if not day.usable:
             continue
+        uncertain = not all(d.reliable for d in (begin, *between))
         try:
-            piece = _Piece(begin.on, day.on, _subperiod(repos, begin, day, between), None)
+            subperiod = _subperiod(repos, begin, day, between)
         except (PortableError, AssertionError) as refusal:
-            piece = _Piece(begin.on, day.on, None, refusal)
+            piece = _Piece(begin.on, day.on, None, refusal, uncertain)
+        else:
+            piece = _Piece(begin.on, day.on, subperiod, None, uncertain)
         pieces.append(piece)
         begin, between = day, []
     return tuple(pieces)

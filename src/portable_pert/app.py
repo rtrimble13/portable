@@ -17,16 +17,16 @@ import typer
 from portable_core import __version__
 from portable_core.cli.runner import configure_logging
 from portable_pert import state
-from portable_pert.commands import twr
+from portable_pert.commands import periods, twr
 
 app = typer.Typer(
     name="pert",
     help=(
         "pert -- performance measurement, from the valuation snapshots `pt value` "
         "stores.\n\n"
-        "Time-weighted returns lead (PORT-GIPS-B01). Built so far: `pert twr`. "
-        "Money-weighted returns, multi-period reporting, benchmarks, risk and "
-        "attribution are planned for milestone v0.2 (docs/roadmap.md).\n\n"
+        "Time-weighted returns lead (PORT-GIPS-B01). Built so far: `pert twr` and "
+        "`pert periods`. Money-weighted returns, benchmarks, risk and attribution are "
+        "planned for milestone v0.2 (docs/roadmap.md).\n\n"
         "Exit codes: 0 ok, 1 generic, 2 usage, 3 portfolio/file, 4 validation, "
         "5 data unavailable, 6 reconciliation break."
     ),
@@ -82,3 +82,4 @@ def main(
 
 
 app.command("twr")(twr.twr)
+app.command("periods")(periods.periods)

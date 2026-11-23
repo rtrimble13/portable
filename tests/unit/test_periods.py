@@ -19,6 +19,7 @@ from portable_core.domain.periods import (
     FiscalYearEnd,
     Years,
     at_least_a_year,
+    last_month_end_before,
     shift_years,
     years,
 )
@@ -203,3 +204,54 @@ def test_a_total_loss_has_no_annualised_rate(cumulative: D) -> None:
     with pytest.raises(ValidationError) as refused:
         annualize(cumulative, after=date(2020, 12, 31), through=date(2024, 12, 31))
     assert refused.value.code == "PT-E-RETURN-TOTAL-LOSS"
+
+
+# ── period boundaries (ADR 0045 §2) ──────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("day", "expected"),
+    [
+        (date(2025, 12, 31), date(2025, 11, 30)),  # a month end: the month before
+        (date(2025, 12, 20), date(2025, 11, 30)),
+        (date(2024, 3, 1), date(2024, 2, 29)),
+    ],
+)
+def test_the_month_to_date_starts_after_the_last_month_end_before(
+    day: date, expected: date
+) -> None:
+    assert last_month_end_before(day) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "day", "quarter", "year"),
+    [
+        ("12-31", date(2025, 12, 31), date(2025, 9, 30), date(2024, 12, 31)),
+        ("12-31", date(2025, 11, 15), date(2025, 9, 30), date(2024, 12, 31)),
+        ("06-30", date(2025, 12, 31), date(2025, 9, 30), date(2025, 6, 30)),
+        ("06-30", date(2025, 6, 30), date(2025, 3, 31), date(2024, 6, 30)),
+        ("01-31", date(2025, 3, 15), date(2025, 1, 31), date(2025, 1, 31)),
+        ("02-28", date(2024, 3, 1), date(2024, 2, 29), date(2024, 2, 29)),
+    ],
+)
+def test_quarters_and_years_step_back_from_the_fiscal_year_end(
+    text: str, day: date, quarter: date, year: date
+) -> None:
+    """PORT-GIPS-A04: strictly before the day, so a table ending on a year end
+    has the whole year as its year to date."""
+    fiscal = FiscalYearEnd.parse(text)
+    assert fiscal.last_quarter_end_before(day) == quarter
+    assert fiscal.last_end_before(day) == year
+
+
+def test_a_fiscal_year_ending_in_january_has_quarters_out_of_step_with_the_calendar() -> None:
+    assert FiscalYearEnd.parse("01-31").quarter_months() == frozenset({1, 4, 7, 10})
+    assert FiscalYearEnd.parse("06-30").quarter_months() == frozenset({3, 6, 9, 12})
+
+
+def test_annualising_reads_its_own_context_not_the_threads() -> None:
+    """At six digits the thread could not carry the rate. RETURN_CONTEXT does."""
+    with decimal.localcontext(decimal.Context(prec=6)):
+        narrow = annualize(D("0.331"), after=date(2021, 12, 31), through=date(2024, 12, 31))
+    assert narrow == annualize(D("0.331"), after=date(2021, 12, 31), through=date(2024, 12, 31))
+    assert len(narrow.as_tuple().digits) > 20

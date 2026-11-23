@@ -155,19 +155,17 @@ Then:
    `PORT-GIPS-A09` allows; a carried price is not one.
 5. **Multi-period reporting** (issue 5) — MTD, QTD, YTD, 1/3/5/10-year,
    since-inception, calendar-year table. Sub-one-year returns are never
-   annualized — a requirement, not a convention (`PORT-GIPS-B07`). Accepted
-   in [ADR 0045](adr/0045-multi-period-returns.md), and built first:
+   annualized — a requirement, not a convention (`PORT-GIPS-B07`). *Done*:
+   `pert periods`, in [ADR 0045](adr/0045-multi-period-returns.md):
    - one walk, with every row equal to `pert twr` over its window;
    - a row that cannot be measured is null with its reason, rather than
      refusing the table;
    - a year is counted by anniversary, not as 365 days.
 
-   It also amends ADR 0040 §4. *Built so far:* the walk (§1); the break (§4),
-   so `pert twr` no longer links across days on which nothing was held, nor
-   prints 0.00% for a period that holds only such days; and `twr-2.0`, the
-   one major version of `pert twr`'s schema the two ADRs share; a year
-   counted by anniversary and annualising (§5); and a fiscal year end that
-   must be a month end (§2). Next comes `pert periods`.
+   It also amends ADR 0040 §4. `pert twr` no longer links across days on
+   which nothing was held, nor prints 0.00% for a period that holds only
+   such days. It shares `twr-2.0` with item 4. A fiscal year end must be a
+   month end.
 6. **Benchmarks** (issue 6) — blends with explicit rebalancing rules, active
    return, tracking error. **Total-return series only** (`PORT-GIPS-G01`).
 7. **Money-weighted return (XIRR)** (issue 4) — annualized since-inception,
