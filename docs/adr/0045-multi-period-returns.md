@@ -135,7 +135,9 @@ Every row ends at `--to` (T), which defaults to `--as-of`, explicitly
   on by `pt init`. `pt init` treats it as a bad flag value and exits 2, as
   it does for a malformed date. A stored value `pert` cannot read is a
   validation failure, exit 4. Weeks-based fiscal years (52/53) are not supported. The
-  owner's file is `12-31`, so nothing changes for it.
+  default is `12-31`, so nothing changes for a file made with it. Whether
+  the owner's real file was is checked on it, not assumed: `pt info` shows
+  the stored value.
 - **Custom ranges stay `pert twr --from --to`.** Issue 7's monthly series
   is a list of windows on the same walk.
 
