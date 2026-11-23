@@ -16,6 +16,11 @@ decides a number is here, cited to the requirement it serves:
 * **Bases** (§8): each fee a basis does not deduct is undone as an outflow at
   the end of its day (``PORT-GIPS-D01``). Margin interest is never undone.
 * **Linking** (§9): geometric, in :data:`RETURN_CONTEXT` (``PORT-GIPS-B04``).
+* **One walk, many windows** (ADR 0045 §1). :func:`walk` reads and checks a
+  level's days once; :func:`window` gives the return over any stretch of
+  them. :func:`time_weighted_return` is a walk over one window, so a window
+  of a longer walk and `pert twr` over the same dates are one code path, and
+  agree value for value and refusal for refusal.
 """
 
 from __future__ import annotations
@@ -40,7 +45,12 @@ from portable_core.domain.returns import (
     TimedFlow,
     TimeWeightedReturn,
 )
-from portable_core.errors import DataUnavailableError, GipsRefusalError, ValidationError
+from portable_core.errors import (
+    DataUnavailableError,
+    GipsRefusalError,
+    PortableError,
+    ValidationError,
+)
 from portable_core.errors.kinds import (
     E_FEE_EMBEDDED_IN_CASH,
     E_GIPS_NO_FLOW_POLICY,
@@ -53,15 +63,20 @@ from portable_core.errors.kinds import (
 )
 from portable_core.persistence.repositories import Repositories
 from portable_core.services import price_acceptance, snapshots
+from portable_core.services.price_acceptance import PriceLine
 from portable_core.services.replay import effective_ledger
+from portable_core.services.snapshots import SnapshotProblem
 from portable_core.services.valuation import NO_MARKET_PRICE
 
 __all__ = [
     "RETURN_CONTEXT",
+    "Walk",
     "dietz",
     "fee_addback",
     "link",
     "time_weighted_return",
+    "walk",
+    "window",
 ]
 
 #: Every return is computed in this context, never the thread's (ADR 0040 §9).
@@ -210,6 +225,56 @@ class _Day:
     undone: dict[Basis, Decimal]
 
 
+@dataclass(frozen=True, slots=True)
+class _Piece:
+    """The stretch between two consecutive usable days, and what it gives.
+
+    One of three things: a sub-period; nothing, when the level held nothing
+    and nothing moved (ADR 0040 §4); or the refusal that a window covering
+    the stretch raises.
+    """
+
+    after: date
+    through: date
+    #: The days after *after*, through *through*.
+    covered: tuple[date, ...]
+    subperiod: SubPeriod | None
+    refusal: Exception | None
+
+
+@dataclass(frozen=True, slots=True)
+class Walk:
+    """A level's days, from the eve of its first day to *through*, read and checked once.
+
+    ADR 0045 §1. A walk raises only what would refuse every window it could
+    serve. Anything else it records against the account, the day, the row or
+    the stretch it belongs to. :func:`window` raises it for a window that
+    covers it, in the order `pert twr` has always checked. So a window of a
+    long walk is, value for value and refusal for refusal, the return of a
+    walk over that window alone.
+    """
+
+    repos: Repositories
+    level: FlowLevel
+    account: Account | None
+    names: dict[int, str]
+    #: Each account begun by *through*, with the day it began.
+    begun: dict[int, date]
+    #: The eve of the first day a window may start on.
+    anchor: date
+    through: date
+    stored: dict[tuple[int, date], ValuationSnapshot]
+    #: ADR 0024's checks on every stored snapshot read, in reporting order.
+    problems: tuple[SnapshotProblem, ...]
+    #: ADR 0031: per account name, the line its returns are blocked from.
+    blocked: dict[str, PriceLine]
+    rows: tuple[Transaction, ...]
+    #: Rows whose fee no basis can treat (PORT-GIPS-D05), by txn id.
+    fee_refusals: dict[int, GipsRefusalError]
+    days: tuple[_Day, ...]
+    pieces: tuple[_Piece, ...]
+
+
 def time_weighted_return(
     repos: Repositories,
     *,
@@ -223,10 +288,140 @@ def time_weighted_return(
     *start* defaults to inception, and a start before inception moves to it;
     the result carries both. Every refusal is a place where a plausible
     number would otherwise have been printed (ADR 0040 §2, §4, §6, §7, §12).
+
+    A walk over the period alone, and its one window (ADR 0045 §1). The
+    checks that need no walk are made first, so a refusal that needs none
+    costs none.
+    """
+    accounts = [account] if account is not None else repos.accounts.all()
+    _, first_day, _ = _open(repos, _begun(repos, accounts, end), start, end)
+    walked = walk(
+        repos, first=first_day, through=end, account=account, staleness_days=staleness_days
+    )
+    return window(walked, start=start, end=end)
+
+
+def walk(
+    repos: Repositories,
+    *,
+    first: date,
+    through: date,
+    account: Account | None = None,
+    staleness_days: int,
+) -> Walk:
+    """Read and check *account*'s days, or the portfolio's, from *first* to *through*.
+
+    *first* is the earliest day any window of the walk will start on. A
+    start before inception moves to inception, as a window's does. Every
+    window must lie inside the walk (:func:`window`).
     """
     level = FlowLevel.ACCOUNT if account is not None else FlowLevel.PORTFOLIO
     accounts = [account] if account is not None else repos.accounts.all()
     names = {target.account_id: target.name for target in accounts}
+    begun = _begun(repos, accounts, through)
+    if not begun:
+        raise _nothing_to_measure(through)
+    first_day = max(first, min(begun.values()))
+    if first_day > through:
+        raise ValueError(f"a walk from {first_day} to {through} covers no day")
+    anchor = first_day - _DAY
+
+    stored = repos.valuations.series(sorted(begun), anchor, through)
+    rows = tuple(
+        txn
+        for txn in effective_ledger(repos.transactions.in_ledger_order())
+        if first_day <= txn.trade_date <= through and txn.account_id in begun
+    )
+    days, fee_refusals = _days(stored, begun, rows, level, anchor, through)
+    return Walk(
+        repos=repos,
+        level=level,
+        account=account,
+        names=names,
+        begun=begun,
+        anchor=anchor,
+        through=through,
+        stored=stored,
+        problems=tuple(snapshots.problems_between(repos, set(begun), anchor, through)),
+        blocked=price_acceptance.blocked_from(
+            price_acceptance.check_recorded(repos, staleness_days=staleness_days)
+        ),
+        rows=rows,
+        fee_refusals=fee_refusals,
+        days=days,
+        pieces=_pieces(repos, days),
+    )
+
+
+def window(walked: Walk, *, start: date | None, end: date) -> TimeWeightedReturn:
+    """The return of *walked*'s level from *start* through *end*. ADR 0045 §1.
+
+    It is exactly what a walk over this window alone would give: the same
+    checks, in the order `pert twr` has always made them, on the window's own
+    accounts and days.
+
+    Raises:
+        ValueError: the window does not lie inside the walk. That is a
+            mistake in the caller, not in the portfolio.
+    """
+    if end > walked.through:
+        raise ValueError(f"the window ends {end}, after the walk's {walked.through}")
+    repos = walked.repos
+    # An account begun after the window ends takes no part in it.
+    begun = {account_id: first for account_id, first in walked.begun.items() if first <= end}
+    requested, first_day, inception = _open(repos, begun, start, end)
+    anchor = first_day - _DAY
+    if anchor < walked.anchor:
+        raise ValueError(f"the window starts {first_day}, before the walk's first day")
+
+    stored = {
+        key: snapshot
+        for key, snapshot in walked.stored.items()
+        if key[0] in begun and anchor <= key[1] <= end
+    }
+    _require_snapshots(stored, begun, walked.names, anchor, end)
+    _require_checked(
+        [
+            problem.text
+            for problem in walked.problems
+            if problem.account_id in begun and anchor <= problem.on <= end
+        ]
+    )
+    _require_unblocked(walked.blocked, begun, walked.names, end)
+
+    rows = [
+        txn
+        for txn in walked.rows
+        if first_day <= txn.trade_date <= end and txn.account_id in begun
+    ]
+    # Fees are charged to the row's own account; a transfer's other side pays
+    # none of them.
+    _refuse_unpriced_trades(repos, rows)
+    for txn in rows:
+        refusal = walked.fee_refusals.get(txn.txn_id)
+        if refusal is not None:
+            raise refusal
+
+    subperiods, idle = _linked(walked, anchor, end)
+    cumulative = tuple(
+        BasisReturn(basis, link(sub.return_for(basis) for sub in subperiods)) for basis in BASES
+    )
+    return TimeWeightedReturn(
+        level=walked.level,
+        account=walked.account.name if walked.account is not None else None,
+        requested_start=requested,
+        start=first_day,
+        end=end,
+        inception=inception,
+        cumulative=cumulative,
+        subperiods=tuple(subperiods),
+        idle_days=tuple(idle),
+        disclosures=_disclosures(repos, stored, rows, subperiods, first_day, end),
+    )
+
+
+def _begun(repos: Repositories, accounts: Sequence[Account], end: date) -> dict[int, date]:
+    """Each account with a ledger row on or before *end*, and its first day."""
     begun: dict[int, date] = {}
     for target in accounts:
         # Either side of a row: an account funded only by a transfer has no
@@ -235,11 +430,15 @@ def time_weighted_return(
         first = repos.transactions.first_activity_date(target.account_id)
         if first is not None and first <= end:
             begun[target.account_id] = first
+    return begun
+
+
+def _open(
+    repos: Repositories, begun: dict[int, date], start: date | None, end: date
+) -> tuple[date, date, date]:
+    """The checks a window needs before any day: (requested start, first day, inception)."""
     if not begun:
-        raise ValidationError(
-            f"nothing to measure: no ledger rows on or before {end.isoformat()}",
-            remedy="A return needs capital in the account. Check --to and --account.",
-        )
+        raise _nothing_to_measure(end)
     inception = min(begun.values())
     requested = start if start is not None else inception
     first_day = max(requested, inception)
@@ -248,7 +447,6 @@ def time_weighted_return(
             f"--from {first_day.isoformat()} is after --to {end.isoformat()}",
             remedy="Check the order of the dates.",
         )
-    anchor = first_day - _DAY
     # First: a policy in force on the first day stays in force (some policy
     # does) on every later one, and without one no flow can be called large.
     if repos.policies.in_force(first_day) is None:
@@ -262,37 +460,13 @@ def time_weighted_return(
                 "zero -- even where daily valuation makes it informational."
             ),
         )
+    return requested, first_day, inception
 
-    stored = repos.valuations.series(sorted(begun), anchor, end)
-    _require_snapshots(stored, begun, names, anchor, end)
-    _require_checked(repos, set(begun), anchor, end)
-    _require_unblocked(repos, begun, names, end, staleness_days=staleness_days)
 
-    rows = [
-        txn
-        for txn in effective_ledger(repos.transactions.in_ledger_order())
-        if first_day <= txn.trade_date <= end and txn.account_id in begun
-    ]
-    # Fees are charged to the row's own account; a transfer's other side pays
-    # none of them.
-    _refuse_unpriced_trades(repos, rows)
-
-    days = _days(stored, begun, rows, level, anchor, end)
-    subperiods, idle = _subperiods(repos, days)
-    cumulative = tuple(
-        BasisReturn(basis, link(sub.return_for(basis) for sub in subperiods)) for basis in BASES
-    )
-    return TimeWeightedReturn(
-        level=level,
-        account=account.name if account is not None else None,
-        requested_start=requested,
-        start=first_day,
-        end=end,
-        inception=inception,
-        cumulative=cumulative,
-        subperiods=tuple(subperiods),
-        idle_days=tuple(idle),
-        disclosures=_disclosures(repos, stored, rows, subperiods, first_day, end),
+def _nothing_to_measure(end: date) -> ValidationError:
+    return ValidationError(
+        f"nothing to measure: no ledger rows on or before {end.isoformat()}",
+        remedy="A return needs capital in the account. Check --to and --account.",
     )
 
 
@@ -331,32 +505,24 @@ def _require_snapshots(
         )
 
 
-def _require_checked(
-    repos: Repositories, account_ids: set[int], first: date, last: date
-) -> None:
+def _require_checked(problems: Sequence[str]) -> None:
     """Every snapshot used still re-derives as stored. ADR 0024, ADR 0040 §2."""
-    problems = snapshots.verify_between(repos, account_ids, first, last)
     if problems:
         raise ValidationError(
             f"{len(problems)} stored snapshot(s) in the period no longer hold",
             code=E_SNAPSHOT_STALE,
             remedy="; ".join(problems[:5]) + ("; and more" if len(problems) > 5 else ""),
-            problems=problems,
+            problems=list(problems),
         )
 
 
 def _require_unblocked(
-    repos: Repositories,
+    blocked: dict[str, PriceLine],
     begun: dict[int, date],
     names: dict[int, str],
     end: date,
-    *,
-    staleness_days: int,
 ) -> None:
     """An unresolved statement line blocks returns from its date. ADR 0031."""
-    blocked = price_acceptance.blocked_from(
-        price_acceptance.check_recorded(repos, staleness_days=staleness_days)
-    )
     for account_id in sorted(begun):
         line = blocked.get(names[account_id])
         if line is not None and line.statement_date <= end:
@@ -410,46 +576,94 @@ def _days(
     level: FlowLevel,
     anchor: date,
     end: date,
-) -> list[_Day]:
-    """Each day from *anchor* to *end*, summed across the accounts begun by then."""
+) -> tuple[tuple[_Day, ...], dict[int, GipsRefusalError]]:
+    """Each day from *anchor* to *end*, summed across the accounts begun by then.
+
+    Also the rows whose fee no basis can treat, which every window holding
+    them refuses (PORT-GIPS-D05). Their fees are left out of the day, which
+    no window then reads.
+    """
     fees_on: dict[date, dict[Basis, Decimal]] = {}
+    refused: dict[int, GipsRefusalError] = {}
     for txn in rows:
+        try:
+            each = {basis: fee_addback(txn, basis) for basis in BASES}
+        except GipsRefusalError as refusal:
+            refused[txn.txn_id] = refusal
+            continue
         undone = fees_on.setdefault(txn.trade_date, dict.fromkeys(BASES, _ZERO))
         for basis in BASES:
-            undone[basis] += fee_addback(txn, basis)
+            undone[basis] += each[basis]
 
     series: list[_Day] = []
     for day in _span(anchor, end):
         held = [
-            stored[(account_id, day)]
+            stored.get((account_id, day))
             for account_id, first in sorted(begun.items())
             if first <= day
         ]
+        present = [snapshot for snapshot in held if snapshot is not None]
         flows = tuple(
             TimedFlow(txn_id=flow.txn_id, on=flow.flow_date, amount=flow.amount, is_large=False)
-            for snapshot in held
+            for snapshot in present
             for flow in snapshot.flows
             if flow.level is level
         )
         with decimal.localcontext(RETURN_CONTEXT):
-            value = sum((snapshot.ending_market_value for snapshot in held), _ZERO)
+            value = sum((snapshot.ending_market_value for snapshot in present), _ZERO)
         series.append(
             _Day(
                 on=day,
                 value=value,
-                usable=all(snapshot.is_complete for snapshot in held),
+                # A day missing a snapshot is unusable. A window holding it is
+                # refused for the snapshot before it reads any day.
+                usable=len(present) == len(held)
+                and all(snapshot.is_complete for snapshot in present),
                 flows=flows,
                 undone=fees_on.get(day, dict.fromkeys(BASES, _ZERO)),
             )
         )
-    return series
+    return tuple(series), refused
 
 
-def _subperiods(
-    repos: Repositories, days: Sequence[_Day]
-) -> tuple[list[SubPeriod], list[date]]:
-    """Cut the series at every usable day and compute each piece. ADR 0040 §3 to §6."""
-    start, last = days[0], days[-1]
+def _pieces(repos: Repositories, days: Sequence[_Day]) -> tuple[_Piece, ...]:
+    """Cut the series at every usable day and compute each piece. ADR 0040 §3 to §6.
+
+    A piece that cannot be computed keeps its refusal rather than raising it:
+    only a window that covers the piece is refused for it.
+    """
+    pieces: list[_Piece] = []
+    begin: _Day | None = None
+    between: list[_Day] = []
+    for day in days:
+        if begin is None:
+            # Nothing before the first usable day is ever a window's start.
+            if day.usable:
+                begin = day
+            continue
+        between.append(day)
+        if not day.usable:
+            continue
+        covered = tuple(d.on for d in between)
+        try:
+            piece = _Piece(
+                begin.on, day.on, covered, _subperiod(repos, begin, day, between), None
+            )
+        except (PortableError, AssertionError) as refusal:
+            piece = _Piece(begin.on, day.on, covered, None, refusal)
+        pieces.append(piece)
+        begin, between = day, []
+    return tuple(pieces)
+
+
+def _linked(walked: Walk, anchor: date, end: date) -> tuple[list[SubPeriod], list[date]]:
+    """The window's sub-periods and idle days, from the walk's pieces.
+
+    The window's two ends must be usable, so each is a cut. The pieces
+    between them are whole and lie wholly inside the window.
+    """
+    start = walked.days[(anchor - walked.anchor).days]
+    last = walked.days[(end - walked.anchor).days]
     if not start.usable:
         raise _gap(start.on, start.on, "the day before the period cannot be valued")
     if not last.usable:
@@ -457,18 +671,15 @@ def _subperiods(
 
     subperiods: list[SubPeriod] = []
     idle: list[date] = []
-    begin = start
-    between: list[_Day] = []
-    for day in days[1:]:
-        between.append(day)
-        if not day.usable:
+    for piece in walked.pieces:
+        if piece.after < anchor or piece.through > end:
             continue
-        piece = _subperiod(repos, begin, day, between)
-        if piece is None:
-            idle.extend(d.on for d in between)
+        if piece.refusal is not None:
+            raise piece.refusal
+        if piece.subperiod is None:
+            idle.extend(piece.covered)
         else:
-            subperiods.append(piece)
-        begin, between = day, []
+            subperiods.append(piece.subperiod)
     return subperiods, idle
 
 

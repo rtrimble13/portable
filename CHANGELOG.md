@@ -596,6 +596,32 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **Four `PORT-GIPS` requirements say more**, under ADR 0044 and ADR 0045,
+  accepted 2026-11-23. Nothing computes differently yet; each line records
+  an obligation the code takes on as the ADRs are built.
+  - **`PORT-GIPS-A04`**: the fiscal year ends at a month end, and quarters
+    step back from it.
+  - **`PORT-GIPS-A09`**: a price carried forward mechanically is not the
+    best approximation the provision allows. It enters a return only under
+    `pert twr --estimate`, marked `ESTIMATED`.
+  - **`PORT-GIPS-B07`**: the test counts a year by anniversary. The period
+    from the end of 2023-12-31 to the end of 2024-12-30 is 365 days and one
+    day short of a year, so the old parametrisation, which treated 365 days
+    as always a year, was wrong.
+  - **`PORT-GIPS-H06`**: the break applies to each account as well as the
+    portfolio, and a return over days with nothing held is refused, never
+    shown as 0%.
+- **The time-weighted return is computed from one walk and its windows**
+  (ADR 0045 §1). `walk` reads and checks a level's days once, and `window`
+  gives the return over any stretch of them. `pert twr` is a walk over its
+  period and that walk's one window, so no number, refusal or byte of
+  output changes. Multi-period reporting will take every row from one walk,
+  rather than repeating the snapshot check that is 86% of a run.
+  `tests/integration/test_twr_windows.py` holds each window of one long walk
+  to `pert twr` over the same dates alone, on 501 windows at three levels
+  and on the sample. That portfolio is built to reach every refusal a window
+  can meet. `snapshots.verify_between` is replaced by
+  `snapshots.problems_between`, which keys each problem by account and day.
 - **CI runs on Linux only** (ADR 0042, at the owner's request). The suite
   takes more than ten minutes a run, and it ran on Linux and Windows × three
   Pythons, with Catch2 on both. Every job is now `ubuntu-latest`; the Python

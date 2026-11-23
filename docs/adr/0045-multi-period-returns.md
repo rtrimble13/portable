@@ -1,6 +1,6 @@
 # ADR 0045 — Multi-period returns: one walk, rows that stand alone, and a record that breaks where nothing was held
 
-- **Status:** Accepted (owner, 2026-11-23), with the recommended answers to all five questions. Not yet implemented. Accepted with [ADR 0044](0044-estimated-returns-over-unpriced-days.md), so the two share `twr-2.0` (§7)
+- **Status:** Accepted (owner, 2026-11-23), with the recommended answers to all five questions. §1 is implemented: `walk` and `window` in `portable_core/services/returns.py`, held to `pert twr` by `tests/integration/test_twr_windows.py`. §§2–9 are not yet. Accepted with [ADR 0044](0044-estimated-returns-over-unpriced-days.md), so the two share `twr-2.0` (§7)
 - **Date:** 2026-11-23; accepted 2026-11-23
 - **Milestone:** v0.2, issue 5 (P1)
 - **Governs:** `PORT-GIPS-A04`, `B04`, `B07`, `H01`, `H02`, `H03`, `H04`, `H06`; `CLAUDE.md` "Do not annualize sub-one-year returns", invariants 6, 9, 10
