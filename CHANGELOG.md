@@ -16,6 +16,18 @@ Two rules specific to this repository:
 
 ### Added
 
+- **Annualising, by anniversary** (ADR 0045 §5): `services.periods.annualize`.
+  The rate is `exp(ln(1 + R) / N) − 1` in the return engine's decimal
+  context. N counts whole anniversaries, plus the part year left over
+  against the year it falls in, so a 3-year period is exactly 3 however
+  many 29 Februaries it holds. `exp` and `ln` are correctly rounded and a
+  non-integral power is not, so the bytes are fixed.
+  - Over exactly one year, the rate is the cumulative return itself.
+  - Under a year, it is refused with `PT-E-GIPS-ANNUALIZE-SUB-YEAR`.
+  - At −100% or below, it is refused with the new **`PT-E-RETURN-TOTAL-LOSS`**.
+
+  `pert periods` will be its first caller.
+
 - **`pt account update` and `pt instrument update`** (issue 38).
   - **`pt account update`** changes an account's custodian, alias or note.
     Four other fields are accepted only so that each can be refused with its
@@ -596,6 +608,26 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **A year is counted by anniversary, not as 365 days** (ADR 0045 §5,
+  `PORT-GIPS-B07`). The formatter's guard let any period of 365 days or more
+  be annualised. The period from the end of 2023-12-31 to the end of
+  2024-12-30 is 365 days and one day short of a year, because 2024 has a 29
+  February, so it would have passed. Nothing annualises yet, so no output
+  changes.
+  - The guard reads `portable_core.domain.periods.at_least_a_year`, the one
+    test of a year wherever it is made.
+  - A return period runs month end to month end: the end of February goes
+    to the end of February.
+  - The tax holding period keeps its own rule, calendar date to calendar
+    date, and a test pins the difference.
+- **`pt init` refuses a fiscal year end that is not the last day of a month**
+  (ADR 0045 §2, `PORT-GIPS-A04`), with **`PT-E-FISCAL-YEAR-END`** and exit 2.
+  It stored any string: `06-15`, `02-29` and `banana` were all accepted, and
+  annual boundaries were to be derived from them.
+  - `02-28` means the end of February in every year, leap or not.
+  - A file created before this keeps what it has. `pert` checks a stored
+    value when it first reads one, with `pert periods`.
+- **`pt init`'s `--fiscal-year-end` help** says it must be a month end.
 - **`pert twr` breaks a track record where nothing was held, and never links
   across the gap** (ADR 0045 §4, `PORT-GIPS-H06`). It skipped days with
   nothing held and nothing moving and linked straight across them (ADR 0040

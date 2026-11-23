@@ -270,18 +270,32 @@ def test_an_empty_table_says_so_rather_than_printing_nothing() -> None:
 
 @pytest.mark.gips
 @pytest.mark.parametrize(
-    ("days", "annualized", "allowed"),
+    ("start", "days", "annualized", "allowed"),
     [
-        (1, True, False),
-        (30, True, False),
-        (364, True, False),
-        (365, True, True),
-        (366, True, True),
-        (1, False, True),  # not annualized: fine at any length
-        (364, False, True),
+        (date(2025, 1, 1), 1, True, False),
+        (date(2025, 1, 1), 30, True, False),
+        (date(2025, 1, 1), 364, True, False),
+        # A day short of a year: 2024 has a 29 February (ADR 0045 §5).
+        (date(2023, 12, 31), 365, True, False),
+        (date(2025, 1, 1), 365, True, True),
+        (date(2023, 12, 31), 366, True, True),
+        (date(2025, 1, 1), 1, False, True),  # not annualized: fine at any length
+        (date(2025, 1, 1), 364, False, True),
+    ],
+    ids=[
+        "1-day",
+        "1-month",
+        "364-days",
+        "365-days-across-29-feb",
+        "365-days",
+        "366-days",
+        "1-day-cumulative",
+        "364-days-cumulative",
     ],
 )
-def test_subyear_return_never_annualized(days: int, annualized: bool, allowed: bool) -> None:
+def test_subyear_return_never_annualized(
+    start: date, days: int, annualized: bool, allowed: bool
+) -> None:
     """PORT-GIPS-B07 -- unconditional, and enforced in the formatter.
 
     Firms 2.A.12 / Asset Owners 22.A.9. It binds the since-inception
@@ -290,11 +304,11 @@ def test_subyear_return_never_annualized(days: int, annualized: bool, allowed: b
     (PORT-GIPS-C03).
 
     The check lives here because anywhere else, a call site would eventually
-    be added that does not call it.
+    be added that does not call it. A year is counted by anniversary: 365 days
+    from the end of 2023-12-31 is the end of 2024-12-30, a day short.
     """
     from datetime import timedelta
 
-    start = date(2025, 1, 1)
     value = ReturnValue(
         value=D("0.05"),
         method="twr",

@@ -157,6 +157,12 @@ E_RETURN_BREAK: Final = "PT-E-RETURN-BREAK"
 #: ADR 0045 §4, PORT-GIPS-H06. A period in which nothing was held at all: it
 #: has no return, which is not a return of zero.
 E_RETURN_NOTHING_HELD: Final = "PT-E-RETURN-NOTHING-HELD"
+#: ADR 0045 §5. A cumulative return of -100% or below has no annualised
+#: figure: there is no rate that compounds to nothing.
+E_RETURN_TOTAL_LOSS: Final = "PT-E-RETURN-TOTAL-LOSS"
+#: ADR 0045 §2, PORT-GIPS-A04. A fiscal year end that is not the last day of
+#: a month.
+E_FISCAL_YEAR_END: Final = "PT-E-FISCAL-YEAR-END"
 #: An effective-dated config row that would change a figure already recorded,
 #: offered without `--restate` (ADR 0025).
 E_RESTATES_HISTORY: Final = "PT-E-RESTATES-HISTORY"
@@ -241,6 +247,8 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_FEE_EMBEDDED_IN_CASH,
     E_RETURN_BREAK,
     E_RETURN_NOTHING_HELD,
+    E_RETURN_TOTAL_LOSS,
+    E_FISCAL_YEAR_END,
     E_RESTATES_HISTORY,
     E_PRICE_MISSING,
     E_PRICE_STALE,

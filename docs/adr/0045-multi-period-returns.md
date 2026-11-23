@@ -3,9 +3,11 @@
 - **Status:** Accepted (owner, 2026-11-23), with the recommended answers to all five questions. Implemented so far:
   - §1, `walk` and `window` in `portable_core/services/returns.py`, held to `pert twr` by `tests/integration/test_twr_windows.py`;
   - §4, the break, in the same module, tested by `tests/integration/test_track_record_breaks.py`;
-  - §7's `twr-2.0`, published.
+  - §7's `twr-2.0`, published;
+  - §5, in `portable_core/domain/periods.py` (the anniversary, the year count) and `services/periods.py` (`annualize`), with the formatter's guard reading the same rule;
+  - §2's fiscal year end, `FiscalYearEnd`, refused by `pt init` unless it is a month end.
 
-  §2, §3, §5, §6, §8, §9 and `pert periods` are not yet. Accepted with [ADR 0044](0044-estimated-returns-over-unpriced-days.md), so the two share `twr-2.0` (§7)
+  The periods themselves (§2's table, §3, §6, §8), `pert periods`, and `pert`'s own check of a stored fiscal year end are not yet. Accepted with [ADR 0044](0044-estimated-returns-over-unpriced-days.md), so the two share `twr-2.0` (§7)
 - **Date:** 2026-11-23; accepted 2026-11-23
 - **Milestone:** v0.2, issue 5 (P1)
 - **Governs:** `PORT-GIPS-A04`, `B04`, `B07`, `H01`, `H02`, `H03`, `H04`, `H06`; `CLAUDE.md` "Do not annualize sub-one-year returns", invariants 6, 9, 10
@@ -130,7 +132,9 @@ Every row ends at `--to` (T), which defaults to `--as-of`, explicitly
   last day of `MM` and `02-28` means the last day of February. Quarters are
   the three-month steps back from it. Anything else is refused
   (`PT-E-FISCAL-YEAR-END`), naming the stored value, by `pert` and from now
-  on by `pt init`. Weeks-based fiscal years (52/53) are not supported. The
+  on by `pt init`. `pt init` treats it as a bad flag value and exits 2, as
+  it does for a malformed date. A stored value `pert` cannot read is a
+  validation failure, exit 4. Weeks-based fiscal years (52/53) are not supported. The
   owner's file is `12-31`, so nothing changes for it.
 - **Custom ranges stay `pert twr --from --to`.** Issue 7's monthly series
   is a list of windows on the same walk.
@@ -215,7 +219,10 @@ This settles ADR 0040 §11.
   between decimal implementations. Written this way, the rounding of every
   step is defined, and so are the bytes (invariant 6).
 - **No annualised figure exists when 1 + R ≤ 0.** It is null with its
-  reason.
+  reason (`PT-E-RETURN-TOTAL-LOSS`).
+- **Over exactly one year, the annualised figure is the cumulative return
+  itself** (as built). Computed through `exp` and `ln`, it could differ in
+  the last digit, and a one-year row would then show two numbers for one.
 - **Presented:** every row of a year or more shows cumulative and
   annualised, each labelled as such (question 3). Under a year, the
   annualised figure is null with the reason `PORT-GIPS-B07`.
