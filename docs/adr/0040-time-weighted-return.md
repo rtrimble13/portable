@@ -1,6 +1,6 @@
 # ADR 0040 — Time-weighted return: daily sub-periods from stored snapshots, Modified Dietz across gaps
 
-- **Status:** Accepted (owner, 2026-11-08), with the recommended answers to questions 1, 3 and 4. Implemented: `portable_core/services/returns.py`, `portable_core/domain/returns.py`, `pert twr`, `schemas/twr-1.0.json`; §13's prerequisites and ADR 0041 first. To question 2 the owner holds individual coupon bonds. Accrued interest (§13.1) turned out to need a bond model the code lacks, proposed in [ADR 0041](0041-bonds-at-face-with-accrued-interest.md); until it lands, §12's bond refusal stands
+- **Status:** Accepted (owner, 2026-11-08), with the recommended answers to questions 1, 3 and 4. Implemented: `portable_core/services/returns.py`, `portable_core/domain/returns.py`, `pert twr`, `schemas/twr-1.0.json`; §13's prerequisites and ADR 0041 first. To question 2 the owner holds individual coupon bonds. Accrued interest (§13.1) turned out to need a bond model the code lacks, proposed in [ADR 0041](0041-bonds-at-face-with-accrued-interest.md); until it lands, §12's bond refusal stands. Superseded in part 2026-11-23 by [ADR 0045](0045-multi-period-returns.md): the first bullet of §4 (a record now breaks where nothing was held, and is never linked across), and §11, which deferred annualisation to that ADR (a year is counted by anniversary)
 - **Date:** 2026-11-08; accepted 2026-11-08
 - **Milestone:** v0.2, issue 2 (P0)
 - **Governs:** `PORT-GIPS-A03`, `A06`, `B01`–`B07`, `D01`, `D04`, `D05`; `CLAUDE.md` "TWR vs. MWR", "External cash flow classification is level-dependent", "Do not annualize sub-one-year returns"
@@ -138,6 +138,11 @@ an exact daily return.
 
 ### 4. Undefined days are refused, idle days are skipped
 
+> The first bullet is superseded by [ADR 0045](0045-multi-period-returns.md)
+> §4. Skipping idle days linked two stints across them, against
+> `PORT-GIPS-H06`. They now end a track record, and a return across one is
+> refused. The second bullet stands.
+
 - **The denominator is zero and nothing moved** (`V_B` 0, no flow, `V_E` 0).
   The account held nothing that day. The day is skipped (it contributes no
   factor) and listed on the result as idle. This covers an account emptied
@@ -270,6 +275,10 @@ method and basis are recorded on the result object, in the same commit.
 Revisit when tearsheets publish numbers that must be held fixed.
 
 ### 11. Annualisation (`PORT-GIPS-B07`)
+
+> Settled by [ADR 0045](0045-multi-period-returns.md) §5. A year is counted
+> by anniversary, not as 365 days, and annualising is
+> `exp(ln(1 + R) / N) − 1`.
 
 This engine reports cumulative returns only. The result carries its period
 length, and the formatter refuses to render an annualised figure for a

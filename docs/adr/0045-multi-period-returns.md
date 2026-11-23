@@ -1,12 +1,12 @@
 # ADR 0045 — Multi-period returns: one walk, rows that stand alone, and a record that breaks where nothing was held
 
-- **Status:** Proposed — for the owner's decision on the five questions at the end, each with a recommendation. Nothing is implemented
-- **Date:** 2026-11-23
+- **Status:** Accepted (owner, 2026-11-23), with the recommended answers to all five questions. Not yet implemented. Accepted with [ADR 0044](0044-estimated-returns-over-unpriced-days.md), so the two share `twr-2.0` (§7)
+- **Date:** 2026-11-23; accepted 2026-11-23
 - **Milestone:** v0.2, issue 5 (P1)
 - **Governs:** `PORT-GIPS-A04`, `B04`, `B07`, `H01`, `H02`, `H03`, `H04`, `H06`; `CLAUDE.md` "Do not annualize sub-one-year returns", invariants 6, 9, 10
 - **Amends:** [ADR 0040](0040-time-weighted-return.md) §4 (idle days), and settles its §11 (annualisation, deferred to this issue)
 - **Depends on:** [ADR 0005](0005-decimal-representation-and-rounding.md), [ADR 0024](0024-valuation-snapshots-are-valued-state.md), [ADR 0031](0031-price-acceptance-against-statements.md), [ADR 0040](0040-time-weighted-return.md)
-- **Relates:** [ADR 0044](0044-estimated-returns-over-unpriced-days.md) (proposed; its §3 already says how a period row treats an estimate), issue 58 (the custodian reports by period), issue 7 (its 36 monthly returns are windows of the same walk)
+- **Relates:** [ADR 0044](0044-estimated-returns-over-unpriced-days.md) (its §3 already says how a period row treats an estimate), issue 58 (the custodian reports by period), issue 7 (its 36 monthly returns are windows of the same walk)
 
 ## Context
 
@@ -70,7 +70,7 @@ from the end of 2023-12-31 to the end of 2024-12-30 is 365 days and one day
 short of a year, because 2024 has a 29 February. The guard would let it be
 annualised. Nothing annualises today; issue 5 is the first thing that will.
 
-## Decision (proposed)
+## Decision
 
 ### 1. One walk, many windows, and `pert twr` is one window
 
@@ -185,8 +185,7 @@ undefined days are refused.
   money was not in the account at all.
 
 After this, a measured window never contains an idle day: one would be a
-break, or past a termination. `idle_days` stays in `twr-1.x`, always empty,
-and is removed at the next major version.
+break, or past a termination. `twr-2.0` drops `idle_days` (§7).
 
 ### 5. Annualising a period of a year or more (`PORT-GIPS-B07`)
 
@@ -242,13 +241,21 @@ pert periods [--to DATE] [--account NAME] [--basis BASIS]
 ```
 
 - **`schemas/periods-1.0.json`**, with the disclaimer in the envelope
-  (`CLAUDE.md`, Output).
-- **`twr-1.1`.** `pert twr`'s `period` gains `requested_end`, and its error
-  list gains the two refusals of §4. Both are additive: a `1.0` consumer
-  reading `period.end` reads the true end.
-- **If ADR 0044 is accepted first**, both changes land in its `twr-2.0`,
-  and `periods-1.0` carries `is_estimated` from the start. Neither schema
-  then needs a second major version.
+  (`CLAUDE.md`, Output). It carries ADR 0044's `is_estimated` on every
+  return and its `estimate` block from its first version.
+- **`twr-2.0`, shared with ADR 0044.** Both ADRs were accepted the same
+  day, so `pert twr`'s schema takes one major version. From this ADR it
+  takes:
+  - `requested_end` in `period`;
+  - the two refusals of §4;
+  - no `idle_days`.
+
+  From ADR 0044 it takes `is_estimated` and `estimate`. Whichever is built
+  first publishes `twr-2.0` with all of these. Until the estimate tier
+  exists, `is_estimated` is `false` and `estimate` is `null`. That is true,
+  not a placeholder: nothing is estimated without the flag.
+- **The draft offered a `twr-1.1`**, additive, for this ADR alone. It is
+  not published: one version change is cheaper for a consumer than two.
 
 ### 8. Stability (`PORT-GIPS-A04`)
 
@@ -326,6 +333,17 @@ rows as they were, because the termination date does not move.
    report? On a portfolio priced only at month ends, a mid-month `--to`
    leaves every row null under the recommendation, each with its reason.
 
+## Owner's answers (2026-11-23)
+
+1. **The break applies at both levels.** An account emptied and later
+   re-funded starts a new record.
+2. **`pert twr` past a termination** ends at the termination and carries
+   both dates.
+3. **Annualised beside cumulative** on every row of a year or more.
+4. **Exit 0 when some rows are null**, with a warning per null row. When
+   no row is measured, the command exits with the first row's refusal.
+5. **Every row ends at `--to`.**
+
 ## Consequences
 
 - **`pert twr` changes for a period that holds an idle run.** It is now
@@ -335,10 +353,11 @@ rows as they were, because the termination date does not move.
 - **`pt init` refuses a fiscal year end that is not a month end.** For an
   existing file, `pert` refuses it when it reads it.
 - **No `.port` schema change and no migration.** `schemas/periods-1.0.json`
-  is added, and `twr-1.0` becomes `twr-1.1`, or ADR 0044's `twr-2.0`.
-- **On acceptance:**
-  - `docs/gips-standard.md` amends the `PORT-GIPS-B07` test line (§5) and
-    records the account-level answer under `PORT-GIPS-H06`;
+  is added, and `twr-1.0` becomes `twr-2.0`, shared with ADR 0044.
+- **Recorded on acceptance:**
+  - `docs/gips-standard.md` amends the `PORT-GIPS-B07` test line (§5),
+    records the account-level answer under `PORT-GIPS-H06`, and says under
+    `PORT-GIPS-A04` that the fiscal year ends at a month end;
   - ADR 0040's status line records §4 as superseded in part, and §11 as
     settled here.
 - **`meta.inception_date` is still not read.** A record's inception comes

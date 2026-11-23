@@ -145,22 +145,27 @@ Then:
    prices to `examples/sample_prices.csv`, and stores the snapshots, so
    `pert twr` runs on the committed file. Two of its returns are checked
    against hand arithmetic from the CSV.
-4. **An estimate tier for days that cannot be priced** (issue 60) — proposed
-   in [ADR 0044](adr/0044-estimated-returns-over-unpriced-days.md), awaiting the
-   owner. A carried price, only under `pert twr --estimate MAX_SHARE`, only on
-   days the measured path refuses, marked `ESTIMATED` on every return and never
-   linked into the track record. A judged estimate (`pt price set --estimate`)
-   already counts, as `PORT-GIPS-A09` allows; a carried price is not one.
+4. **An estimate tier for days that cannot be priced** (issue 60) — accepted
+   in [ADR 0044](adr/0044-estimated-returns-over-unpriced-days.md), built
+   after item 5's walk, which records why each unusable day is unusable. A
+   carried price, only under `pert twr --estimate MAX_SHARE` (the owner
+   works with `0.05`), only on days the measured path refuses, marked
+   `ESTIMATED` on every return and never linked into the track record. A
+   judged estimate (`pt price set --estimate`) already counts, as
+   `PORT-GIPS-A09` allows; a carried price is not one.
 5. **Multi-period reporting** (issue 5) — MTD, QTD, YTD, 1/3/5/10-year,
    since-inception, calendar-year table. Sub-one-year returns are never
-   annualized — a requirement, not a convention (`PORT-GIPS-B07`). Proposed
-   in [ADR 0045](adr/0045-multi-period-returns.md), awaiting the owner:
-   one walk with every row equal to `pert twr` over its window, rows that
-   are null with a reason rather than refusing the table, and annualisation
-   by anniversaries rather than a 365-day count. It also amends ADR 0040
-   §4. Today `pert twr` links across days on which nothing was held, which
-   `PORT-GIPS-H06` forbids, and prints 0.00% for a window that holds only
-   such days.
+   annualized — a requirement, not a convention (`PORT-GIPS-B07`). Accepted
+   in [ADR 0045](adr/0045-multi-period-returns.md), and built first:
+   - one walk, with every row equal to `pert twr` over its window;
+   - a row that cannot be measured is null with its reason, rather than
+     refusing the table;
+   - a year is counted by anniversary, not as 365 days.
+
+   It also amends ADR 0040 §4. Today `pert twr` links across days on which
+   nothing was held, which `PORT-GIPS-H06` forbids, and prints 0.00% for a
+   window that holds only such days. The two ADRs share one major version
+   of `pert twr`'s schema, `twr-2.0`.
 6. **Benchmarks** (issue 6) — blends with explicit rebalancing rules, active
    return, tracking error. **Total-return series only** (`PORT-GIPS-G01`).
 7. **Money-weighted return (XIRR)** (issue 4) — annualized since-inception,
