@@ -424,6 +424,7 @@ test that fails without your change.
   | 0042 | CI runs Linux only, for now |
   | 0043 | The pure-Python CI job skips the integration tests while nothing computes natively |
   | 0044 | A return over unpriced days is estimated only on request, marked, and never linked into the track record (proposed) |
+  | 0045 | Multi-period returns: one walk, rows that stand alone, and a record that breaks where nothing was held (proposed) |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager
