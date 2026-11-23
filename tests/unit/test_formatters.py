@@ -433,3 +433,45 @@ def test_a_sub_penny_price_does_not_floor_to_zero() -> None:
 
     assert price(D("0.0003123")) == "0.0003123"
     assert price(D("190.5")) == "190.50"
+
+
+@pytest.mark.gips
+def test_a_return_in_csv_is_its_value_with_the_marks_that_must_stay() -> None:
+    """A spreadsheet gets a number, at full precision. A supplemental figure
+    (PORT-GIPS-H08) and an estimate (ADR 0044 §2) keep their mark in the cell,
+    where no header can lose it."""
+    from portable_core.formatters.renderers import _csv_value
+
+    def value(*, supplemental: bool = False, estimated: bool = False) -> ReturnValue:
+        return ReturnValue(
+            value=D("0.015116379517053181739202770147680"),
+            method="twr",
+            basis="net_of_fees",
+            period_start=date(2024, 12, 31),
+            period_end=date(2025, 12, 31),
+            is_supplemental=supplemental,
+            is_estimated=estimated,
+        )
+
+    assert _csv_value(value()) == "0.015116379517053181739202770147680"
+    assert _csv_value(value(supplemental=True)).endswith(" SUPPLEMENTAL")
+    assert _csv_value(value(estimated=True)).endswith(" ESTIMATED")
+
+
+@pytest.mark.gips
+def test_port_gips_b07_binds_the_machine_formats_too() -> None:
+    """JSON and CSV do not go through render_return, so each checks for itself."""
+    from portable_core.formatters.renderers import _csv_value
+
+    annualized = ReturnValue(
+        value=D("0.05"),
+        method="twr",
+        basis="net_of_fees",
+        period_start=date(2023, 12, 31),
+        period_end=date(2024, 12, 30),
+        is_annualized=True,
+    )
+    for machine_format in (machine, _csv_value):
+        with pytest.raises(GipsRefusalError) as refused:
+            machine_format(annualized)
+        assert refused.value.code == "PT-E-GIPS-ANNUALIZE-SUB-YEAR"

@@ -125,3 +125,8 @@ class CommandResult:
     disclaimer: str | None = None
     #: Reference to the JSON Schema this output validates against.
     schema_ref: str | None = None
+    #: Whether `table` and `markdown` render `data` under the table. A command
+    #: whose table and footnotes carry what a reader needs, and whose `data`
+    #: holds every row's full detail for a machine, sets this False. `json`
+    #: always carries `data`, and `csv` never renders it beside a table.
+    human_data: bool = True

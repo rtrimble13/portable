@@ -159,6 +159,8 @@ def machine(value: object) -> object:
     if isinstance(value, list | tuple):
         return [machine(v) for v in value]
     if isinstance(value, ReturnValue):
+        # The machine formats are bound by PORT-GIPS-B07 as the human ones are.
+        require_not_annualized(value)
         return {
             "value": to_text(value.value),
             "method": value.method,
