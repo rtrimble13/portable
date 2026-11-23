@@ -366,6 +366,31 @@ def test_supplemental_returns_are_labelled_as_such() -> None:
     assert "SUPPLEMENTAL" in render_return_safe(value)
 
 
+@pytest.mark.gips
+def test_an_estimated_return_cannot_be_shown_as_a_measurement() -> None:
+    """ADR 0044 §2: the marker travels with the value. Every human format renders
+    it, and the machine form carries it whether or not it is set."""
+    measured = ReturnValue(
+        value=D("0.3668"),
+        method="twr",
+        basis="net_of_fees",
+        period_start=date(2023, 12, 31),
+        period_end=date(2024, 12, 31),
+    )
+    estimated = ReturnValue(
+        value=D("0.3668"),
+        method="twr",
+        basis="net_of_fees",
+        period_start=date(2023, 12, 31),
+        period_end=date(2024, 12, 31),
+        is_estimated=True,
+    )
+    assert render_return_safe(estimated) == "36.68% (TWR, net-of-fees, ESTIMATED)"
+    assert "ESTIMATED" not in render_return_safe(measured)
+    assert machine(estimated)["is_estimated"] is True  # type: ignore[index]
+    assert machine(measured)["is_estimated"] is False  # type: ignore[index]
+
+
 # ── number rules ─────────────────────────────────────────────────────────────
 
 

@@ -1,6 +1,6 @@
 # ADR 0044 — A return over unpriced days is estimated only on request, marked, and never linked into the track record
 
-- **Status:** Accepted (owner, 2026-11-23), with the recommended answers to questions 1–7 as amended in review, and a working limit of 5% (question 8). See Owner's answers. Not yet implemented. `twr-2.0` is shared with [ADR 0045](0045-multi-period-returns.md), accepted the same day
+- **Status:** Accepted (owner, 2026-11-23), with the recommended answers to questions 1–7 as amended in review, and a working limit of 5% (question 8). See Owner's answers. Implemented so far: §2's marker. `ReturnValue.is_estimated` is rendered `ESTIMATED` by the formatter, and `twr-2.0` requires `is_estimated` and `estimate`, which are `false` and `null` until the tier exists. The tier itself is not built. `twr-2.0` is shared with [ADR 0045](0045-multi-period-returns.md), accepted the same day
 - **Date:** 2026-11-17; accepted 2026-11-23
 - **Milestone:** v0.2, issue 60 (P1)
 - **Governs:** `PORT-GIPS-A02`, `A03`, `A09`, `B04`, `B05`, `H04`, `H08`, `J03`, `J04`; `CLAUDE.md` invariants 6, 9, 10

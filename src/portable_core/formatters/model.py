@@ -96,6 +96,10 @@ class ReturnValue:
     #: Anything GIPS would not recognise as a return -- after-tax, model,
     #: backtested, a sleeve without allocated cash (``PORT-GIPS-H08``).
     is_supplemental: bool = False
+    #: Computed over a price carried forward, not measured (ADR 0044 §2).
+    #: Rendered on the value, so no call site can present an estimate as a
+    #: measurement. Nothing sets it until `pert twr --estimate` exists.
+    is_estimated: bool = False
     label: str | None = None
 
     @property

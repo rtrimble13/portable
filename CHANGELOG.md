@@ -596,6 +596,41 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **`pert twr` breaks a track record where nothing was held, and never links
+  across the gap** (ADR 0045 §4, `PORT-GIPS-H06`). It skipped days with
+  nothing held and nothing moving and linked straight across them (ADR 0040
+  §4). That printed three wrong things:
+  - two separate stints, one up 10% and one down 10%, as a single −1.00%;
+  - 0.00% for a period in which nothing was held at all;
+  - a return labelled as running two weeks past the day the account emptied.
+
+  Now:
+  - a period across the gap is refused with **`PT-E-RETURN-BREAK`**, naming
+    where the record ended and where it began again;
+  - one with nothing held is refused with **`PT-E-RETURN-NOTHING-HELD`**;
+  - one that starts or ends in such days is moved to the record, and carries
+    the requested dates beside the measured ones (`PORT-GIPS-H02`).
+
+  The rule is the same for an account and for the portfolio, which holds
+  nothing only when every account does. Nothing changes on the sample,
+  whose accounts are never empty. `tests/integration/test_track_record_breaks.py`
+  works each case by hand.
+- **`pert twr` publishes `twr-2.0`**, the one major version ADR 0044 and
+  ADR 0045 share. `twr-1.0.json` stays published for consumers pinned to
+  it.
+  - `period` gains `requested_end`, `nothing_held_before` and
+    `nothing_held_after`.
+  - Every return gains `is_estimated` and `data` gains `estimate`. Both are
+    required, so a consumer reads them before ADR 0044's `--estimate` can
+    set them. Until then they are `false` and `null`, which is true: nothing
+    is estimated without the flag.
+  - `subperiods.idle_days` is removed. A measured period no longer holds
+    such a day.
+  - The envelope's `as_of` is the requested end, as it was before an end
+    could move.
+- **A return marked estimated reads `ESTIMATED`** in `table` and `markdown`,
+  wherever it is rendered (ADR 0044 §2). The formatter adds the word, so no
+  call site can drop it. Nothing sets the mark yet.
 - **Four `PORT-GIPS` requirements say more**, under ADR 0044 and ADR 0045,
   accepted 2026-11-23. Nothing computes differently yet; each line records
   an obligation the code takes on as the ADRs are built.

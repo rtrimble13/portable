@@ -7,7 +7,7 @@ result out. Every number is decided in the service.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Annotated, Any
 
 import typer
@@ -49,6 +49,10 @@ def twr(
     month. Net-of-fees leads. Nothing is annualized here. A missing or
     incomplete day, a large flow inside a gap, or a day with no return policy
     is refused, never interpolated.
+
+    A track record ends where nothing is held, and two are never linked. A
+    period across the gap is refused, as is one with nothing held at all. A
+    period that starts or ends in it is moved to the record, and says so.
     """
 
     def action() -> CommandResult:
@@ -111,17 +115,22 @@ def _render(result: TimeWeightedReturn, *, daily: bool, portfolio: str | None) -
             "requested_start": result.requested_start.isoformat(),
             "start": result.start.isoformat(),
             "end": result.end.isoformat(),
+            "requested_end": result.requested_end.isoformat(),
             "inception": result.inception.isoformat(),
             "days": result.days,
             "is_annualized": False,
+            "nothing_held_before": _span(result.nothing_held_before),
+            "nothing_held_after": _span(result.nothing_held_after),
         },
         "returns": [_value(result, basis) for basis in BASES],
         "gross_equals_net_of_external_costs_only": combined,
         "subperiods": {
             "daily": result.count(ReturnMethod.DAILY),
             "modified_dietz": result.count(ReturnMethod.MODIFIED_DIETZ),
-            "idle_days": [day.isoformat() for day in result.idle_days],
         },
+        # ADR 0044 §2. Nothing is estimated until `--estimate` exists, and the
+        # field is there from the first `twr-2.0` so a consumer reads it.
+        "estimate": None,
         "disclosures": {
             "large_flow_days": [d.isoformat() for d in disclosures.large_flow_days],
             "estimated_days": [d.isoformat() for d in disclosures.estimated_days],
@@ -167,11 +176,18 @@ def _render(result: TimeWeightedReturn, *, daily: bool, portfolio: str | None) -
             footnotes=notes,
         ),
         data=data,
-        as_of=result.end,
+        as_of=result.requested_end,
         portfolio=portfolio,
         disclaimer=GIPS_DISCLAIMER,
-        schema_ref="twr-1.0.json",
+        schema_ref="twr-2.0.json",
     )
+
+
+def _span(days: tuple[date, date] | None) -> dict[str, str] | None:
+    if days is None:
+        return None
+    first, last = days
+    return {"from": first.isoformat(), "to": last.isoformat()}
 
 
 def _notes(result: TimeWeightedReturn) -> tuple[str, ...]:
@@ -187,10 +203,25 @@ def _notes(result: TimeWeightedReturn) -> tuple[str, ...]:
             f"{md} sub-period(s) bridge unpriced days by Modified Dietz in calendar "
             "days, within a month and with no large flow inside."
         )
-    if result.start != result.requested_start:
+    # ADR 0045 §4: a track record ends where nothing is held, and the period
+    # is moved to the record rather than linked across the gap (PORT-GIPS-H06).
+    if result.nothing_held_before is not None:
+        first, last = result.nothing_held_before
+        notes.append(
+            f"Starts on {result.start.isoformat()}, where the track record begins again: "
+            f"nothing was held from {first.isoformat()} to {last.isoformat()}. The "
+            f"requested start was {result.requested_start.isoformat()}."
+        )
+    elif result.start != result.requested_start:
         notes.append(
             f"Starts at inception, {result.inception.isoformat()}, after the requested "
             f"{result.requested_start.isoformat()}."
+        )
+    if result.nothing_held_after is not None:
+        first, last = result.nothing_held_after
+        notes.append(
+            f"Ends on {result.end.isoformat()}, where the track record ended: nothing was "
+            f"held from {first.isoformat()} to {last.isoformat()}, the requested end."
         )
     # PORT-GIPS-B03: say whether the large-flow threshold bound, because a
     # reader cannot otherwise tell.

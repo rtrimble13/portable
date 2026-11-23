@@ -61,6 +61,45 @@ def run_pt(tmp_path: Path) -> CliRunner:
     return make_runner(tmp_path)
 
 
+@pytest.fixture
+def run_pert(tmp_path: Path) -> CliRunner:
+    """Invoke `pert`, JSON by default, isolated and decoded as `run_pt` is."""
+
+    def run(
+        *args: str,
+        expect: int | None = 0,
+        fmt: str = "json",
+        extra_env: dict[str, str] | None = None,
+    ) -> CliResult:
+        env = dict(os.environ)
+        env |= {
+            "PYTHONPATH": str(ROOT / "src"),
+            "NO_COLOR": "1",
+            "HOME": str(tmp_path),
+            "USERPROFILE": str(tmp_path),
+        }
+        env.pop("PORTABLE_PORT", None)
+        env |= extra_env or {}
+        completed = subprocess.run(
+            [sys.executable, "-m", "portable_pert", "--format", fmt, *args],
+            capture_output=True,
+            # `pert` writes UTF-8 on every platform (portable_core.cli.streams).
+            encoding="utf-8",
+            check=False,
+            cwd=tmp_path,
+            env=env,
+        )
+        result = CliResult(completed)
+        if expect is not None:
+            assert result.returncode == expect, (
+                f"exit {result.returncode}, expected {expect}\n"
+                f"stdout: {result.stdout}\nstderr: {result.stderr}"
+            )
+        return result
+
+    return run
+
+
 def make_runner(tmp_path: Path) -> CliRunner:
     """A `pt` runner whose working and home directory is *tmp_path*.
 

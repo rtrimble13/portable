@@ -170,6 +170,7 @@ def machine(value: object) -> object:
             "period_days": value.period_days,
             "is_annualized": value.is_annualized,
             "is_supplemental": value.is_supplemental,
+            "is_estimated": value.is_estimated,
         }
     if isinstance(value, date | datetime):
         return value.isoformat()
@@ -224,5 +225,8 @@ def render_return(value: ReturnValue) -> str:
         descriptor.append("annualized")
     if value.is_supplemental:
         descriptor.append("SUPPLEMENTAL")
+    if value.is_estimated:
+        # ADR 0044 §2: an estimate is never shown as a measurement.
+        descriptor.append("ESTIMATED")
     parts.append(f"({', '.join(descriptor)})")
     return " ".join(parts)

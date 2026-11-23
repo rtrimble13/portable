@@ -79,11 +79,31 @@ footnote at the end of a formatted block can be lost by accident.
 Removing the statement of what wash-sale detection does not cover therefore
 breaks CI rather than a filing.
 
-`pert twr` requires a non-empty disclaimer in its schema too (`twr-1.0`,
+`pert twr` requires a non-empty disclaimer in its schema too (`twr-2.0`,
 ADR 0040). Each of its four returns names its method, basis and period. Its
 `is_annualized` is fixed `false`, and `is_supplemental` is `true` for
 `net_of_all_costs` and for no other basis. A consumer cannot take a
 supplemental figure for a GIPS basis without the schema noticing.
+
+Every return also carries `is_estimated`, and `data.estimate` says what was
+estimated (ADR 0044). Both are required from `twr-2.0` on, so a consumer
+reads them before it reads a value. Until `pert twr --estimate` exists,
+`is_estimated` is always `false` and `estimate` always `null`. Nothing is
+estimated without the flag. In `table` and `markdown` an estimated return
+reads `… (TWR, net-of-fees, ESTIMATED)`.
+
+A track record ends where nothing is held, and `pert twr` never links one
+record to the next (ADR 0045 §4, `PORT-GIPS-H06`). Two refusals follow:
+
+- **`PT-E-RETURN-BREAK`**: the period spans one record's end and the next
+  one's beginning. Its context names both dates.
+- **`PT-E-RETURN-NOTHING-HELD`**: nothing was held at all in the period.
+
+A period that starts or ends in days with nothing held is moved to the
+record. `period.start` and `period.end` are what was measured, beside
+`requested_start` and `requested_end`. `nothing_held_before` and
+`nothing_held_after` name the days set aside. `twr-2.0` dropped `1.0`'s
+`subperiods.idle_days`, since a measured period no longer holds such a day.
 
 ### Errors are JSON too
 

@@ -1,6 +1,11 @@
 # ADR 0045 — Multi-period returns: one walk, rows that stand alone, and a record that breaks where nothing was held
 
-- **Status:** Accepted (owner, 2026-11-23), with the recommended answers to all five questions. §1 is implemented: `walk` and `window` in `portable_core/services/returns.py`, held to `pert twr` by `tests/integration/test_twr_windows.py`. §§2–9 are not yet. Accepted with [ADR 0044](0044-estimated-returns-over-unpriced-days.md), so the two share `twr-2.0` (§7)
+- **Status:** Accepted (owner, 2026-11-23), with the recommended answers to all five questions. Implemented so far:
+  - §1, `walk` and `window` in `portable_core/services/returns.py`, held to `pert twr` by `tests/integration/test_twr_windows.py`;
+  - §4, the break, in the same module, tested by `tests/integration/test_track_record_breaks.py`;
+  - §7's `twr-2.0`, published.
+
+  §2, §3, §5, §6, §8, §9 and `pert periods` are not yet. Accepted with [ADR 0044](0044-estimated-returns-over-unpriced-days.md), so the two share `twr-2.0` (§7)
 - **Date:** 2026-11-23; accepted 2026-11-23
 - **Milestone:** v0.2, issue 5 (P1)
 - **Governs:** `PORT-GIPS-A04`, `B04`, `B07`, `H01`, `H02`, `H03`, `H04`, `H06`; `CLAUDE.md` "Do not annualize sub-one-year returns", invariants 6, 9, 10
@@ -256,6 +261,12 @@ pert periods [--to DATE] [--account NAME] [--basis BASIS]
   not a placeholder: nothing is estimated without the flag.
 - **The draft offered a `twr-1.1`**, additive, for this ADR alone. It is
   not published: one version change is cheaper for a consumer than two.
+- **As built**, `period` also names the days set aside, as
+  `nothing_held_before` and `nothing_held_after`, each a `{from, to}` or
+  `null`. These replace `idle_days`. Without them a reader sees that a date
+  moved but not why. `estimate` is typed as `null` or an object. Its fields
+  are specified when the estimate tier is built, and no output ever had any
+  other shape.
 
 ### 8. Stability (`PORT-GIPS-A04`)
 

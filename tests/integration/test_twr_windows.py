@@ -32,6 +32,8 @@ from portable_core.errors.kinds import (
     E_FEE_EMBEDDED_IN_CASH,
     E_GIPS_VALUATION_GAP,
     E_RETURN_BLOCKED,
+    E_RETURN_BREAK,
+    E_RETURN_NOTHING_HELD,
     E_RETURN_UNPRICED_TRADE,
     E_SNAPSHOT_MISSING,
     E_SNAPSHOT_STALE,
@@ -84,7 +86,13 @@ REACHED = {
         E_FEE_EMBEDDED_IN_CASH,
         E_GIPS_VALUATION_GAP,
     },
-    "C": {MEASURED, ValidationError.code, E_SNAPSHOT_MISSING},
+    "C": {
+        MEASURED,
+        ValidationError.code,
+        E_SNAPSHOT_MISSING,
+        E_RETURN_BREAK,
+        E_RETURN_NOTHING_HELD,
+    },
 }
 REACHED["B"] = REACHED[None]
 
@@ -109,8 +117,11 @@ def _build_mixed(run_pt: CliRunner, portfolio: Path) -> None:
       end. Both refuse (PT-E-GIPS-VALUATION-GAP).
     * **A second account** opens 01-20. A portfolio window ending before then
       has one account.
-    * **An empty stretch.** C is emptied 01-22 and re-funded 02-12, so its
-      windows across 01-23 to 02-11 hold idle days.
+    * **An empty stretch.** C is emptied 01-22 and re-funded 02-12. Its track
+      record breaks there (ADR 0045 §4): a window across the gap is refused,
+      one inside it holds nothing, and one that starts or ends inside it is
+      moved to the record. The portfolio's does not break, since B holds
+      value throughout.
     * **A cash fee classed as a fund expense** on 02-12 (PORT-GIPS-D05), and
       **a cash trade in an instrument with no market price** on 02-14 (ADR
       0040 §12).
@@ -200,7 +211,7 @@ def test_port_gips_b04_a_window_of_a_walk_is_the_walk_of_the_window(
     walked = walk(mixed, first=FIRST, through=THROUGH, account=account, staleness_days=5)
 
     reached: Counter[str] = Counter()
-    idle = 0
+    moved = 0
     for start, end in WINDOWS:
         code, seen, result = _outcome(window, walked=walked, start=start, end=end)
         alone_code, alone, _ = _outcome(
@@ -213,14 +224,13 @@ def test_port_gips_b04_a_window_of_a_walk_is_the_walk_of_the_window(
         )
         assert (code, seen) == (alone_code, alone), (level, start, end)
         reached[code] += 1
-        if result is not None and result.idle_days:
-            idle += 1
+        if result is not None and (result.nothing_held_before or result.nothing_held_after):
+            moved += 1
 
     assert set(reached) == REACHED[level], reached
-    if level == "C":
-        # The windows across C's empty stretch, linked as ADR 0040 §4 links
-        # them until ADR 0045 §4 is built.
-        assert idle > 0
+    # Only C ever holds nothing: a window starting or ending in its empty
+    # stretch is moved to the record, and no other level's ever is.
+    assert (moved > 0) == (level == "C"), moved
 
 
 @pytest.mark.gips

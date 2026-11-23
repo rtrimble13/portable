@@ -151,6 +151,12 @@ E_RETURN_BLOCKED: Final = "PT-E-RETURN-BLOCKED"
 E_RETURN_UNPRICED_TRADE: Final = "PT-E-RETURN-UNPRICED-TRADE"
 #: ADR 0040 §8, PORT-GIPS-D05. A cash fee classed as a fund's embedded expense.
 E_FEE_EMBEDDED_IN_CASH: Final = "PT-E-FEE-EMBEDDED-IN-CASH"
+#: ADR 0045 §4, PORT-GIPS-H06. A return across days with nothing held, which
+#: would link one track record to the next.
+E_RETURN_BREAK: Final = "PT-E-RETURN-BREAK"
+#: ADR 0045 §4, PORT-GIPS-H06. A period in which nothing was held at all: it
+#: has no return, which is not a return of zero.
+E_RETURN_NOTHING_HELD: Final = "PT-E-RETURN-NOTHING-HELD"
 #: An effective-dated config row that would change a figure already recorded,
 #: offered without `--restate` (ADR 0025).
 E_RESTATES_HISTORY: Final = "PT-E-RESTATES-HISTORY"
@@ -233,6 +239,8 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_RETURN_BLOCKED,
     E_RETURN_UNPRICED_TRADE,
     E_FEE_EMBEDDED_IN_CASH,
+    E_RETURN_BREAK,
+    E_RETURN_NOTHING_HELD,
     E_RESTATES_HISTORY,
     E_PRICE_MISSING,
     E_PRICE_STALE,

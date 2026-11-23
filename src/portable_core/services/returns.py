@@ -56,6 +56,8 @@ from portable_core.errors.kinds import (
     E_GIPS_NO_FLOW_POLICY,
     E_GIPS_VALUATION_GAP,
     E_RETURN_BLOCKED,
+    E_RETURN_BREAK,
+    E_RETURN_NOTHING_HELD,
     E_RETURN_UNDEFINED,
     E_RETURN_UNPRICED_TRADE,
     E_SNAPSHOT_MISSING,
@@ -236,10 +238,24 @@ class _Piece:
 
     after: date
     through: date
-    #: The days after *after*, through *through*.
-    covered: tuple[date, ...]
     subperiod: SubPeriod | None
     refusal: Exception | None
+
+    @property
+    def held_nothing(self) -> bool:
+        """Nothing held and nothing moving: a gap in the track record (ADR 0045 §4)."""
+        return self.subperiod is None and self.refusal is None
+
+
+@dataclass(frozen=True, slots=True)
+class _Linked:
+    """What a window measures, once days with nothing held are set aside."""
+
+    subperiods: list[SubPeriod]
+    start: date
+    end: date
+    before: tuple[date, date] | None
+    after: tuple[date, date] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -402,21 +418,27 @@ def window(walked: Walk, *, start: date | None, end: date) -> TimeWeightedReturn
         if refusal is not None:
             raise refusal
 
-    subperiods, idle = _linked(walked, anchor, end)
+    linked = _linked(walked, anchor, end)
     cumulative = tuple(
-        BasisReturn(basis, link(sub.return_for(basis) for sub in subperiods)) for basis in BASES
+        BasisReturn(basis, link(sub.return_for(basis) for sub in linked.subperiods))
+        for basis in BASES
     )
+    measured = [txn for txn in rows if linked.start <= txn.trade_date <= linked.end]
     return TimeWeightedReturn(
         level=walked.level,
         account=walked.account.name if walked.account is not None else None,
         requested_start=requested,
-        start=first_day,
-        end=end,
+        start=linked.start,
+        end=linked.end,
+        requested_end=end,
         inception=inception,
         cumulative=cumulative,
-        subperiods=tuple(subperiods),
-        idle_days=tuple(idle),
-        disclosures=_disclosures(repos, stored, rows, subperiods, first_day, end),
+        subperiods=tuple(linked.subperiods),
+        nothing_held_before=linked.before,
+        nothing_held_after=linked.after,
+        disclosures=_disclosures(
+            repos, stored, measured, linked.subperiods, linked.start, linked.end
+        ),
     )
 
 
@@ -644,43 +666,109 @@ def _pieces(repos: Repositories, days: Sequence[_Day]) -> tuple[_Piece, ...]:
         between.append(day)
         if not day.usable:
             continue
-        covered = tuple(d.on for d in between)
         try:
-            piece = _Piece(
-                begin.on, day.on, covered, _subperiod(repos, begin, day, between), None
-            )
+            piece = _Piece(begin.on, day.on, _subperiod(repos, begin, day, between), None)
         except (PortableError, AssertionError) as refusal:
-            piece = _Piece(begin.on, day.on, covered, None, refusal)
+            piece = _Piece(begin.on, day.on, None, refusal)
         pieces.append(piece)
         begin, between = day, []
     return tuple(pieces)
 
 
-def _linked(walked: Walk, anchor: date, end: date) -> tuple[list[SubPeriod], list[date]]:
-    """The window's sub-periods and idle days, from the walk's pieces.
+def _linked(walked: Walk, anchor: date, end: date) -> _Linked:
+    """The window's sub-periods, from the walk's pieces. ADR 0045 §4, PORT-GIPS-H06.
 
     The window's two ends must be usable, so each is a cut. The pieces
     between them are whole and lie wholly inside the window.
-    """
-    start = walked.days[(anchor - walked.anchor).days]
-    last = walked.days[(end - walked.anchor).days]
-    if not start.usable:
-        raise _gap(start.on, start.on, "the day before the period cannot be valued")
-    if not last.usable:
-        raise _gap(last.on, last.on, "the period's last day cannot be valued")
 
+    A track record ends where the level holds nothing and nothing moves,
+    and begins again at the next day that is not so. In order:
+
+    * a window with nothing held at all is refused: it has no return, and
+      the empty product of no sub-periods would print as zero;
+    * a window that holds one record's end and the next one's beginning is
+      refused, because linking the two manufactures a return across days on
+      which nothing was invested;
+    * days with nothing held before the record begins move the start to
+      where it begins, and days after it ends move the end to where it ends
+      (PORT-GIPS-H02). Both are carried.
+
+    A piece that cannot be computed is not one with nothing held, so its
+    refusal follows these. Pricing more days would not remove a break.
+    """
+    first_day = walked.days[(anchor - walked.anchor).days]
+    last_day = walked.days[(end - walked.anchor).days]
+    if not first_day.usable:
+        raise _gap(first_day.on, first_day.on, "the day before the period cannot be valued")
+    if not last_day.usable:
+        raise _gap(last_day.on, last_day.on, "the period's last day cannot be valued")
+
+    pieces = [p for p in walked.pieces if anchor <= p.after and p.through <= end]
+    held = [index for index, piece in enumerate(pieces) if not piece.held_nothing]
+    if not held:
+        raise _nothing_held(walked, anchor + _DAY, end)
+    first, last = held[0], held[-1]
+    for index in range(first + 1, last):
+        if pieces[index].held_nothing:
+            raise _break(walked, pieces, index)
+
+    measured = pieces[first : last + 1]
     subperiods: list[SubPeriod] = []
-    idle: list[date] = []
-    for piece in walked.pieces:
-        if piece.after < anchor or piece.through > end:
-            continue
+    for piece in measured:
         if piece.refusal is not None:
             raise piece.refusal
-        if piece.subperiod is None:
-            idle.extend(piece.covered)
-        else:
-            subperiods.append(piece.subperiod)
-    return subperiods, idle
+        assert piece.subperiod is not None  # held_nothing is false and no refusal
+        subperiods.append(piece.subperiod)
+    start, through = measured[0].after + _DAY, measured[-1].through
+    return _Linked(
+        subperiods=subperiods,
+        start=start,
+        end=through,
+        before=(anchor + _DAY, measured[0].after) if first > 0 else None,
+        after=(through + _DAY, end) if last < len(pieces) - 1 else None,
+    )
+
+
+def _scope(walked: Walk) -> str:
+    return walked.account.name if walked.account is not None else "the portfolio"
+
+
+def _nothing_held(walked: Walk, first: date, last: date) -> GipsRefusalError:
+    return GipsRefusalError(
+        f"{_scope(walked)} held nothing from {first.isoformat()} to {last.isoformat()}, "
+        "and nothing moved: there is no return to measure",
+        requirement="PORT-GIPS-H06",
+        code=E_RETURN_NOTHING_HELD,
+        remedy=(
+            "A period with nothing in it has no return, which is not a return of zero. "
+            "Measure a period in which something was held."
+        ),
+        first=first.isoformat(),
+        last=last.isoformat(),
+    )
+
+
+def _break(walked: Walk, pieces: Sequence[_Piece], index: int) -> GipsRefusalError:
+    """The break that begins at *pieces*[*index*], the first piece with nothing held."""
+    termination = pieces[index].after
+    resumed = next(
+        piece for piece in pieces[index:] if not piece.held_nothing
+    ).after  # the last day of the run with nothing held
+    restart = resumed + _DAY
+    return GipsRefusalError(
+        f"{_scope(walked)}'s track record ends on {termination.isoformat()} and begins "
+        f"again on {restart.isoformat()}: nothing was held from "
+        f"{(termination + _DAY).isoformat()} to {resumed.isoformat()}",
+        requirement="PORT-GIPS-H06",
+        code=E_RETURN_BREAK,
+        remedy=(
+            "Returns either side of a break are never linked into one: that would "
+            "count the days with nothing invested as a return. Measure each side on "
+            f"its own: `--to {termination.isoformat()}`, or `--from {restart.isoformat()}`."
+        ),
+        termination=termination.isoformat(),
+        restart=restart.isoformat(),
+    )
 
 
 def _subperiod(
