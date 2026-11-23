@@ -38,15 +38,16 @@ from portable_core.services.valuation import NO_MARKET_PRICE, Holding, Valuation
 
 __all__ = [
     "PriceLookup",
+    "SnapshotProblem",
     "build",
     "coupons_by_account",
     "declared_by_account",
+    "problems_between",
     "rederived_differently",
     "removal_notices",
     "store",
     "value_range",
     "verify",
-    "verify_between",
 ]
 
 ZERO = Decimal("0.00")
@@ -212,27 +213,46 @@ def verify(repos: Repositories) -> list[str]:
       ``PORT-GIPS-A09`` exists for: the snapshot used a figure that has since
       changed, and has to be valued again so the change can be reported.
     """
-    return _problems(repos, None)
+    return [problem.text for problem in _problems(repos, None)]
 
 
-def verify_between(
+@dataclass(frozen=True, slots=True)
+class SnapshotProblem:
+    """One stored snapshot that no longer holds, and the sentence that says so."""
+
+    account_id: int
+    on: date
+    text: str
+
+
+def problems_between(
     repos: Repositories, account_ids: set[int], first: date, last: date
-) -> list[str]:
+) -> list[SnapshotProblem]:
     """:func:`verify`, for the snapshots of *account_ids* from *first* to *last*.
 
     What a return checks before it uses them (ADR 0040 §2): the same two
-    checks, on the days it reads and no others.
+    checks, on the days it reads and no others. Each problem carries its
+    account and day, so a walk checked once can give every window inside it
+    exactly the problems a check of that window alone would, in the same
+    order (ADR 0045 §1). That holds because each snapshot is derived again on
+    its own, whichever others are chosen.
     """
     return _problems(
         repos, lambda account_id, on: account_id in account_ids and first <= on <= last
     )
 
 
-def _problems(repos: Repositories, wanted: Callable[[int, date], bool] | None) -> list[str]:
+def _problems(
+    repos: Repositories, wanted: Callable[[int, date], bool] | None
+) -> list[SnapshotProblem]:
     names = {account.account_id: account.name for account in repos.accounts.all()}
     problems = [
-        f"{names.get(account_id)} {on.isoformat()}: recorded {symbol} at {recorded}, "
-        f"and its price row now says {current} -- {_REVALUE.format(on=on.isoformat())}"
+        SnapshotProblem(
+            account_id,
+            on,
+            f"{names.get(account_id)} {on.isoformat()}: recorded {symbol} at {recorded}, "
+            f"and its price row now says {current} -- {_REVALUE.format(on=on.isoformat())}",
+        )
         for account_id, on, symbol, recorded, current in repos.valuations.superseded_prices()
         if wanted is None or wanted(account_id, on)
     ]
@@ -242,10 +262,14 @@ def _problems(repos: Repositories, wanted: Callable[[int, date], bool] | None) -
         differing = [field for field in item.kept if item.kept[field] != again[field]]
         if differing:
             problems.append(
-                f"{names.get(item.account_id)} {item.on.isoformat()}: re-derived from the "
-                f"ledger with the prices it recorded, its {', '.join(differing)} "
-                f"{'differs' if len(differing) == 1 else 'differ'} from what is stored "
-                f"-- {_REVALUE.format(on=item.on.isoformat())}"
+                SnapshotProblem(
+                    item.account_id,
+                    item.on,
+                    f"{names.get(item.account_id)} {item.on.isoformat()}: re-derived from "
+                    f"the ledger with the prices it recorded, its {', '.join(differing)} "
+                    f"{'differs' if len(differing) == 1 else 'differ'} from what is stored "
+                    f"-- {_REVALUE.format(on=item.on.isoformat())}",
+                )
             )
     return problems
 

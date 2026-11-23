@@ -51,7 +51,8 @@ Hand somebody the file and they have the whole book of record.
 A portfolio has a name, an inception date, a base currency (USD only in v0.1,
 though the currency travels on every row so multi-currency is an extension rather
 than a migration nightmare), a fiscal year end (calendar by default), and a
-schema version.
+schema version. The fiscal year ends on the last day of a month, and its
+quarters are the three-month steps back from it (ADR 0045 §2).
 
 > **In GIPS terms a portfolio is a *total fund*.** `portable` follows the Asset
 > Owner regime, where the reporting unit is the total fund rather than a

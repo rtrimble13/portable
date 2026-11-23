@@ -142,16 +142,25 @@ class TimeWeightedReturn:
     #: The account, at account level; None at portfolio level.
     account: str | None
     requested_start: date
-    #: The first day the return covers: the requested start, or inception if
-    #: later. It is never moved silently -- both are carried.
+    #: The first day the return covers. That is the requested start, moved
+    #: later to inception, or past days on which nothing was held to where
+    #: the track record begins again (ADR 0045 §4). It is never moved
+    #: silently -- both are carried.
     start: date
+    #: The last day the return covers: the requested end, or the day the
+    #: track record ended when nothing was held after it (PORT-GIPS-H02).
     end: date
+    requested_end: date
     inception: date
     #: Per basis, in :data:`BASES` order.
     cumulative: tuple[BasisReturn, ...]
     subperiods: tuple[SubPeriod, ...]
-    #: Days the level held nothing and nothing moved: no factor, not a zero.
-    idle_days: tuple[date, ...]
+    #: The days, first and last, with nothing held and nothing moving that
+    #: the start was moved past. None when it was not.
+    nothing_held_before: tuple[date, date] | None
+    #: The days with nothing held from the day after the record ended to the
+    #: requested end. None when the record did not end inside the period.
+    nothing_held_after: tuple[date, date] | None
     disclosures: Disclosures
 
     def __post_init__(self) -> None:

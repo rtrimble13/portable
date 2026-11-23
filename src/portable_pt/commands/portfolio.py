@@ -13,8 +13,10 @@ import typer
 from portable_core import __version__
 from portable_core.cli.context import parse_date
 from portable_core.cli.runner import dry_run_note
-from portable_core.errors import PortfolioFileError, ValidationError
+from portable_core.domain.periods import FiscalYearEnd
+from portable_core.errors import PortfolioFileError, UsageError, ValidationError
 from portable_core.errors.kinds import (
+    E_FISCAL_YEAR_END,
     E_INVARIANT_BROKEN,
     E_PORTFOLIO_EXISTS,
     E_REPLAY_MISMATCH,
@@ -48,7 +50,10 @@ def init(
         str,
         typer.Option(
             "--fiscal-year-end",
-            help="MM-DD. Annual boundaries derive from this, never from --as-of.",
+            help=(
+                "MM-DD, the last day of a month (02-28 is February's, in every year). "
+                "Annual boundaries derive from this, never from --as-of."
+            ),
         ),
     ] = "12-31",
     description: Annotated[
@@ -70,6 +75,7 @@ def init(
 
         inception_date = parse_date(inception, what="--inception")
         assert inception_date is not None
+        _fiscal_year_end(fiscal_year_end)
 
         if base_currency.upper() != "USD":
             raise ValidationError(
@@ -133,6 +139,28 @@ def init(
         )
 
     dispatch(action)
+
+
+def _fiscal_year_end(text: str) -> FiscalYearEnd:
+    """`--fiscal-year-end`, refused unless it names a month end. ADR 0045 §2.
+
+    Annual and quarterly boundaries are derived from it (`PORT-GIPS-A04`),
+    so a value that names no month end would give no boundary to derive.
+    """
+    try:
+        return FiscalYearEnd.parse(text)
+    except ValueError as exc:
+        raise UsageError(
+            f"--fiscal-year-end {exc}",
+            code=E_FISCAL_YEAR_END,
+            remedy=(
+                "A fiscal year ends on the last day of a month: 12-31 for a calendar "
+                "year, or 03-31, 06-30, 09-30 and so on. 02-28 is the end of February "
+                "in every year, leap or not. A 52/53-week fiscal year is not "
+                "supported (ADR 0045 §2)."
+            ),
+            value=text,
+        ) from None
 
 
 @app.command()

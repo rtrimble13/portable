@@ -27,6 +27,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from portable_core.decimals import money_context, quantize_money, to_text
+from portable_core.domain.periods import at_least_a_year
 from portable_core.errors import GipsRefusalError
 from portable_core.formatters.model import ColumnKind, ReturnValue
 
@@ -51,9 +52,6 @@ NULL_TEXT = "—"
 #: because "0.03%" and "3 bps" are the same number and only one of them is
 #: readable in a column of them.
 _BPS_THRESHOLD = Decimal("0.01")
-
-#: Below one year, annualizing is prohibited outright (PORT-GIPS-B07).
-_DAYS_IN_YEAR = 365
 
 
 def money(value: Decimal | None, *, null: str = NULL_TEXT) -> str:
@@ -161,6 +159,8 @@ def machine(value: object) -> object:
     if isinstance(value, list | tuple):
         return [machine(v) for v in value]
     if isinstance(value, ReturnValue):
+        # The machine formats are bound by PORT-GIPS-B07 as the human ones are.
+        require_not_annualized(value)
         return {
             "value": to_text(value.value),
             "method": value.method,
@@ -170,6 +170,7 @@ def machine(value: object) -> object:
             "period_days": value.period_days,
             "is_annualized": value.is_annualized,
             "is_supplemental": value.is_supplemental,
+            "is_estimated": value.is_estimated,
         }
     if isinstance(value, date | datetime):
         return value.isoformat()
@@ -191,7 +192,10 @@ def require_not_annualized(value: ReturnValue) -> None:
     The check lives in the formatter deliberately. Anywhere else, a call site
     would eventually be added that does not call it.
     """
-    if value.is_annualized and value.period_days < _DAYS_IN_YEAR:
+    # A year is an anniversary, not 365 days: the period from the end of
+    # 2023-12-31 to the end of 2024-12-30 is 365 days and a day short of one
+    # (ADR 0045 §5).
+    if value.is_annualized and not at_least_a_year(value.period_start, value.period_end):
         raise GipsRefusalError(
             f"cannot present an annualized return for a {value.period_days}-day "
             f"period ({value.period_start.isoformat()} to "
@@ -224,5 +228,8 @@ def render_return(value: ReturnValue) -> str:
         descriptor.append("annualized")
     if value.is_supplemental:
         descriptor.append("SUPPLEMENTAL")
+    if value.is_estimated:
+        # ADR 0044 §2: an estimate is never shown as a measurement.
+        descriptor.append("ESTIMATED")
     parts.append(f"({', '.join(descriptor)})")
     return " ".join(parts)

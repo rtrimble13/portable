@@ -259,8 +259,8 @@ Recommendation **2.B.1 / 22.B.1 (B)** goes further: value on the date of **all**
 
 **Source** — Firms **2.A.22 (A)**, fn 8 (periods beginning on/after 1 Jan 2006); Asset Owners **22.A.19 (A)**.
 **What GIPS says** — beginning and ending annual valuation dates must be consistent, and unless reporting on a non-calendar fiscal year, must fall at calendar year end or on the last business day of the year.
-**What `portable` must do** — The portfolio's fiscal year is a stored property, defaulting to calendar. Annual period boundaries are derived from it and never from an ad-hoc `--as-of`.
-**Data model** — `meta.fiscal_year_end` (default `12-31`).
+**What `portable` must do** — The portfolio's fiscal year is a stored property, defaulting to calendar. Annual period boundaries are derived from it and never from an ad-hoc `--as-of`. It ends at a month end, and fiscal quarters are the three-month steps back from it; any other value is refused (ADR 0045 §2).
+**Data model** — `meta.fiscal_year_end` (default `12-31`), `MM-DD` naming the last day of a month.
 **Test** — `test_annual_boundaries_are_stable`: annual returns computed on two different run dates for the same historical year are byte-identical.
 
 ---
@@ -319,7 +319,7 @@ Asset Owners **22.B.9 / 22.B.10 (B)** (added by errata **E2**) carve out the opp
 
 **Source** — Firms **2.A.21 (A)**; Asset Owners **22.A.18 (A)**.
 **What GIPS says** — if the last available historical price or a preliminary/estimated value is used as fair value, it must be considered the best approximation of current fair value, and the firm must assess the difference against the final value and **adjust when the final value is received**.
-**What `portable` must do** — This is the GIPS authority for `portable`'s price-staleness policy. A stale price is permitted only within tolerance and only when flagged; when a better price arrives, affected snapshots must be valued again. `pt rebuild` does not do this: snapshots depend on prices as well as the ledger and are kept by a rebuild (ADR 0024). `pt validate` names every stored snapshot whose recorded price its price row no longer agrees with, and `pt value` over its date values it again. Beyond tolerance, exit code 5 as already specified.
+**What `portable` must do** — This is the GIPS authority for `portable`'s price-staleness policy. A stale price is permitted only within tolerance and only when flagged; when a better price arrives, affected snapshots must be valued again. `pt rebuild` does not do this: snapshots depend on prices as well as the ledger and are kept by a rebuild (ADR 0024). `pt validate` names every stored snapshot whose recorded price its price row no longer agrees with, and `pt value` over its date values it again. Beyond tolerance, exit code 5 as already specified. A price carried forward mechanically, with no one having judged it, is **not** this best approximation: it is the absence of one. `pert` treats a snapshot price more than five calendar days old as carried, whatever `staleness_tolerance_days` says, and uses a carried price only under `pert twr --estimate`, marked `ESTIMATED` and never linked into the track record (ADR 0044). A judged estimate (`pt price set --estimate`) is the approximation this provision describes, and stays in the measured series.
 **Data model** — `price.is_estimate` boolean; snapshot records the set of prices it consumed.
 **Test** — `test_stale_price_then_correction_rebuilds`: introduce an estimate, compute a return, supply the final price, value again, and assert the return changed and the change is reported. Waits on `pert`; the snapshot half is `test_port_gips_a09_a_replaced_price_names_the_snapshots_that_used_it`.
 
@@ -383,7 +383,7 @@ Getting the transfer row wrong is the classic error: a $100k transfer between th
 **Source** — Firms **2.A.24.f (A)**; Asset Owners **22.A.21.f (A)**.
 **What GIPS says** — "Geometrically link periodic and sub-period returns."
 **What `portable` must do** — `R = ∏(1 + rᵢ) − 1`. Never sum sub-period returns; never average them arithmetically. Compute in `Decimal` throughout — this is a return path, so `CLAUDE.md` invariant 1 applies and there is no float anywhere in it.
-**Test** — property test: for any generated sequence of sub-period returns, the linked return equals the direct start-to-end return when there are no flows, to within the documented rounding tolerance.
+**Test** — property test: for any generated sequence of sub-period returns, the linked return equals the direct start-to-end return when there are no flows, to within the documented rounding tolerance. A period computed as a window of a longer walk equals the same period walked alone, value for value and refusal for refusal (`test_port_gips_b04_a_window_of_a_walk_is_the_walk_of_the_window`, `test_a_row_is_pert_twr_over_its_window`), and a period's rows link to its longer rows (`test_port_gips_b04_the_rows_link_to_one_another`) (ADR 0045 §1).
 
 ---
 
@@ -423,7 +423,7 @@ where `V_B` and `V_E` are the beginning and ending values, `CF_i` is the value o
 **What GIPS says** — "Returns for periods of less than one year must not be annualized." Unconditional, and it applies to portfolio-level as well as composite-level returns.
 **What `portable` must do** — `CLAUDE.md` already lists this as a domain trap. It is now a cited requirement with a provision number. Enforce it in the **formatter layer** so that no call site can bypass it: a return object carries its period length, and any attempt to render an annualised figure for a period under one year raises.
 **Interaction** — this governs the MWR too: the since-inception MWR is annualised only once the since-inception period exceeds one year (see `PORT-GIPS-C03`).
-**Test** — `test_subyear_return_never_annualized`: parametrised over 1 day, 1 month, 364 days, 365 days, 366 days; assert the 364-day case is not annualised and the 366-day case is.
+**Test** — `test_subyear_return_never_annualized`: parametrised over 1 day, 1 month, 364 days, 365 days across a 29 February, 365 days not across one, and 366 days; assert the first four are not annualised and the last two are. A year is counted by anniversary, not as 365 days: the period from the end of 2023-12-31 to the end of 2024-12-30 is 365 days and one day short of a year (ADR 0045 §5).
 
 ---
 
@@ -705,7 +705,8 @@ What a GIPS Asset Owner Report must contain, and therefore what a `pert` tearshe
 
 **Source** — Asset Owners **24.A.1.a (A)**; contrast Firms **4.A.1.a (A)**.
 **What GIPS says** — asset owners: **at least one year** of compliant performance (or since inception if shorter), then **add one year each year until a minimum of ten years** is presented. Firms: at least **five** years initially, building to ten.
-**What `portable` must do** — Show every annual period since inception, capped at nothing. The tearsheet's calendar-year table is the natural home. `pert` backlog item 3 (MTD/QTD/YTD/1/3/5/10-year/since-inception) satisfies and exceeds this.
+**What `portable` must do** — Show every annual period since inception, capped at nothing. `pert periods` (ADR 0045) does, beside MTD, QTD, YTD, 1, 3, 5 and 10 years and since inception.
+**Test** — `test_port_gips_h01_every_period_since_inception`.
 
 **`PORT-GIPS-H02` — Annual returns, and the partial first and last periods · CORE**
 
@@ -718,7 +719,8 @@ What a GIPS Asset Owner Report must contain, and therefore what a `pert` tearshe
 
 **Source** — Asset Owners **24.A.1.g, .h, .i (A)**; footnotes: (g) and (i) required for periods ending on/after 31 Dec 2020. Firms **4.A.1.f–h (A)**, fn 5 on total firm assets.
 **What GIPS says** — number of total funds or portfolios in the composite; total fund or composite assets; total asset owner assets — each **as of each annual period end**.
-**What `portable` must do** — Every annual return row carries ending market value and the number of accounts contributing. A return without the asset base beside it is uninterpretable.
+**What `portable` must do** — Every annual return row carries ending market value and the number of accounts contributing. A return without the asset base beside it is uninterpretable. `pert periods` counts the accounts holding value on the row's last day (ADR 0045 §6).
+**Test** — `test_every_annual_row_carries_its_assets`.
 
 **`PORT-GIPS-H04` — Label everything · CORE**
 
@@ -736,8 +738,8 @@ What a GIPS Asset Owner Report must contain, and therefore what a `pert` tearshe
 
 **Source** — Asset Owners **24.A.6 (A)**; Firms **4.A.5 (A)**.
 **What GIPS says** — if a composite loses all its member portfolios the track record **ends**; if portfolios are added later it **restarts**. Both periods are presented with the break clearly shown, and performance before the break **must not be linked** to performance after it.
-**What `portable` must do** — If the portfolio goes fully to zero market value with no positions and no cash, and later restarts, `pert` must break the chain rather than link through the gap. Chain-linking across an empty period silently manufactures a return.
-**Test** — `test_track_record_break_not_linked`.
+**What `portable` must do** — If the portfolio goes fully to zero market value with no positions and no cash, and later restarts, `pert` must break the chain rather than link through the gap. Chain-linking across an empty period silently manufactures a return. The same rule applies to each account (ADR 0045 §4). A day on which the level held nothing and nothing moved, followed later by activity, is a break. A return that spans one is refused (`PT-E-RETURN-BREAK`). One lying entirely inside the empty days is refused (`PT-E-RETURN-NOTHING-HELD`), never shown as 0%. One that runs past the day the record ended stops there, carrying the requested end beside it.
+**Test** — `test_track_record_break_not_linked`, in `pert twr` and `pert periods`.
 
 **`PORT-GIPS-H07` — One currency · CORE**
 

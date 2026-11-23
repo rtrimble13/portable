@@ -7,28 +7,58 @@ result out. Every number is decided in the service.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Annotated, Any
 
 import typer
 
 from portable_core.disclaimer import GIPS_DISCLAIMER
-from portable_core.domain.returns import BASES, Basis, ReturnMethod, TimeWeightedReturn
+from portable_core.domain.returns import (
+    BASES,
+    Basis,
+    Disclosures,
+    ReturnMethod,
+    TimeWeightedReturn,
+)
 from portable_core.formatters import Column, ColumnKind, CommandResult, ReturnValue, Table
 from portable_core.services.returns import time_weighted_return
 from portable_pert import state
 
-__all__ = ["twr"]
+__all__ = ["BASES_NOTE", "BASIS_LABELS", "FLOW_TIMING", "disclosure_data", "twr"]
 
 #: ADR 0040 §3, answer 1. Recorded on every result as the method.
 FLOW_TIMING = "inflows at the start of the day, outflows at the end"
 
-_LABELS = {
+#: How each basis is named in a table, beside its value (PORT-GIPS-H04).
+BASIS_LABELS = {
     Basis.NET_OF_FEES: "Net-of-fees",
     Basis.NET_OF_EXTERNAL_COSTS_ONLY: "Net-of-external-costs-only",
     Basis.GROSS_OF_FEES: "Gross-of-fees",
     Basis.NET_OF_ALL_COSTS: "Net of all costs (supplemental)",
 }
+
+
+#: What each basis deducts (PORT-GIPS-D01, ADR 0040 §8), said beside every return.
+BASES_NOTE = (
+    "Transaction costs and fund expenses inside NAV are deducted at every basis; "
+    "net-of-fees deducts custody and other internal management costs; "
+    "gross-of-fees adds back external management fees too. Other administrative "
+    "costs reduce only the supplemental net-of-all-costs figure."
+)
+
+
+def disclosure_data(disclosures: Disclosures) -> dict[str, Any]:
+    """What a return's report must say beside it (ADR 0040 §10), for JSON."""
+    return {
+        "large_flow_days": [d.isoformat() for d in disclosures.large_flow_days],
+        "estimated_days": [d.isoformat() for d in disclosures.estimated_days],
+        "stale_price_days": [d.isoformat() for d in disclosures.stale_price_days],
+        "level5_value": disclosures.level5_value,
+        "level5_share": disclosures.level5_share,
+        "unpriced_holdings": list(disclosures.unpriced_holdings),
+        "margin_interest_deducted_at_every_basis": disclosures.margin_interest,
+        "reclaimable_withholding_not_accrued": disclosures.reclaimable_withholding,
+    }
 
 
 def twr(
@@ -49,6 +79,10 @@ def twr(
     month. Net-of-fees leads. Nothing is annualized here. A missing or
     incomplete day, a large flow inside a gap, or a day with no return policy
     is refused, never interpolated.
+
+    A track record ends where nothing is held, and two are never linked. A
+    period across the gap is refused, as is one with nothing held at all. A
+    period that starts or ends in it is moved to the record, and says so.
     """
 
     def action() -> CommandResult:
@@ -79,7 +113,7 @@ def _value(result: TimeWeightedReturn, basis: Basis) -> ReturnValue:
         period_start=result.start - timedelta(days=1),
         period_end=result.end,
         is_supplemental=basis is Basis.NET_OF_ALL_COSTS,
-        label=_LABELS[basis],
+        label=BASIS_LABELS[basis],
     )
 
 
@@ -94,7 +128,7 @@ def _render(result: TimeWeightedReturn, *, daily: bool, portfolio: str | None) -
             "basis": (
                 "Gross-of-fees = net-of-external-costs-only"
                 if combined and basis is Basis.GROSS_OF_FEES
-                else _LABELS[basis]
+                else BASIS_LABELS[basis]
             ),
             "return": _value(result, basis),
         }
@@ -111,28 +145,23 @@ def _render(result: TimeWeightedReturn, *, daily: bool, portfolio: str | None) -
             "requested_start": result.requested_start.isoformat(),
             "start": result.start.isoformat(),
             "end": result.end.isoformat(),
+            "requested_end": result.requested_end.isoformat(),
             "inception": result.inception.isoformat(),
             "days": result.days,
             "is_annualized": False,
+            "nothing_held_before": _span(result.nothing_held_before),
+            "nothing_held_after": _span(result.nothing_held_after),
         },
         "returns": [_value(result, basis) for basis in BASES],
         "gross_equals_net_of_external_costs_only": combined,
         "subperiods": {
             "daily": result.count(ReturnMethod.DAILY),
             "modified_dietz": result.count(ReturnMethod.MODIFIED_DIETZ),
-            "idle_days": [day.isoformat() for day in result.idle_days],
         },
-        "disclosures": {
-            "large_flow_days": [d.isoformat() for d in disclosures.large_flow_days],
-            "estimated_days": [d.isoformat() for d in disclosures.estimated_days],
-            "stale_price_days": [d.isoformat() for d in disclosures.stale_price_days],
-            "level5_value": disclosures.level5_value,
-            "level5_share": disclosures.level5_share,
-            "unpriced_holdings": list(disclosures.unpriced_holdings),
-            "margin_interest_deducted_at_every_basis": disclosures.margin_interest,
-            "reclaimable_withholding_not_accrued": disclosures.reclaimable_withholding,
-            "notes": list(notes),
-        },
+        # ADR 0044 §2. Nothing is estimated until `--estimate` exists, and the
+        # field is there from the first `twr-2.0` so a consumer reads it.
+        "estimate": None,
+        "disclosures": {**disclosure_data(disclosures), "notes": list(notes)},
     }
     if daily:
         data["series"] = [
@@ -167,11 +196,18 @@ def _render(result: TimeWeightedReturn, *, daily: bool, portfolio: str | None) -
             footnotes=notes,
         ),
         data=data,
-        as_of=result.end,
+        as_of=result.requested_end,
         portfolio=portfolio,
         disclaimer=GIPS_DISCLAIMER,
-        schema_ref="twr-1.0.json",
+        schema_ref="twr-2.0.json",
     )
+
+
+def _span(days: tuple[date, date] | None) -> dict[str, str] | None:
+    if days is None:
+        return None
+    first, last = days
+    return {"from": first.isoformat(), "to": last.isoformat()}
 
 
 def _notes(result: TimeWeightedReturn) -> tuple[str, ...]:
@@ -187,10 +223,25 @@ def _notes(result: TimeWeightedReturn) -> tuple[str, ...]:
             f"{md} sub-period(s) bridge unpriced days by Modified Dietz in calendar "
             "days, within a month and with no large flow inside."
         )
-    if result.start != result.requested_start:
+    # ADR 0045 §4: a track record ends where nothing is held, and the period
+    # is moved to the record rather than linked across the gap (PORT-GIPS-H06).
+    if result.nothing_held_before is not None:
+        first, last = result.nothing_held_before
+        notes.append(
+            f"Starts on {result.start.isoformat()}, where the track record begins again: "
+            f"nothing was held from {first.isoformat()} to {last.isoformat()}. The "
+            f"requested start was {result.requested_start.isoformat()}."
+        )
+    elif result.start != result.requested_start:
         notes.append(
             f"Starts at inception, {result.inception.isoformat()}, after the requested "
             f"{result.requested_start.isoformat()}."
+        )
+    if result.nothing_held_after is not None:
+        first, last = result.nothing_held_after
+        notes.append(
+            f"Ends on {result.end.isoformat()}, where the track record ended: nothing was "
+            f"held from {first.isoformat()} to {last.isoformat()}, the requested end."
         )
     # PORT-GIPS-B03: say whether the large-flow threshold bound, because a
     # reader cannot otherwise tell.
@@ -205,12 +256,7 @@ def _notes(result: TimeWeightedReturn) -> tuple[str, ...]:
             "Valued daily, so every cash flow fell on a valuation date and the "
             f"large-flow threshold did not bind ({large} day(s) with a large flow)."
         )
-    notes.append(
-        "Transaction costs and fund expenses inside NAV are deducted at every basis; "
-        "net-of-fees deducts custody and other internal management costs; "
-        "gross-of-fees adds back external management fees too. Other administrative "
-        "costs reduce only the supplemental net-of-all-costs figure."
-    )
+    notes.append(BASES_NOTE)
     if disclosures.margin_interest:
         notes.append("Margin interest is a financing cost, deducted at every basis.")
     if disclosures.unpriced_holdings:

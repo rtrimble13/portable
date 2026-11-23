@@ -16,6 +16,46 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`pert periods`** (issue 5, ADR 0045): the time-weighted return over every
+  period from one walk of the history.
+  - **The rows.** Month, quarter and year to date; 1, 3, 5 and 10 years;
+    since inception; and every fiscal year from the stored fiscal year end
+    (`PORT-GIPS-H01`, `A04`). A complete year's row is the same bytes
+    whatever day the table ends on.
+  - **Each row is `pert twr` over its dates.** It has the same value or the
+    same refusal, and `tests/integration/test_pert_periods_cli.py` holds
+    every row of the sample to it.
+  - **Clipped to its track record.** A row is clipped to the track record it
+    belongs to and labelled partial when it is (`PORT-GIPS-H02`), so a table
+    never links two records (`H06`).
+  - **A fixed-length row is never shortened.** A 3-year row over a younger
+    record is null with **`PT-E-PERIOD-OUTSIDE-RECORD`**. The sample's 5-year
+    row is one: the sample began three days into the five years.
+  - **Never zero.** A row that cannot be measured is null with its reason,
+    never zero, and gets a warning. The command fails only when no row can
+    be measured.
+  - **Annualized from a year.** A row of a year or more is shown cumulative
+    and annualized, and a shorter one cumulative only (`PORT-GIPS-B07`).
+  - **Assets beside each row.** Each row carries the ending value and the
+    accounts holding value then (`PORT-GIPS-H03`).
+
+  JSON is `schemas/periods-1.0.json`, with every basis and every row's
+  disclosures. `table` and `markdown` show one basis (`--basis`, net-of-fees
+  by default) with footnotes, not the JSON detail. The sample's table is
+  held to golden files in all four formats, under `tests/golden/periods/`.
+
+- **Annualising, by anniversary** (ADR 0045 §5): `services.periods.annualize`.
+  The rate is `exp(ln(1 + R) / N) − 1` in the return engine's decimal
+  context. N counts whole anniversaries, plus the part year left over
+  against the year it falls in, so a 3-year period is exactly 3 however
+  many 29 Februaries it holds. `exp` and `ln` are correctly rounded and a
+  non-integral power is not, so the bytes are fixed.
+  - Over exactly one year, the rate is the cumulative return itself.
+  - Under a year, it is refused with `PT-E-GIPS-ANNUALIZE-SUB-YEAR`.
+  - At −100% or below, it is refused with the new **`PT-E-RETURN-TOTAL-LOSS`**.
+
+  `pert periods` will be its first caller.
+
 - **`pt account update` and `pt instrument update`** (issue 38).
   - **`pt account update`** changes an account's custodian, alias or note.
     Four other fields are accepted only so that each can be refused with its
@@ -596,6 +636,101 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **JSON and CSV refuse an annualized return under a year, as `table` and
+  `markdown` always did** (`PORT-GIPS-B07`). They render a `ReturnValue`
+  without going through `render_return`, so they skipped its guard. Nothing
+  annualized before `pert periods`, so nothing changes.
+- **A command can keep its detail out of `table` and `markdown`**
+  (`CommandResult.human_data`). `pert periods` does. Its JSON carries every
+  row's disclosures, about 90 KB on the sample, and its table carries the
+  rows and the footnotes a reader needs.
+- **A track record is never read from a missing or stale snapshot.** A
+  stretch that reads such a snapshot does not count as holding nothing,
+  however its values sum. A zero there may be a missing value, and a false
+  break would clip every row of a table to a record that never began. Any
+  period over the stretch was already refused for the snapshot, so `pert twr`
+  is unchanged.
+- **A year is counted by anniversary, not as 365 days** (ADR 0045 §5,
+  `PORT-GIPS-B07`). The formatter's guard let any period of 365 days or more
+  be annualised. The period from the end of 2023-12-31 to the end of
+  2024-12-30 is 365 days and one day short of a year, because 2024 has a 29
+  February, so it would have passed. Nothing annualises yet, so no output
+  changes.
+  - The guard reads `portable_core.domain.periods.at_least_a_year`, the one
+    test of a year wherever it is made.
+  - A return period runs month end to month end: the end of February goes
+    to the end of February.
+  - The tax holding period keeps its own rule, calendar date to calendar
+    date, and a test pins the difference.
+- **`pt init` refuses a fiscal year end that is not the last day of a month**
+  (ADR 0045 §2, `PORT-GIPS-A04`), with **`PT-E-FISCAL-YEAR-END`** and exit 2.
+  It stored any string: `06-15`, `02-29` and `banana` were all accepted, and
+  annual boundaries were to be derived from them.
+  - `02-28` means the end of February in every year, leap or not.
+  - A file created before this keeps what it has. `pert` checks a stored
+    value when it first reads one, with `pert periods`.
+- **`pt init`'s `--fiscal-year-end` help** says it must be a month end.
+- **`pert twr` breaks a track record where nothing was held, and never links
+  across the gap** (ADR 0045 §4, `PORT-GIPS-H06`). It skipped days with
+  nothing held and nothing moving and linked straight across them (ADR 0040
+  §4). That printed three wrong things:
+  - two separate stints, one up 10% and one down 10%, as a single −1.00%;
+  - 0.00% for a period in which nothing was held at all;
+  - a return labelled as running two weeks past the day the account emptied.
+
+  Now:
+  - a period across the gap is refused with **`PT-E-RETURN-BREAK`**, naming
+    where the record ended and where it began again;
+  - one with nothing held is refused with **`PT-E-RETURN-NOTHING-HELD`**;
+  - one that starts or ends in such days is moved to the record, and carries
+    the requested dates beside the measured ones (`PORT-GIPS-H02`).
+
+  The rule is the same for an account and for the portfolio, which holds
+  nothing only when every account does. Nothing changes on the sample,
+  whose accounts are never empty. `tests/integration/test_track_record_breaks.py`
+  works each case by hand.
+- **`pert twr` publishes `twr-2.0`**, the one major version ADR 0044 and
+  ADR 0045 share. `twr-1.0.json` stays published for consumers pinned to
+  it.
+  - `period` gains `requested_end`, `nothing_held_before` and
+    `nothing_held_after`.
+  - Every return gains `is_estimated` and `data` gains `estimate`. Both are
+    required, so a consumer reads them before ADR 0044's `--estimate` can
+    set them. Until then they are `false` and `null`, which is true: nothing
+    is estimated without the flag.
+  - `subperiods.idle_days` is removed. A measured period no longer holds
+    such a day.
+  - The envelope's `as_of` is the requested end, as it was before an end
+    could move.
+- **A return marked estimated reads `ESTIMATED`** in `table` and `markdown`,
+  wherever it is rendered (ADR 0044 §2). The formatter adds the word, so no
+  call site can drop it. Nothing sets the mark yet.
+- **Four `PORT-GIPS` requirements say more**, under ADR 0044 and ADR 0045,
+  accepted 2026-11-23. Nothing computes differently yet; each line records
+  an obligation the code takes on as the ADRs are built.
+  - **`PORT-GIPS-A04`**: the fiscal year ends at a month end, and quarters
+    step back from it.
+  - **`PORT-GIPS-A09`**: a price carried forward mechanically is not the
+    best approximation the provision allows. It enters a return only under
+    `pert twr --estimate`, marked `ESTIMATED`.
+  - **`PORT-GIPS-B07`**: the test counts a year by anniversary. The period
+    from the end of 2023-12-31 to the end of 2024-12-30 is 365 days and one
+    day short of a year, so the old parametrisation, which treated 365 days
+    as always a year, was wrong.
+  - **`PORT-GIPS-H06`**: the break applies to each account as well as the
+    portfolio, and a return over days with nothing held is refused, never
+    shown as 0%.
+- **The time-weighted return is computed from one walk and its windows**
+  (ADR 0045 §1). `walk` reads and checks a level's days once, and `window`
+  gives the return over any stretch of them. `pert twr` is a walk over its
+  period and that walk's one window, so no number, refusal or byte of
+  output changes. Multi-period reporting will take every row from one walk,
+  rather than repeating the snapshot check that is 86% of a run.
+  `tests/integration/test_twr_windows.py` holds each window of one long walk
+  to `pert twr` over the same dates alone, on 501 windows at three levels
+  and on the sample. That portfolio is built to reach every refusal a window
+  can meet. `snapshots.verify_between` is replaced by
+  `snapshots.problems_between`, which keys each problem by account and day.
 - **CI runs on Linux only** (ADR 0042, at the owner's request). The suite
   takes more than ten minutes a run, and it ran on Linux and Windows × three
   Pythons, with Catch2 on both. Every job is now `ubuntu-latest`; the Python
@@ -837,6 +972,11 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **`pert twr --format csv` wrote Python dict reprs in its return cells.**
+  `{'value': '0.0151...', 'method': 'twr', ...}` is not even JSON, and a
+  spreadsheet could do nothing with it. A return in CSV is now its value at
+  full precision, with ` SUPPLEMENTAL` or ` ESTIMATED` appended when it is
+  either. The column header names its method and basis.
 - **`--lots` was ignored on an account whose default relief is not
   spec-ID.** Lot selection reads a designation only under specific
   identification. So `pt sell XYZ --lots 2:50` on a FIFO account stored the

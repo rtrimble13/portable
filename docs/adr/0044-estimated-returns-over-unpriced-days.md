@@ -1,7 +1,7 @@
 # ADR 0044 — A return over unpriced days is estimated only on request, marked, and never linked into the track record
 
-- **Status:** Proposed — for the owner's decision on the four questions in issue 60, each with a recommendation below. Nothing is implemented
-- **Date:** 2026-11-17
+- **Status:** Accepted (owner, 2026-11-23), with the recommended answers to questions 1–7 as amended in review, and a working limit of 5% (question 8). See Owner's answers. Implemented so far: §2's marker. `ReturnValue.is_estimated` is rendered `ESTIMATED` by the formatter, and `twr-2.0` requires `is_estimated` and `estimate`, which are `false` and `null` until the tier exists. The tier itself is not built. `twr-2.0` is shared with [ADR 0045](0045-multi-period-returns.md), accepted the same day
+- **Date:** 2026-11-17; accepted 2026-11-23
 - **Milestone:** v0.2, issue 60 (P1)
 - **Governs:** `PORT-GIPS-A02`, `A03`, `A09`, `B04`, `B05`, `H04`, `H08`, `J03`, `J04`; `CLAUDE.md` invariants 6, 9, 10
 - **Depends on:** [ADR 0024](0024-valuation-snapshots-are-valued-state.md), [ADR 0028](0028-instrument-with-no-market-price.md), [ADR 0031](0031-price-acceptance-against-statements.md), [ADR 0040](0040-time-weighted-return.md)
@@ -76,30 +76,58 @@ beside it. `pert twr` also reads that same config value to decide
 ADR 0031's price ties. So one `.port` file can give different answers on two
 machines.
 
-## Decision (proposed)
+## Decision
 
 ### 1. What may be estimated, from what, and for how long
 
 **`pert twr --estimate MAX_SHARE`**, opt-in, with no default (§4).
 
-- **The estimate is a carried price.** It is the newest of two things on or
-  before the day: a stored price for the instrument, or a fill recorded in
-  the ledger for it in any account (`buy`, `sell`, `short`, `cover`). A
-  stored price wins a tie. The fill is included because the instruments
-  that motivate this tier often have no price row at all, only the trades
-  that bought and sold them. With neither, the holding cannot be estimated
-  and the day is refused (`PT-E-ESTIMATE-UNAVAILABLE`).
+- **The estimate is a carried price.** It is the newest of these on or
+  before the day:
+  - a stored price for the instrument;
+  - a fill recorded in the ledger for it in any account (`buy`, `sell`,
+    `short`, `cover`). For a bond, a fill is a clean price on the
+    instrument's quote basis, like a stored price (ADR 0041), so it carries
+    the same way;
+  - a reinvested distribution (`dividend_reinvest`), which is a purchase at
+    the fund's price on its pay-date. Its price is the recorded amount
+    divided by the units it bought. A row with tax withheld is not used
+    until it is confirmed that the recorded amount is still what bought the
+    units.
+
+  A stored price wins a tie with a ledger row, and between ledger rows on
+  one day the later in ledger order wins. The ledger rows are included
+  because the instruments that motivate this tier often have no price row
+  at all, only the trades and reinvestments that bought and sold them.
+  With none of the three, the holding cannot be estimated and the day is
+  refused (`PT-E-ESTIMATE-UNAVAILABLE`).
 - **Until the next price, with no age cap.** §4 governs materiality. Every
   carried holding is named with the date and age of the price carried, so
   a two-year-old price is visible, not hidden.
 - **Never across a corporate action of the instrument.** Prices are
   unadjusted (`CLAUDE.md`). A pre-split price carried past a 2-for-1 split
   values the position at twice its worth. A carry across a split, spinoff,
-  conversion or merger ex-date is refused, naming the action. For a cash
-  distribution, the carried price is reduced by the per-unit amount from the
-  ex-date. Otherwise the distribution counts twice: ADR 0040 §13.2 accrues
-  it as a receivable from that date, while the carried price still includes
-  it. See question 3.
+  conversion or merger ex-date is refused, naming the action.
+- **A cash distribution lowers the carried price.** Otherwise the
+  distribution counts twice: the snapshot holds it, first as a receivable
+  and then as cash, while the carried price still includes it. See
+  question 3.
+  - **From the first day the row's value enters a snapshot**, the row's
+    `values_from`: its ex-date when the snapshot accrues it from there
+    (ADR 0040 §13.2), its pay-date otherwise. A row recorded with no
+    ex-date takes its pay-date as its ex-date and accrues nothing, so its
+    value arrives as cash on the pay-date. Lowering the price from a
+    recorded ex-date only would count every such distribution twice from
+    its pay-date on. The rule reads the same property the snapshot reads,
+    so the two cannot drift apart.
+  - **By the gross amount per unit held**, since the price falls by the
+    gross. Withholding is the holder's cost, not the fund's.
+  - **For every distribution the snapshot accrues except a coupon**:
+    dividends, reinvested dividends, capital-gain distributions and return
+    of capital. A bond's quoted price is clean and its accrued interest is
+    held separately (ADR 0041), so a coupon never lowers it.
+  - **A reduction that would take the price to zero or below is refused**,
+    naming the distribution and the price carried.
 - **It covers one cause only.** It estimates a holding that valuation could
   not price (`PT-E-PRICE-MISSING`, `PT-E-PRICE-STALE`) and nothing else.
   The following still refuse with the flag:
@@ -115,6 +143,17 @@ machines.
   spans a month end, and a gap with a large flow inside. Otherwise the flag
   would turn a return that is measurable without it into an estimate, which
   is the one thing it must never do (§2).
+- **Within such a gap, only the days the bridge needs are estimated.** These
+  are:
+  - the first or last day of the period;
+  - each month end inside the gap;
+  - the valuation a large flow inside the gap requires (ADR 0040 §6): the
+    day before a large inflow, which counts from the start of its day, and
+    the day of a large outflow.
+
+  What is left of the gap is bridged by Modified Dietz exactly as without
+  the flag. So the estimated share is as small as it can be, and every day
+  that can be measured is.
 - **The hole is closed in `pert`, not in `pt`.** `pert` treats a stored
   snapshot price older than **five calendar days** as carried, whatever
   `staleness_tolerance_days` was when the snapshot was built. Five is
@@ -123,6 +162,10 @@ machines.
   is unusable. With it, the day is estimated. ADR 0031's tie check in `pert`
   uses the same fixed value. `pt value` and `pt holdings` keep reading the
   config. See question 7.
+  - When a day is unusable only because of this, the refusal says so. It
+    names the price's age, the five days `pert` applies, and the
+    `staleness_tolerance_days` in force. Otherwise `pt holdings` calling a
+    snapshot complete while `pert` refuses it would go unexplained.
 - **Computed on demand and stored nowhere.** `pert` stays read-only (ADR
   0040 §2, §10). It already re-derives every snapshot in the period to check
   it (ADR 0024), so that walk supplies the holdings of an unusable day, and
@@ -146,10 +189,15 @@ The marker travels with the value, as `is_supplemental` does
 
   Each `SubPeriod` carries `is_estimated`.
 - **Table.** The title begins `ESTIMATED`. A footnote states the number of
-  days and holdings, the peak share and the limit, and that the figure is
-  neither measured nor part of the track record. The same sentence goes to
-  stderr as a warning.
-- **JSON: `twr-2.0`, a major version.** Every return object requires
+  days and holdings, the peak share and the limit, the age of the oldest
+  price carried, and that the figure is neither measured nor part of the
+  track record. The same sentence goes to stderr as a warning. The age is
+  in the sentence, not only in JSON, because the share limit bounds how
+  much is estimated and only the age shows how long it had to drift.
+- **JSON: `twr-2.0`, a major version**, shared with ADR 0045, which changes
+  the same schema (`requested_end`, two refusals, `idle_days` dropped). Its
+  `periods-1.0` carries `is_estimated` from its first version, so neither
+  schema needs a second major version. Every return object requires
   `is_estimated`, which is `false` when measured. The top level requires
   `estimate`, which is `null` when nothing was estimated. The version is
   major because a `1.0` consumer reading `returns[].value` would take an
@@ -201,8 +249,12 @@ The marker travels with the value, as `is_supplemental` does
     row dated 2022. ADR 0025 would treat writing it as restating history,
     on rows whose large-flow values stored snapshots depend on, for a figure
     that is never stored.
-  - **(b) One stored setting, undated.** This needs a schema change.
-  - **(c) A required value of the flag** (recommended). `--estimate 0.05`
+  - **(b) One stored setting, undated.** The draft said this needs a schema
+    change. It does not: the `.port` file has had a key/value `settings`
+    table since schema 0001, and nothing reads it yet. It is rejected for a
+    different reason. The same command would answer differently after the
+    setting was edited, with nothing on the command line to show why.
+  - **(c) A required value of the flag** (chosen). `--estimate 0.05`
     has no default, so `CLAUDE.md`'s rule that a missing threshold is an
     error, not a zero, holds. The value is echoed on the result, so an
     estimate is reproducible from the file and the command line.
@@ -234,7 +286,19 @@ The marker travels with the value, as `is_supplemental` does
   - a carry across a split;
   - a holding with no price and no fill;
   - an ADR 0031 block, and an accrual failure, each with the flag set.
-- **The cash-distribution reduction** is checked against hand arithmetic.
+- **The cash-distribution reduction** is checked against hand arithmetic:
+  - from the ex-date for a row that accrues;
+  - from the pay-date for a row recorded with no ex-date;
+  - never for a coupon;
+  - refused when it would take the price to zero.
+- **A reinvested distribution is a last known price.** A row with tax
+  withheld is not used.
+- **Only the days the bridge needs are estimated.** Take a gap that spans a
+  month end with one unpriced month-end day. Only that day is estimated,
+  and the rest of the gap is bridged.
+- **The table footnote states the oldest carried age.**
+- **A day unusable only because of `pert`'s fixed five days** has a refusal
+  that names its age, the five days, and the configured tolerance.
 
 ## Open questions for the owner
 
@@ -253,13 +317,45 @@ The marker travels with the value, as `is_supplemental` does
 8. **The limit you expect to use.** That number is yours, and no
    recommendation is made.
 
+## Owner's answers (2026-11-23)
+
+1. **§§1–4:** accepted. Review made five amendments, all folded into the
+   text above:
+   - answers 3 and 4 below;
+   - the bridge's days (answer 5);
+   - the oldest carried age in the footnote (answer 6);
+   - the refusal naming both tolerances (answer 7).
+
+   Review also corrected §4 (b): a stored setting needs no schema change.
+2. **The limit:** a required value of the flag, with no default.
+3. **A cash distribution inside a carry:** lower the carried price rather
+   than refuse. The draft lowered it from the ex-date. Review found that a
+   row recorded with no ex-date takes its pay-date as its ex-date, so the
+   reduction runs from the row's `values_from`, the day the snapshot first
+   holds the distribution. It applies to every distribution the snapshot
+   accrues except a coupon, at the gross amount per unit, and is refused if
+   it would take the price to zero or below.
+4. **Fills as a last known price:** yes. Reinvested distributions count as
+   well, except a row with tax withheld until its amount is confirmed as the
+   cost of the units. A bond fill is a clean price on its quote basis, so
+   it carries like a stored price.
+5. **The bridge first:** yes. Within a gap the bridge cannot cross, only the
+   days it needs are estimated.
+6. **No age cap.** Every age is shown, and the oldest is stated in the table
+   footnote and the warning.
+7. **The fixed five days in `pert`:** yes. A day refused only for this says
+   so, naming both numbers.
+8. **The limit the owner expects to use: 5%**, `--estimate 0.05`. This is a
+   working value, not a default. The flag still requires it (answer 2), and
+   every estimated result echoes it.
+
 ## Consequences
 
 - No `.port` schema change and no migration, under §4 (c).
-  - `schemas/twr-2.0.json` is added, `ReturnValue` gains a field, and the
-    three error codes above are added.
-  - On acceptance, `PORT-GIPS-A09` in `docs/gips-standard.md` gains a
-    sentence: a mechanically carried price is not its best approximation.
+  - `schemas/twr-2.0.json` is added, shared with ADR 0045. `ReturnValue`
+    gains a field, and the three error codes above are added.
+  - `PORT-GIPS-A09` in `docs/gips-standard.md` now says a mechanically
+    carried price is not its best approximation.
 - The `PT-E-PRICE-STALE` remedy and `docs/market-data.md` stop naming a flag
   that does not exist.
 - The judged estimate (`pt price set --estimate`) is unchanged. It stays in

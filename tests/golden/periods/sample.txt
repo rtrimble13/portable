@@ -1,0 +1,37 @@
+Time-weighted returns, portfolio, through 2025-12-31
+
+Period           From        To              Net-of-fees, cumulative                 Net-of-fees, annualized  Ending value  Accounts
+---------------  ----------  ----------  ---------------------------  --------------------------------------  ------------  --------
+Month to date    2025-12-01  2025-12-31  65.7 bps (TWR, net-of-fees)                                       —    819,681.51         3
+Quarter to date  2025-10-01  2025-12-31     1.85% (TWR, net-of-fees)                                       —    819,681.51         3
+Year to date     2025-01-01  2025-12-31     1.51% (TWR, net-of-fees)    1.51% (TWR, net-of-fees, annualized)    819,681.51         3
+1 year           2025-01-01  2025-12-31     1.51% (TWR, net-of-fees)    1.51% (TWR, net-of-fees, annualized)    819,681.51         3
+3 years          2023-01-01  2025-12-31    37.20% (TWR, net-of-fees)   11.12% (TWR, net-of-fees, annualized)    819,681.51         3
+5 years [1]      2021-01-01  2025-12-31                            —                                       —             —         —
+10 years [2]     2016-01-01  2025-12-31                            —                                       —             —         —
+Since inception  2021-01-04  2025-12-31    38.74% (TWR, net-of-fees)    6.78% (TWR, net-of-fees, annualized)    819,681.51         3
+2021 [3]         2021-01-04  2021-12-31    15.41% (TWR, net-of-fees)                                       —    542,423.11         3
+2022             2022-01-01  2022-12-31   -12.38% (TWR, net-of-fees)  -12.38% (TWR, net-of-fees, annualized)    481,467.26         3
+2023             2023-01-01  2023-12-31    16.13% (TWR, net-of-fees)   16.13% (TWR, net-of-fees, annualized)    702,373.63         3
+2024             2024-01-01  2024-12-31    16.38% (TWR, net-of-fees)   16.38% (TWR, net-of-fees, annualized)    825,537.16         3
+2025             2025-01-01  2025-12-31     1.51% (TWR, net-of-fees)    1.51% (TWR, net-of-fees, annualized)    819,681.51         3
+
+  Time-weighted, from daily sub-periods linked geometrically, with Modified Dietz across unpriced days within a month. Inflows count from the start of their day and outflows from its end.
+  A period under a year is cumulative and never annualized (PORT-GIPS-B07). A year is counted by anniversary.
+  Transaction costs and fund expenses inside NAV are deducted at every basis; net-of-fees deducts custody and other internal management costs; gross-of-fees adds back external management fees too. Other administrative costs reduce only the supplemental net-of-all-costs figure.
+  Margin interest is a financing cost, deducted at every basis.
+  Each row's disclosures -- large flows, estimated and stale prices, level-5 value -- are in --format json.
+  [1] 5 years: the 5-year period from 2021-01-01 to 2025-12-31 starts before the track record began, on 2021-01-04.
+  [2] 10 years: the 10-year period from 2016-01-01 to 2025-12-31 starts before the track record began, on 2021-01-04.
+  [3] 2021 is partial: it starts at inception, 2021-01-04 to 2021-12-31, of 2021-01-01 to 2021-12-31 (PORT-GIPS-H02).
+
+
+> Returns are calculated using methodology modelled on the Global Investment
+> Performance Standards (2020 edition), published by CFA Institute. This is
+> not a claim of compliance with the GIPS standards, and this report has not
+> been prepared in accordance with them. GIPS compliance is an entity-wide
+> assertion requiring firm- or asset-owner-wide policies, records, and
+> independent verification as best practice; it cannot be made for a single
+> portfolio or by an individual. GIPS® is a registered trademark of CFA
+> Institute. CFA Institute does not endorse or promote this tool, nor does it
+> warrant the accuracy or quality of its output.

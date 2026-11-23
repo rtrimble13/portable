@@ -8,9 +8,6 @@ so a change to the engine that moves a number has to explain itself here.
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
 from decimal import Decimal as D
 from pathlib import Path
 from typing import Any
@@ -18,53 +15,12 @@ from typing import Any
 import pytest
 
 from tests.integration.conftest import (
-    ROOT,
-    CliResult,
     CliRunner,
     build_template,
     stack_template,
 )
 
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture
-def run_pert(tmp_path: Path) -> CliRunner:
-    """Invoke `pert`, JSON by default, isolated and decoded as `run_pt` is."""
-
-    def run(
-        *args: str,
-        expect: int | None = 0,
-        fmt: str = "json",
-        extra_env: dict[str, str] | None = None,
-    ) -> CliResult:
-        env = dict(os.environ)
-        env |= {
-            "PYTHONPATH": str(ROOT / "src"),
-            "NO_COLOR": "1",
-            "HOME": str(tmp_path),
-            "USERPROFILE": str(tmp_path),
-        }
-        env.pop("PORTABLE_PORT", None)
-        env |= extra_env or {}
-        completed = subprocess.run(
-            [sys.executable, "-m", "portable_pert", "--format", fmt, *args],
-            capture_output=True,
-            # `pert` writes UTF-8 on every platform (portable_core.cli.streams).
-            encoding="utf-8",
-            check=False,
-            cwd=tmp_path,
-            env=env,
-        )
-        result = CliResult(completed)
-        if expect is not None:
-            assert result.returncode == expect, (
-                f"exit {result.returncode}, expected {expect}\n"
-                f"stdout: {result.stdout}\nstderr: {result.stderr}"
-            )
-        return result
-
-    return run
 
 
 def _policy(run_pt: CliRunner, port: str) -> None:
@@ -312,9 +268,13 @@ def test_the_output_validates_against_its_schema(
 
     _value(run_pt, invested)
     payload = run_pert("--port", invested, "twr", "--to", "2024-01-05", "--daily").json()
-    errors = sorted(_validator("twr-1.0.json").iter_errors(payload), key=str)
+    assert payload["$schema"] == "twr-2.0.json"
+    errors = sorted(_validator("twr-2.0.json").iter_errors(payload), key=str)
     assert not errors, [e.message for e in errors[:5]]
     assert json.dumps(payload)  # nothing in it a float could have produced
+    # ADR 0044 §2: present from the first 2.0, and false until --estimate exists.
+    assert payload["data"]["estimate"] is None
+    assert all(entry["is_estimated"] is False for entry in payload["data"]["returns"])
 
 
 def test_the_report_is_utf8_whatever_the_code_page(

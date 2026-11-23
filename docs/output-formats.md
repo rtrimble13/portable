@@ -79,11 +79,54 @@ footnote at the end of a formatted block can be lost by accident.
 Removing the statement of what wash-sale detection does not cover therefore
 breaks CI rather than a filing.
 
-`pert twr` requires a non-empty disclaimer in its schema too (`twr-1.0`,
+`pert twr` requires a non-empty disclaimer in its schema too (`twr-2.0`,
 ADR 0040). Each of its four returns names its method, basis and period. Its
 `is_annualized` is fixed `false`, and `is_supplemental` is `true` for
 `net_of_all_costs` and for no other basis. A consumer cannot take a
 supplemental figure for a GIPS basis without the schema noticing.
+
+Every return also carries `is_estimated`, and `data.estimate` says what was
+estimated (ADR 0044). Both are required from `twr-2.0` on, so a consumer
+reads them before it reads a value. Until `pert twr --estimate` exists,
+`is_estimated` is always `false` and `estimate` always `null`. Nothing is
+estimated without the flag. In `table` and `markdown` an estimated return
+reads `… (TWR, net-of-fees, ESTIMATED)`.
+
+A track record ends where nothing is held, and `pert twr` never links one
+record to the next (ADR 0045 §4, `PORT-GIPS-H06`). Two refusals follow:
+
+- **`PT-E-RETURN-BREAK`**: the period spans one record's end and the next
+  one's beginning. Its context names both dates.
+- **`PT-E-RETURN-NOTHING-HELD`**: nothing was held at all in the period.
+
+A period that starts or ends in days with nothing held is moved to the
+record. `period.start` and `period.end` are what was measured, beside
+`requested_start` and `requested_end`. `nothing_held_before` and
+`nothing_held_after` name the days set aside. `twr-2.0` dropped `1.0`'s
+`subperiods.idle_days`, since a measured period no longer holds such a day.
+
+`pert periods` (`periods-1.0`, ADR 0045) carries every period as a row.
+
+- **The rows.** `data.summary` holds month, quarter and year to date, 1, 3,
+  5 and 10 years, and since inception. `data.fiscal_years` holds every
+  fiscal year, oldest first. `data.track_records` lists the records they
+  are clipped to.
+- **Returns or a refusal, never both.** A row has either `returns` or a
+  `refusal`, never both and never neither, and the schema enforces it. A
+  refusal is the same object an error envelope carries.
+- **A row says when it was clipped.** It names the period requested and
+  the period measured. `partial` says why the two differ: `inception`,
+  `restart` or `termination` (`PORT-GIPS-H02`).
+- **Annualized or the reason it isn't.** Each basis has `cumulative`, and
+  either `annualized` or `not_annualized`, the reason it has none: under a
+  year, `PORT-GIPS-B07`, or a total loss.
+- **Its own disclosures, and room for an estimate.** Every row has its own
+  `disclosures`, `twr-2.0`'s object for its own window, and an `estimate`.
+
+In `table` and `markdown` the rows are shown at one basis, `--basis`,
+net-of-fees by default. Each row's detail stays in JSON, and footnotes give
+what a reader needs: why each null or partial row is so, any break, and any
+holding valued at zero.
 
 ### Errors are JSON too
 
@@ -129,7 +172,11 @@ you that time had passed.
 **`csv`** — RFC 4180, one logical table per invocation, header row, no
 formatting, full precision. A spreadsheet is where somebody re-does the
 arithmetic, and handing it a rounded number guarantees their total disagrees
-with yours.
+with yours. A return is its value, and its column header names the method,
+basis and whether it is annualized. Two marks stay in the cell itself,
+because no header can carry them for one row: ` SUPPLEMENTAL`
+(`PORT-GIPS-H08`) and ` ESTIMATED` (ADR 0044). A cell a spreadsheet cannot
+read as a number is better than an estimate it takes for a measurement.
 
 **`markdown`** — GitHub-flavored tables with numeric columns right-aligned, for
 pasting into notes or an LLM context window.
@@ -198,7 +245,9 @@ These live in the formatter **so that no call site can bypass them**.
 
 **A return for a period shorter than one year is never annualized.**
 `PORT-GIPS-B07` — unconditional, from Firms 2.A.12 and Asset Owners 22.A.9.
-Attempting it raises `PT-E-GIPS-ANNUALIZE-SUB-YEAR`. It binds the
+Attempting it raises `PT-E-GIPS-ANNUALIZE-SUB-YEAR`, in every format: JSON
+and CSV check it as `table` and `markdown` do. A year is counted by
+anniversary, not as 365 days (ADR 0045 §5). It binds the
 since-inception money-weighted return too, which is the one place the natural
 implementation returns an annualized rate by construction and must be
 de-annualized or refused (`PORT-GIPS-C03`).

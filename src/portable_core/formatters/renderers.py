@@ -19,14 +19,16 @@ import sys
 from datetime import datetime
 from typing import Any, TextIO
 
+from portable_core.decimals import to_text
 from portable_core.formatters.envelope import build_envelope
 from portable_core.formatters.model import (
     ColumnKind,
     CommandResult,
     OutputFormat,
+    ReturnValue,
 )
 from portable_core.formatters.nested import markdown_lines, text_lines
-from portable_core.formatters.numbers import human, machine
+from portable_core.formatters.numbers import human, machine, require_not_annualized
 
 __all__ = ["render", "supports_color"]
 
@@ -124,8 +126,28 @@ def _csv_value(value: Any) -> str:
     """A CSV cell. Empty for null -- and empty is never the same as 0."""
     if value is None:
         return ""
+    if isinstance(value, ReturnValue):
+        return _csv_return(value)
     rendered = machine(value)
     return rendered if isinstance(rendered, str) else str(rendered)
+
+
+def _csv_return(value: ReturnValue) -> str:
+    """A return in a CSV cell: its value at full precision, for a spreadsheet.
+
+    The column header names the method, basis and annualization
+    (PORT-GIPS-H04), so the cell need not repeat them. Two marks are never
+    left to a header: a supplemental figure (PORT-GIPS-H08) and an estimate
+    (ADR 0044 §2) carry theirs in the cell. A number that cannot be read
+    as one is better than an estimate a spreadsheet takes for a measurement.
+    """
+    require_not_annualized(value)
+    text = to_text(value.value)
+    if value.is_supplemental:
+        text += " SUPPLEMENTAL"
+    if value.is_estimated:
+        text += " ESTIMATED"
+    return text
 
 
 # ── markdown ─────────────────────────────────────────────────────────────────
@@ -154,7 +176,7 @@ def _render_markdown(result: CommandResult) -> str:
             lines.append("| " + " | ".join(cells) + " |")
         lines.append("")
 
-    if result.data:
+    if result.data and result.human_data:
         lines.extend(markdown_lines(result.data))
         lines.append("")
 
@@ -254,7 +276,7 @@ def _render_plain(result: CommandResult) -> str:
         if result.table.footnotes:
             lines.append("")
 
-    if result.data:
+    if result.data and result.human_data:
         lines.extend(text_lines(result.data))
         lines.append("")
 
@@ -291,7 +313,7 @@ def _render_rich(result: CommandResult) -> str:
         for note in result.table.footnotes:
             console.print(f"[dim]{escape(note)}[/dim]")
 
-    if result.data:
+    if result.data and result.human_data:
         # Escaped: Rich reads `[...]` in a printed string as markup, so a value
         # holding brackets would lose them, or restyle what follows.
         for line in text_lines(

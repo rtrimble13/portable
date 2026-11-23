@@ -1,0 +1,263 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rtrimble13/portable/schemas/periods-1.0.json",
+  "title": "pert periods",
+  "description": "The time-weighted return over every period: month, quarter and year to date, 1, 3, 5 and 10 years, since inception, and every fiscal year (ADR 0045).\n\nThe disclaimer is required and non-empty (docs/gips-standard.md §9.3). Each row is a window of one walk, and equals `pert twr` over its dates, or carries the refusal that command gives. Two departures, both by design: a row is clipped to its track record and says so in `partial` (PORT-GIPS-H02), and a trailing row the record does not cover is refused with PT-E-PERIOD-OUTSIDE-RECORD rather than shortened. A row has its returns or its refusal, never both and never neither, and a return under a year has no annualized figure, only the reason it has none (PORT-GIPS-B07). Every return carries `is_estimated`, and every row `estimate` (ADR 0044).",
+  "allOf": [{ "$ref": "envelope-1.0.json" }],
+  "type": "object",
+  "required": ["disclaimer"],
+  "properties": {
+    "command": { "const": "periods" },
+    "disclaimer": { "type": "string", "minLength": 1 },
+    "data": {
+      "type": "object",
+      "required": [
+        "level",
+        "account",
+        "method",
+        "flow_timing",
+        "through",
+        "fiscal_year_end",
+        "track_records",
+        "summary",
+        "fiscal_years",
+        "rows",
+        "columns"
+      ],
+      "properties": {
+        "level": { "enum": ["account", "portfolio"] },
+        "account": { "type": ["string", "null"] },
+        "method": { "const": "twr" },
+        "flow_timing": { "type": "string", "minLength": 1 },
+        "through": { "$ref": "#/$defs/date" },
+        "fiscal_year_end": {
+          "description": "MM-DD, the last day of a month (PORT-GIPS-A04). 02-28 is the end of February in every year.",
+          "type": "string",
+          "pattern": "^(01-31|02-28|03-31|04-30|05-31|06-30|07-31|08-31|09-30|10-31|11-30|12-31)$"
+        },
+        "track_records": {
+          "description": "Each run from the first day something was held to the last before nothing was (PORT-GIPS-H06). Never linked to one another. `termination` is null while a record runs on.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["inception", "termination"],
+            "additionalProperties": false,
+            "properties": {
+              "inception": { "$ref": "#/$defs/date" },
+              "termination": { "anyOf": [{ "$ref": "#/$defs/date" }, { "type": "null" }] }
+            }
+          }
+        },
+        "summary": {
+          "description": "Month, quarter and year to date; 1, 3, 5 and 10 years; since inception. In that order.",
+          "type": "array",
+          "minItems": 8,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/row" }
+        },
+        "fiscal_years": {
+          "description": "Every fiscal year of every track record, oldest first (PORT-GIPS-H01). A record still running has its complete years only; one that ended has its last, partial year too.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/row" }
+        },
+        "rows": { "description": "The table as rendered for a reader.", "type": "array" },
+        "columns": { "type": "array" },
+        "title": { "type": "string" },
+        "footnotes": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "$defs": {
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "basis": {
+      "enum": ["net_of_fees", "net_of_external_costs_only", "gross_of_fees", "net_of_all_costs"]
+    },
+    "refusal": {
+      "description": "Why there is no figure: what the matching `pert twr` would refuse with, in its JSON form.",
+      "type": "object",
+      "required": ["code", "message", "exit_code", "context"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^PT-E-[A-Z0-9-]+$" },
+        "message": { "type": "string", "minLength": 1 },
+        "exit_code": { "type": "integer", "minimum": 1, "maximum": 6 },
+        "remedy": { "type": "string" },
+        "context": { "type": "object" }
+      }
+    },
+    "returnValue": {
+      "type": "object",
+      "required": [
+        "value", "method", "basis", "period_start", "period_end",
+        "period_days", "is_annualized", "is_supplemental", "is_estimated"
+      ],
+      "properties": {
+        "value": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+        "method": { "const": "twr" },
+        "basis": { "$ref": "#/$defs/basis" },
+        "period_start": { "$ref": "#/$defs/date" },
+        "period_end": { "$ref": "#/$defs/date" },
+        "period_days": { "type": "integer", "minimum": 1 },
+        "is_annualized": { "type": "boolean" },
+        "is_supplemental": { "type": "boolean" },
+        "is_estimated": { "type": "boolean" }
+      },
+      "if": { "properties": { "basis": { "const": "net_of_all_costs" } } },
+      "then": { "properties": { "is_supplemental": { "const": true } } },
+      "else": { "properties": { "is_supplemental": { "const": false } } }
+    },
+    "basisReturn": {
+      "type": "object",
+      "required": ["basis", "cumulative", "annualized", "not_annualized"],
+      "properties": {
+        "basis": { "$ref": "#/$defs/basis" },
+        "cumulative": {
+          "allOf": [
+            { "$ref": "#/$defs/returnValue" },
+            { "properties": { "is_annualized": { "const": false } } }
+          ]
+        },
+        "annualized": {
+          "anyOf": [
+            {
+              "allOf": [
+                { "$ref": "#/$defs/returnValue" },
+                {
+                  "properties": {
+                    "is_annualized": { "const": true },
+                    "period_days": { "minimum": 365 }
+                  }
+                }
+              ]
+            },
+            { "type": "null" }
+          ]
+        },
+        "not_annualized": { "anyOf": [{ "$ref": "#/$defs/refusal" }, { "type": "null" }] }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "annualized": { "type": "object" },
+            "not_annualized": { "type": "null" }
+          }
+        },
+        {
+          "properties": {
+            "annualized": { "type": "null" },
+            "not_annualized": { "type": "object" }
+          }
+        }
+      ]
+    },
+    "disclosures": {
+      "type": "object",
+      "required": [
+        "large_flow_days",
+        "estimated_days",
+        "stale_price_days",
+        "level5_value",
+        "level5_share",
+        "unpriced_holdings",
+        "margin_interest_deducted_at_every_basis",
+        "reclaimable_withholding_not_accrued"
+      ],
+      "properties": {
+        "large_flow_days": { "type": "array", "items": { "$ref": "#/$defs/date" } },
+        "estimated_days": { "type": "array", "items": { "$ref": "#/$defs/date" } },
+        "stale_price_days": { "type": "array", "items": { "$ref": "#/$defs/date" } },
+        "level5_value": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+        "level5_share": {
+          "anyOf": [{ "$ref": "envelope-1.0.json#/$defs/decimal" }, { "type": "null" }]
+        },
+        "unpriced_holdings": { "type": "array", "items": { "type": "string" } },
+        "margin_interest_deducted_at_every_basis": { "type": "boolean" },
+        "reclaimable_withholding_not_accrued": { "type": "boolean" }
+      }
+    },
+    "row": {
+      "type": "object",
+      "required": [
+        "kind", "label", "years", "record", "requested", "start", "end", "days",
+        "partial", "returns", "ending_value", "accounts_holding_value",
+        "disclosures", "estimate", "refusal"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "month_to_date",
+            "quarter_to_date",
+            "year_to_date",
+            "trailing",
+            "since_inception",
+            "fiscal_year"
+          ]
+        },
+        "label": { "type": "string", "minLength": 1 },
+        "years": { "type": ["integer", "null"], "minimum": 1 },
+        "record": {
+          "description": "The track record the row measures, by index into `track_records`.",
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "requested": {
+          "type": "object",
+          "required": ["from", "to"],
+          "properties": {
+            "from": { "$ref": "#/$defs/date" },
+            "to": { "$ref": "#/$defs/date" }
+          }
+        },
+        "start": { "anyOf": [{ "$ref": "#/$defs/date" }, { "type": "null" }] },
+        "end": { "anyOf": [{ "$ref": "#/$defs/date" }, { "type": "null" }] },
+        "days": { "type": ["integer", "null"], "minimum": 1 },
+        "partial": {
+          "description": "Why the measured period is shorter than the one requested (PORT-GIPS-H02).",
+          "type": "array",
+          "items": { "enum": ["inception", "restart", "termination"] }
+        },
+        "returns": {
+          "anyOf": [
+            {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "items": { "$ref": "#/$defs/basisReturn" }
+            },
+            { "type": "null" }
+          ]
+        },
+        "ending_value": {
+          "description": "At the measured period's last day, summed over accounts (PORT-GIPS-H03).",
+          "anyOf": [{ "$ref": "envelope-1.0.json#/$defs/decimal" }, { "type": "null" }]
+        },
+        "accounts_holding_value": { "type": ["integer", "null"], "minimum": 0 },
+        "disclosures": { "anyOf": [{ "$ref": "#/$defs/disclosures" }, { "type": "null" }] },
+        "estimate": {
+          "description": "What was estimated in this row (ADR 0044 §3). Null when nothing was, which is always until `pert twr --estimate` exists. Its object form is specified when the estimate tier is built.",
+          "anyOf": [{ "type": "null" }, { "type": "object" }]
+        },
+        "refusal": { "anyOf": [{ "$ref": "#/$defs/refusal" }, { "type": "null" }] }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "returns": { "type": "array" },
+            "refusal": { "type": "null" },
+            "start": { "type": "string" },
+            "ending_value": { "type": "string" },
+            "disclosures": { "type": "object" }
+          }
+        },
+        {
+          "properties": {
+            "returns": { "type": "null" },
+            "refusal": { "type": "object" },
+            "start": { "type": "null" },
+            "ending_value": { "type": "null" },
+            "disclosures": { "type": "null" }
+          }
+        }
+      ]
+    }
+  }
+}
