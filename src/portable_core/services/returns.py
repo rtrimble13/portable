@@ -1213,11 +1213,13 @@ def _unbridgeable(
     an outflow.
 
     ADR 0040 §6 calls any large flow before the gap's last day inside it, so
-    a large inflow on a gap's first day is refused although the gap's start
-    is the valuation it requires. For that one its own day is the one
-    valued, and the stretch to it is a single day. So a large inflow inside
-    a gap is estimated around twice: the day before it, and then, in the
-    stretch that day begins, its own day.
+    a large inflow on a gap's first day is refused, though the gap's start is
+    the close it counts from. `PORT-GIPS-A03` (c) asks for a valuation on the
+    flow's own date, and only an archived Q&A accepts the close before it
+    (ADR 0044, As built). For that inflow its own day is the one valued, and
+    the stretch to it is a single day. So a large inflow inside a gap is
+    estimated around twice: the day before it, and then, in the stretch that
+    day begins, its own day.
     """
     reasons: list[tuple[date, str]] = []
     for day in _span(after + _DAY, through - _DAY):

@@ -1,6 +1,6 @@
 # ADR 0044 — A return over unpriced days is estimated only on request, marked, and never linked into the track record
 
-- **Status:** Accepted (owner, 2026-11-23), with the recommended answers to questions 1–7 as amended in review, and a working limit of 5% (question 8). See Owner's answers. **Implemented**, in `pert twr` and `pert periods`; see As built, which records one consequence of ADR 0040 §6 for the owner to decide. `twr-2.0` is shared with [ADR 0045](0045-multi-period-returns.md), accepted the same day
+- **Status:** Accepted (owner, 2026-11-23), with the recommended answers to questions 1–7 as amended in review, and a working limit of 5% (question 8). See Owner's answers. **Implemented**, in `pert twr` and `pert periods`; see As built, which records why a large inflow inside a gap is estimated around twice, and the owner's decision to keep ADR 0040 §6 as it is. `twr-2.0` is shared with [ADR 0045](0045-multi-period-returns.md), accepted the same day
 - **Date:** 2026-11-17; accepted 2026-11-23
 - **Milestone:** v0.2, issue 60 (P1)
 - **Governs:** `PORT-GIPS-A02`, `A03`, `A09`, `B04`, `B05`, `H04`, `H08`, `J03`, `J04`; `CLAUDE.md` invariants 6, 9, 10
@@ -369,12 +369,19 @@ The marker travels with the value, as `is_supplemental` does
   day before it. ADR 0040 §6 counts any large flow before a sub-period's
   last day as inside it, so the stretch that begins on that day, with the
   inflow on its first day, is still refused. Its own day is estimated too,
-  and the inflow's sub-period is one day long. An inflow on a gap's first
-  day already has the valuation it needs, in the gap's start, so §6 is
-  stricter than its own reason. **For the owner:** amending §6 to treat
-  that inflow as outside the gap would measure some returns it now refuses,
-  exactly, and halve these estimates. It changes measured results, so it
-  is not done here.
+  and the inflow's sub-period is one day long.
+- **§6 is kept as it is (owner, 2026-11-24).** Under ADR 0040 §3 an inflow
+  counts from the start of its day, so the close before it could serve as
+  the valuation "on the date of" a large flow (`PORT-GIPS-A03` c,
+  `PORT-GIPS-B03`). Treating an inflow on a gap's first day as outside the
+  gap was proposed on that ground. The only support found is a GIPS Q&A
+  that accepted the prior day's close for a flow assumed at the start of
+  its day. It is archived, effective 2009-10-01 to 2019-12-31, and not
+  reissued for the 2020 edition. `docs/gips-standard.md` §11.1 already
+  refuses an archived Q&A as current guidance (the T+3 accommodation).
+  So the 2020 text is read as written: a large inflow needs a valuation on
+  its own date as well as the close before it. The cost is a second
+  estimated day for a large inflow inside a gap.
 - **The share** is the carried holdings' value, unsigned, over the level's
   value that day, so a carried short counts against the limit too. Each
   holding carries its own share.
