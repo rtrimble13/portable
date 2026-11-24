@@ -34,8 +34,7 @@ def _series(anchor: date, *amounts: tuple[date, str]) -> list[Moment]:
 
 def _rate(series: list[Moment], anchor: date) -> tuple[D, D, date]:
     last = series[-1].on
-    span = series[-1].years
-    g, found = solve(series, span=span, scope="B", anchor=anchor, last=last)
+    g, found = solve(series, scope="B", anchor=anchor, last=last)
     lowest, on = _require_only_rate(series, g, scope="B", anchor=anchor, last=last)
     with decimal.localcontext(RETURN_CONTEXT):
         assert found.residual <= D("1e-26")
@@ -91,30 +90,69 @@ def test_port_gips_c04_xirr_refuses_pathological_flows() -> None:
 def test_port_gips_c04_two_rates_are_refused_at_the_bracket() -> None:
     """The textbook series: out 100, in 230, out 132, a year apart, which solves
     at 10% and at 20%. It ends with money in, as no portfolio's window can, so
-    its present value has one sign at both ends of the bracket. That is no
-    rate in the bracket, or more than one, and it is refused there."""
+    no bracket can be shown to hold a rate, and it is refused before any
+    solve."""
     anchor = date(2021, 1, 1)
     series = _series(anchor, (date(2021, 1, 1), "100"), (date(2022, 1, 1), "-230"),
                      (date(2023, 1, 1), "132"))  # fmt: skip
     with pytest.raises(PortableError) as refused:
         _rate(series, anchor)
     assert refused.value.code == "PT-E-MWR-NO-CONVERGENCE"
-    assert "same sign at both ends" in refused.value.message
+    assert "ends with money in" in refused.value.message
 
 
 def test_a_series_that_starts_with_money_out_cannot_be_shown_to_have_one_rate() -> None:
-    """Out 50, then in 60 a year later: a loan's shape, which solves at 20%.
-    The proof needs money in first, which every portfolio window has, so it
-    is refused rather than presented on a rate the proof does not cover."""
+    """Out 50, then in 60 a year later: a loan's shape. The proof needs money in
+    first, which every portfolio window has, so it is refused rather than
+    presented on a rate the proof does not cover."""
     anchor = date(2024, 1, 1)
     series = _series(anchor, (date(2024, 1, 1), "-50"), (date(2025, 1, 1), "60"))
-    g, _ = solve(series, span=series[-1].years, scope="B", anchor=anchor, last=date(2025, 1, 1))
-    with decimal.localcontext(RETURN_CONTEXT):
-        assert (g.exp() - 1).quantize(D("0.000001")) == D("0.200000")
     with pytest.raises(PortableError) as refused:
-        _require_only_rate(series, g, scope="B", anchor=anchor, last=date(2025, 1, 1))
+        _rate(series, anchor)
     assert refused.value.code == "PT-E-MWR-NOT-UNIQUE"
     assert "is money out" in refused.value.message
+
+
+def test_port_gips_c04_a_rate_far_outside_any_fixed_range_is_still_found() -> None:
+    """2,372 paid in a day and two days before the end, then two falls of 40%:
+    that money's rate, annualised from two days, is a loss beyond e^-70 a
+    year. The bracket is computed from the flows, so it holds it."""
+    anchor = date(2020, 12, 31)
+    series = _series(
+        anchor,
+        (date(2020, 12, 31), "1000"),
+        (date(2021, 7, 21), "1480"),
+        (date(2021, 7, 22), "892.80"),
+        (date(2021, 7, 24), "-1428.48"),
+    )
+    rate, lowest, _ = _rate(series, anchor)
+    assert rate < D("-0.99")
+    assert lowest > 0
+
+
+def test_port_gips_c04_far_from_the_rate_newton_does_not_crawl() -> None:
+    """Deposits only, the last a day before the end, after a fall. The
+    bracket reaches g = -545 to hold a rate on one day's money, and far down
+    it the present value is nearly exponential, on which Newton's step stays
+    0.45 wide. It is measured within the step cap because a Newton step that
+    does not halve is a bisection (rtsafe)."""
+    from portable_core.services.money_weighted import STEPS
+
+    anchor = date(2020, 12, 31)
+    series = _series(
+        anchor,
+        (date(2020, 12, 31), "1000"),
+        (date(2022, 1, 10), "302.40"),
+        (date(2022, 4, 1), "437.48"),
+        (date(2022, 8, 23), "1101.48"),
+        (date(2022, 11, 9), "2755.07"),
+        (date(2023, 3, 20), "1077.29"),
+        (date(2023, 3, 21), "-4069.75"),
+    )
+    _, found = solve(series, scope="B", anchor=anchor, last=date(2023, 3, 21))
+    assert found.lower < -500
+    assert found.newton_steps + found.bisection_steps < STEPS // 4
+    assert _rate(series, anchor)[1] > 0
 
 
 def test_everything_lost_has_no_rate() -> None:

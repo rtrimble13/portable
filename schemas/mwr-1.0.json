@@ -80,7 +80,7 @@
               "basis": { "$ref": "#/$defs/basis" },
               "mwr": { "$ref": "#/$defs/mwrValue" },
               "solve": {
-                "description": "ADR 0046 §2: Newton guarded by bisection, for g = ln(1 + R), inside a bracket of g between -40 and 40 over the period's length in years.",
+                "description": "ADR 0046 §2 as built: Newton guarded by bisection (rtsafe), for g = ln(1 + R), inside a bracket computed from the flows so that it holds a rate: above its top the first amount outweighs the rest, and below its bottom the last does.",
                 "type": "object",
                 "required": ["variable", "newton_steps", "bisection_steps", "bracket", "residual"],
                 "additionalProperties": false,

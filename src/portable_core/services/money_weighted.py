@@ -12,7 +12,8 @@ that decides a number is here:
   outflows at the end of their day (ADR 0040 §8).
 * **A guarded Newton solve for g = ln(1 + R)** (§2), in
   :data:`~portable_core.services.returns.RETURN_CONTEXT`, with ``exp`` and
-  ``ln`` correctly rounded, so the bytes are fixed (invariant 6).
+  ``ln`` correctly rounded, so the bytes are fixed (invariant 6). Its
+  bracket is computed from the flows, so that it provably holds a rate.
 * **A rate that is provably the only one, or none** (§3, ``PORT-GIPS-C04``).
   Compounded at the rate found, the balance must never fall below zero
   before the end. Then no other rate solves.
@@ -51,7 +52,6 @@ from portable_core.services import returns
 from portable_core.services.returns import RETURN_CONTEXT, Walk
 
 __all__ = [
-    "BRACKET_GROWTH",
     "STEPS",
     "YEAR_COUNT",
     "Moment",
@@ -62,13 +62,13 @@ __all__ = [
 
 #: How a year is counted, recorded on every result (ADR 0046, answer 3).
 YEAR_COUNT: Final = "anniversary"
-#: ADR 0046 §2: the bracket, as the log of the growth over the window.
-BRACKET_GROWTH: Final = Decimal(40)
 #: ADR 0046 §2: the most steps the solve may take.
 STEPS: Final = 200
-#: Converged when g moves by no more than this, or the bracket is this narrow.
+#: Converged when g moves by no more than this share of itself (or of one),
+#: or the bracket is that narrow.
 _G_TOLERANCE: Final = Decimal("1e-30")
-#: Converged when the present value is no more than this share of the gross.
+#: Converged when the present value is no more than this share of its terms'
+#: gross, each discounted at the rate: a measure that holds at any scale.
 _PV_TOLERANCE: Final = Decimal("1e-28")
 
 _DAY: Final = timedelta(days=1)
@@ -203,7 +203,7 @@ def _years(anchor: date, on: date) -> Decimal:
 def _basis(
     basis: Basis, series: Sequence[Moment], *, scope: str, anchor: date, last: date
 ) -> MoneyWeightedBasis:
-    g, found = solve(series, span=_years(anchor, last), scope=scope, anchor=anchor, last=last)
+    g, found = solve(series, scope=scope, anchor=anchor, last=last)
     lowest, lowest_on = _require_only_rate(series, g, scope=scope, anchor=anchor, last=last)
     span = _years(anchor, last)
     with decimal.localcontext(RETURN_CONTEXT):
@@ -220,28 +220,65 @@ def _basis(
 # ── the solve ────────────────────────────────────────────────────────────────
 
 
-def _present_value(series: Sequence[Moment], g: Decimal) -> tuple[Decimal, Decimal]:
-    """The series' present value at g, and its derivative in g."""
-    value = slope = _ZERO
+def _present_value(series: Sequence[Moment], g: Decimal) -> tuple[Decimal, Decimal, Decimal]:
+    """The series' present value at g, its derivative in g, and its terms' gross."""
+    value = slope = gross = _ZERO
     for moment in series:
         discounted = moment.amount * (-g * moment.years).exp()
         value += discounted
         slope -= discounted * moment.years
-    return value, slope
+        gross += abs(discounted)
+    return value, slope, gross
+
+
+def bracket(series: Sequence[Moment]) -> tuple[Decimal, Decimal]:
+    """Rates of g below and above which the present value is negative and positive.
+
+    ADR 0046 §2, as built. For a series that begins with money in and ends
+    with money out:
+
+    * **Above the top**, the first amount outweighs all the others however
+      they are discounted. If *S* is the gross of the rest, then at
+      ``g >= (ln(S / first) + 1) / (t1 - t0)`` (or ``1 / (t1 - t0)`` when *S*
+      is the smaller), their discounted gross is at most ``first / e``.
+    * **Below the bottom**, the last amount outweighs all the earlier ones.
+      If *S* is their gross, then at
+      ``g <= -(ln(S / |last|) + 1) / (tn - tn-1)`` they come to at most
+      ``|last| / e``, compounded to the end.
+
+    So a rate lies between the two, whatever the flows, and the bracket
+    is no wider than they need. A window's rate can lie far outside any
+    fixed range: money paid in two days before a fall is annualised from
+    those two days.
+    """
+    first, final = series[0], series[-1]
+    with decimal.localcontext(RETURN_CONTEXT):
+        after = sum((abs(m.amount) for m in series[1:]), _ZERO)
+        before = sum((abs(m.amount) for m in series[:-1]), _ZERO)
+        upper = (_log_ratio(after, first.amount) + _ONE) / (series[1].years - first.years)
+        lower = -(_log_ratio(before, -final.amount) + _ONE) / (final.years - series[-2].years)
+    return lower, upper
+
+
+def _log_ratio(numerator: Decimal, denominator: Decimal) -> Decimal:
+    """ln(numerator / denominator), or 0 when that is below 0."""
+    return max((numerator / denominator).ln(), _ZERO)
 
 
 def solve(
-    series: Sequence[Moment], *, span: Decimal, scope: str, anchor: date, last: date
+    series: Sequence[Moment], *, scope: str, anchor: date, last: date
 ) -> tuple[Decimal, Solve]:
     """g = ln(1 + R) at which *series* is worth nothing. ADR 0046 §2.
 
-    Newton, a step taken only when it lands inside the bracket, which halves
-    otherwise. The bracket is g·span between -40 and 40.
+    Newton, a step taken only when it lands inside the bracket
+    (:func:`bracket`), which halves otherwise.
 
     Raises:
         ValidationError: nothing was ever taken out and nothing is left, a
-            total loss with no rate; no rate in the bracket, or more than
-            one; or no convergence in :data:`STEPS` steps.
+            total loss with no rate; the series does not begin with money
+            in, which ADR 0046 §3's proof needs; it does not end with money
+            out, so no bracket holds a rate; the arithmetic overflows; or no
+            convergence in :data:`STEPS` steps.
     """
     with decimal.localcontext(RETURN_CONTEXT):
         if all(moment.amount >= 0 for moment in series):
@@ -251,60 +288,81 @@ def solve(
                 code=E_RETURN_TOTAL_LOSS,
                 remedy="The loss is -100%. Nothing is clamped or estimated.",
             )
-        gross = sum((abs(moment.amount) for moment in series), _ZERO)
-        tolerance = _PV_TOLERANCE * gross
-        lower, upper = -BRACKET_GROWTH / span, BRACKET_GROWTH / span
-        low_value, _ = _present_value(series, lower)
-        high_value, _ = _present_value(series, upper)
-        if (low_value > 0) == (high_value > 0):
-            raise _no_rate(scope, anchor, last, lower, upper, "has the same sign at both ends")
-        # Oriented so that the present value is negative at `low`.
-        sign = _ONE if low_value < 0 else -_ONE
-        low, high = lower, upper
-        g = _ZERO
-        newton = bisection = 0
-        for _ in range(STEPS):
-            value, slope = _present_value(series, g)
-            if abs(value) <= tolerance:
-                break
-            if sign * value < 0:
-                low = g
-            else:
-                high = g
-            if high - low <= _G_TOLERANCE:
-                break
-            step = value / slope if slope != 0 else None
-            if step is not None and low < g - step < high:
-                g -= step
-                newton += 1
-                if abs(step) <= _G_TOLERANCE:
-                    break
-            else:
-                g = (low + high) / 2
-                bisection += 1
-        else:
+        first, final = series[0], series[-1]
+        if first.amount <= 0:
+            raise _not_unique(scope, anchor, last, None, first, first.amount, "is money out")
+        if final.amount >= 0:
             raise _no_rate(
-                scope, anchor, last, lower, upper, f"did not settle in {STEPS} steps"
+                scope,
+                anchor,
+                last,
+                "ends with money in, so no bracket can be shown to hold "
+                "a rate: there may be none, or more than one",
             )
-        residual = abs(_present_value(series, g)[0]) / gross
+        lower, upper = bracket(series)
+        try:
+            g, newton, bisection, residual = _search(series, lower, upper)
+        except decimal.Overflow:
+            raise _no_rate(
+                scope, anchor, last, f"overflows between g = {lower} and g = {upper}"
+            ) from None
+        if g is None:
+            raise _no_rate(scope, anchor, last, f"did not settle in {STEPS} steps")
     return g, Solve(newton, bisection, lower, upper, residual)
 
 
-def _no_rate(
-    scope: str, anchor: date, last: date, lower: Decimal, upper: Decimal, why: str
-) -> ValidationError:
+def _search(
+    series: Sequence[Moment], lower: Decimal, upper: Decimal
+) -> tuple[Decimal | None, int, int, Decimal]:
+    """Guarded Newton inside [lower, upper], where the value goes from negative to positive.
+
+    A Newton step is taken only if it lands inside the bracket and is no more
+    than half the step before it (Numerical Recipes' rtsafe). Otherwise the
+    bracket is halved. Far from the rate the present value is close to an
+    exponential, on which Newton's step stays the same size, so without the
+    second condition it would crawl.
+    """
+    low, high = lower, upper
+    g = _ZERO
+    previous = high - low
+    newton = bisection = 0
+    for _ in range(STEPS):
+        value, slope, gross = _present_value(series, g)
+        if abs(value) <= _PV_TOLERANCE * gross:
+            return g, newton, bisection, abs(value) / gross
+        if value < 0:
+            low = g
+        else:
+            high = g
+        scale = max(abs(g), _ONE)
+        if high - low <= _G_TOLERANCE * scale:
+            return g, newton, bisection, abs(value) / gross
+        step = value / slope if slope != 0 else None
+        if step is not None and low < g - step < high and 2 * abs(step) <= abs(previous):
+            previous = step
+            g -= step
+            newton += 1
+            if abs(step) <= _G_TOLERANCE * scale:
+                value, _, gross = _present_value(series, g)
+                return g, newton, bisection, abs(value) / gross
+        else:
+            previous = (high - low) / 2
+            g = low + previous
+            bisection += 1
+    return None, newton, bisection, _ZERO
+
+
+def _no_rate(scope: str, anchor: date, last: date, why: str) -> ValidationError:
     return ValidationError(
         f"no money-weighted rate for {scope} from {anchor.isoformat()} to "
-        f"{last.isoformat()}: its flows' present value {why} of the bracket",
+        f"{last.isoformat()}: its flows' present value {why}",
         code=E_MWR_NO_CONVERGENCE,
         remedy=(
-            "The bracket allows a growth over the period between e^-40 and e^40, which "
-            "holds any real portfolio. Same signs at both ends means no rate in it, or "
-            "more than one (ADR 0046 §2). Rely on the time-weighted return, or measure "
-            "a shorter period."
+            "A period that begins with money in and ends with its value taken out "
+            "always has a rate, and the solver's bracket is computed to hold it "
+            "(ADR 0046 §2). Rely on the time-weighted return, or measure a shorter "
+            "period."
         ),
-        lower=str(lower),
-        upper=str(upper),
     )
 
 
@@ -321,25 +379,28 @@ def _require_only_rate(
     balance is larger at any higher rate and smaller at any lower one, so the
     final balance is zero at this rate alone (Teichroew, Robichek and
     Montalbano's pure investment). Rounding leaves an exact zero within
-    :data:`_PV_TOLERANCE` of the gross, which counts as zero.
+    :data:`_PV_TOLERANCE` of the gross that made the balance, which counts
+    as zero.
 
     Raises:
         ValidationError: the first amount is not money in, or a balance
             before the end is negative (PT-E-MWR-NOT-UNIQUE).
     """
     with decimal.localcontext(RETURN_CONTEXT):
-        gross = sum((abs(moment.amount) for moment in series), _ZERO)
-        floor = -_PV_TOLERANCE * gross
         first = series[0]
         if first.amount <= 0:
             raise _not_unique(scope, anchor, last, g, first, first.amount, "is money out")
-        balance = _ZERO
+        # The balance, and the gross of what made it, both compounded: the
+        # floor for rounding scales with what the balance was made of.
+        balance = gross = _ZERO
         lowest: tuple[Decimal, date] | None = None
-        previous = _ZERO
+        previous = first.years
         for moment in series[:-1]:
-            balance = balance * (g * (moment.years - previous)).exp() + moment.amount
+            growth = (g * (moment.years - previous)).exp()
+            balance = balance * growth + moment.amount
+            gross = gross * growth + abs(moment.amount)
             previous = moment.years
-            if balance < floor:
+            if balance < -_PV_TOLERANCE * gross:
                 raise _not_unique(scope, anchor, last, g, moment, balance, "falls below zero")
             if lowest is None or balance < lowest[0]:
                 lowest = (balance, moment.on)
@@ -351,17 +412,24 @@ def _not_unique(
     scope: str,
     anchor: date,
     last: date,
-    g: Decimal,
+    g: Decimal | None,
     moment: Moment,
     balance: Decimal,
     why: str,
 ) -> ValidationError:
-    with decimal.localcontext(RETURN_CONTEXT):
-        rate = g.exp() - _ONE
+    if g is None:
+        rate = None
+        found = "no money-weighted rate"
+        how = "its first amount"
+    else:
+        with decimal.localcontext(RETURN_CONTEXT):
+            rate = g.exp() - _ONE
+        found = f"the money-weighted rate {rate:.6f}"
+        how = "compounded at it, the balance"
     return ValidationError(
-        f"the money-weighted rate {rate:.6f} for {scope} from {anchor.isoformat()} to "
-        f"{last.isoformat()} cannot be shown to be the only one: compounded at it, the "
-        f"balance {why} at the end of {moment.on.isoformat()}, at {balance:.2f}",
+        f"{found} for {scope} from {anchor.isoformat()} to {last.isoformat()} cannot "
+        f"be shown to be the only one: {how} {why} at the end of "
+        f"{moment.on.isoformat()}, at {balance:.2f}",
         code=E_MWR_NOT_UNIQUE,
         remedy=(
             "A withdrawal took out more than the money had grown to at the rate, so "
@@ -371,6 +439,6 @@ def _not_unique(
         ),
         day=moment.on.isoformat(),
         balance=str(balance),
-        rate=str(rate),
+        rate=str(rate) if rate is not None else None,
         txn_ids=list(moment.txn_ids),
     )

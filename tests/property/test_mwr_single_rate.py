@@ -27,10 +27,10 @@ from hypothesis import strategies as st
 from portable_core.domain.periods import years
 from portable_core.errors import PortableError
 from portable_core.services.money_weighted import (
-    BRACKET_GROWTH,
     Moment,
     _present_value,
     _require_only_rate,
+    bracket,
     solve,
 )
 from portable_core.services.returns import RETURN_CONTEXT
@@ -68,7 +68,7 @@ def _series(opening: int, steps: list[tuple[int, int, int]]) -> list[Moment]:
 def _outcome(series: list[Moment]) -> tuple[D, D] | str:
     last = series[-1].on
     try:
-        g, _ = solve(series, span=series[-1].years, scope="B", anchor=ANCHOR, last=last)
+        g, _ = solve(series, scope="B", anchor=ANCHOR, last=last)
         lowest, _ = _require_only_rate(series, g, scope="B", anchor=ANCHOR, last=last)
     except PortableError as refused:
         return refused.code
@@ -88,13 +88,13 @@ def test_port_gips_c04_a_rate_is_returned_only_if_it_is_the_only_one(
     g, lowest = outcome
     assert lowest >= 0
     with decimal.localcontext(RETURN_CONTEXT):
-        gross = sum((abs(m.amount) for m in series), D(0))
-        assert abs(_present_value(series, g)[0]) <= D("1e-26") * gross
-        # One change of sign across the bracket, on a grid of 400 points.
-        span = series[-1].years
+        value, _, discounted = _present_value(series, g)
+        assert abs(value) <= D("1e-26") * discounted
+        # One change of sign across the solver's bracket, on a grid of 400 points.
+        lower, upper = bracket(series)
         signs = []
         for k in range(401):
-            point = -BRACKET_GROWTH / span + 2 * BRACKET_GROWTH / span * D(k) / 400
+            point = lower + (upper - lower) * D(k) / 400
             value = _present_value(series, point)[0]
             if value != 0:
                 signs.append(value > 0)
