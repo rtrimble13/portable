@@ -1,4 +1,4 @@
-"""What a time-weighted return is, as a value. ADR 0040.
+"""What a time-weighted return is, as a value. ADR 0040. And a money-weighted one, ADR 0046.
 
 Frozen, with no I/O: :mod:`portable_core.services.returns` computes these, and
 a formatter renders them. The method of every sub-period travels with the
@@ -25,7 +25,10 @@ __all__ = [
     "Disclosures",
     "Estimate",
     "EstimatedDay",
+    "MoneyWeightedBasis",
+    "MoneyWeightedReturn",
     "ReturnMethod",
+    "Solve",
     "SubPeriod",
     "TimeWeightedReturn",
     "TimedFlow",
@@ -278,3 +281,85 @@ class TimeWeightedReturn:
 
     def count(self, method: ReturnMethod) -> int:
         return sum(1 for sub in self.subperiods if sub.method is method)
+
+
+@dataclass(frozen=True, slots=True)
+class Solve:
+    """How a money-weighted rate was found. ADR 0046 §2, PORT-GIPS-C04."""
+
+    newton_steps: int
+    bisection_steps: int
+    #: The bracket searched, in g = ln(1 + R): a growth over the window
+    #: between e^-40 and e^40.
+    lower: Decimal
+    upper: Decimal
+    #: The present value left at the rate, over the flows' gross total.
+    residual: Decimal
+
+    def __post_init__(self) -> None:
+        check_decimal_fields(self)
+
+
+@dataclass(frozen=True, slots=True)
+class MoneyWeightedBasis:
+    """One basis's money-weighted rate, and the proof that it is the only one."""
+
+    basis: Basis
+    #: The annual rate R. Presented only for a window of a year or more
+    #: (PORT-GIPS-B07, C03).
+    annual: Decimal
+    #: Over the window: (1 + R)^T - 1, the figure for a window under a year.
+    cumulative: Decimal
+    solve: Solve
+    #: ADR 0046 §3: the lowest balance before the end, compounded at the
+    #: rate, and the day of it. Never negative, or there is no result.
+    lowest_balance: Decimal
+    lowest_balance_on: date
+
+    def __post_init__(self) -> None:
+        check_decimal_fields(self)
+
+
+@dataclass(frozen=True, slots=True)
+class MoneyWeightedReturn:
+    """A money-weighted return, and the time-weighted return beside it. ADR 0046.
+
+    It carries the TWR because it is never presented without one
+    (PORT-GIPS-C01): both cover the same days.
+    """
+
+    twr: TimeWeightedReturn
+    #: The window starts where a track record does: this is *the* MWR, not
+    #: a period MWR (PORT-GIPS-C02).
+    since_inception: bool
+    #: A year or more, by anniversary: the rate is presented annualised.
+    is_annualized: bool
+    #: The anniversary count of the window, from the end of the day before
+    #: its first day (ADR 0045 §5).
+    whole_years: int
+    part_days: int
+    part_of: int
+    beginning_value: Decimal
+    ending_value: Decimal
+    flow_count: int
+    #: Net of the flows: positive when more was paid in than taken out.
+    flow_total: Decimal
+    #: Per basis, in :data:`BASES` order.
+    bases: tuple[MoneyWeightedBasis, ...]
+    #: Either end was valued with carried prices (ADR 0044 §3). It reads no
+    #: other value, so an estimated day inside the window does not mark it.
+    is_estimated: bool
+
+    def __post_init__(self) -> None:
+        check_decimal_fields(self)
+
+    @property
+    def start(self) -> date:
+        return self.twr.start
+
+    @property
+    def end(self) -> date:
+        return self.twr.end
+
+    def for_basis(self, basis: Basis) -> MoneyWeightedBasis:
+        return next(entry for entry in self.bases if entry.basis is basis)

@@ -87,10 +87,12 @@ __all__ = [
     "dietz",
     "ending_values",
     "fee_addback",
+    "level_flows",
     "link",
     "time_weighted_return",
     "track_records",
     "walk",
+    "walk_for",
     "window",
 ]
 
@@ -360,12 +362,31 @@ def time_weighted_return(
     *estimate* is the largest share of a day's value that may be carried, as
     a fraction. None measures only. See :func:`window`.
     """
-    accounts = [account] if account is not None else repos.accounts.all()
-    _, first_day, _ = _open(repos, _begun(repos, accounts, end), start, end)
-    walked = walk(
-        repos, first=first_day, through=end, account=account, staleness_days=staleness_days
+    walked = walk_for(
+        repos, start=start, end=end, account=account, staleness_days=staleness_days
     )
     return window(walked, start=start, end=end, estimate=estimate)
+
+
+def walk_for(
+    repos: Repositories,
+    *,
+    end: date,
+    start: date | None = None,
+    account: Account | None = None,
+    staleness_days: int,
+) -> Walk:
+    """The walk one window from *start* to *end* needs, and no more.
+
+    The checks that need no walk are made first, so a refusal that needs none
+    costs none, and a start after the end is refused as the window would
+    refuse it, not as a walk covering no day.
+    """
+    accounts = [account] if account is not None else repos.accounts.all()
+    _, first_day, _ = _open(repos, _begun(repos, accounts, end), start, end)
+    return walk(
+        repos, first=first_day, through=end, account=account, staleness_days=staleness_days
+    )
 
 
 def walk(
@@ -532,6 +553,26 @@ def ending_values(walked: Walk, result: TimeWeightedReturn) -> dict[int, Decimal
         for (account_id, day), snapshot in walked.stored.items()
         if day == on and walked.begun[account_id] <= on
     }
+
+
+def level_flows(
+    walked: Walk, after: date, through: date
+) -> tuple[tuple[TimedFlow, ...], dict[Basis, tuple[tuple[date, Decimal], ...]]]:
+    """The level's external flows from the end of *after* to the end of *through*.
+
+    In day order, as a window over the same days reads them: an account's
+    flows at account level, the portfolio's at portfolio level, where a
+    transfer between the owner's accounts is none (PORT-GIPS-B02, C05). With
+    them, per basis, each day's fees that basis undoes (ADR 0040 §8).
+    `is_large` is not decided here: it depends on the sub-period.
+    """
+    days = walked.days[(after - walked.anchor).days + 1 : (through - walked.anchor).days + 1]
+    flows = tuple(flow for day in days for flow in day.flows)
+    undone = {
+        basis: tuple((day.on, day.undone[basis]) for day in days if day.undone[basis])
+        for basis in BASES
+    }
+    return flows, undone
 
 
 def track_records(walked: Walk) -> tuple[TrackRecord, ...]:

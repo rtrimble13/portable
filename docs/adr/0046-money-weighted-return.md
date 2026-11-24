@@ -73,7 +73,7 @@ was solved by the year count of §1.
 |:---|:---|---:|:---|:---|:---|
 | **Typical** | −100,000 on 2020-01-01, +20,000 on 2022-06-30, −30,000 on 2024-03-15, +180,000 at 2025-12-31 | 3 | refused | −100k, −80k, −110k, +70k: changes sign once | 100,000; 105,342; 152,983; 0. Never negative: the only rate is **9.4829%** |
 | **Drawdown** | −100,000 on 2016-01-01, +130,000 on 2020-01-02, −60,000 on 2022-01-03, +110,000 at 2025-12-31 | 3 | refused | −100k, +30k, −30k, +80k: changes sign three times | 100,000; 13,812; 76,565; 0. Never negative: the only rate is **9.5019%** |
-| **Two rates** | −100 on 2021-01-01, +230 a year later, −132 a year after that | 2 | refused | −100, +130, −2: changes sign twice | 100; −120 at 10%, and 100; −110 at 20%. Both are rates, and the balance goes negative at each |
+| **Three rates** | −1 on 2021-01-01, +6, −11 and +6 a year apart | 3 | refused | −1, +5, −6, 0: changes sign twice, then ends at zero | 1, then −5, −4 or −3 after the 6 taken out, at 0%, 100% or 200%. All three are rates, and the balance goes negative at each |
 
 ## Decision
 
@@ -119,6 +119,16 @@ last day:
   present value of the flows has the same sign at both ends, there is no
   rate in the bracket, or there is more than one. The return is refused
   with `PT-E-MWR-NO-CONVERGENCE`, naming the bracket.
+  - **The textbook two-rate series is refused here.** −100, +230, −132 a
+    year apart solves at 10% and at 20%. It ends with money in, as no
+    portfolio's window can.
+  - **A portfolio's window always has a rate.** It begins with money in
+    and ends with its value taken out. As the rate rises without bound, the
+    first amount dominates and its present value turns positive. As it
+    falls, the last amount dominates and the value turns negative. So its
+    rates, counted with multiplicity, are odd in number: one, or three or
+    more, which are §3's to catch. A window whose rate the bracket does not hold is refused, never
+    guessed. No real portfolio grows by e^40 over its window.
 - **Newton, guarded by bisection.** A Newton step is taken only if it lands
   inside the current bracket. Otherwise the bracket is halved. It stops when
   the bracket is narrower than 10^−30 in *g*, or the present value is under
@@ -165,7 +175,7 @@ the rate. It goes negative only when a withdrawal exceeds what steady
 growth at the money-weighted rate would have built. Then the timing of
 gains and withdrawals is doing most of the work, and a single rate
 misdescribes it. In the table above it passes the typical and drawdown
-series and refuses the two-rate one.
+series and refuses the three-rate one.
 
 `PORT-GIPS-C04` is amended on acceptance to say this. Its test,
 `test_xirr_refuses_pathological_flows`, stands with the two-rate series.
@@ -227,9 +237,10 @@ series and refuses the two-rate one.
   is an outflow at its recorded value.
 - **`test_si_mwr_under_one_year_not_annualized`** (C03): under a year, the
   figure is non-annualised, and the formatter refuses an annualised one.
-- **`test_xirr_refuses_pathological_flows`** (C04): the two-rate series is
-  refused with `PT-E-MWR-NOT-UNIQUE`, naming the withdrawal after which
-  the balance turns negative.
+- **`test_xirr_refuses_pathological_flows`** (C04): the three-rate series
+  is refused with `PT-E-MWR-NOT-UNIQUE`, naming the withdrawal after which
+  the balance turns negative. The two-rate series is refused at the
+  bracket, with `PT-E-MWR-NO-CONVERGENCE`.
 - **Interleaved flows are not refused.** The typical and drawdown series
   of the table give 9.4829% and 9.5019%, checked against a solve done
   outside `portable`.
@@ -260,7 +271,7 @@ series and refuses the two-rate one.
      sign once proves one rate. It passes the typical series and refuses
      the drawdown one.
    - **(c)** The balance at the solved rate (§3, **recommended**), which
-     passes both and refuses the two-rate series. It is also a proof, and it
+     passes both and refuses the three-rate series. It is also a proof, and it
      names the flow responsible.
 3. **The year count.** Recommended: by anniversary, as ADR 0045 §5 annualises
    the TWR. With no flows, the MWR then equals the annualised TWR exactly.
@@ -286,6 +297,19 @@ series and refuses the two-rate one.
 3. **The year count:** by anniversary, as ADR 0045 §5 annualises the TWR.
 4. **The bases:** all four, by ADR 0040 §8's add-back.
 5. **`pert periods`:** no MWR column yet.
+
+## As built
+
+- **The example of more than one rate was wrong as first written.** The
+  table showed the textbook two-rate series, −100, +230, −132, as refused by
+  §3. That series ends with money in, which no portfolio's window does. Its
+  present value has the same sign at both ends of the bracket, so §2
+  refuses it first, as no rate or more than one. Writing the test found
+  this.
+  - **§3's example is now a three-rate series shaped like a portfolio**, and
+    the two-rate series is §2's example.
+  - **The decision is unchanged**, and so are the owner's answers.
+  - **`PORT-GIPS-C04`'s test names both series.**
 
 ## Consequences
 

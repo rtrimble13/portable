@@ -697,8 +697,10 @@ Two rules specific to this repository:
   - **Why.** A sign change bounds the number of rates but does not count
     them. Every withdrawal followed by a later deposit adds two, so the old
     rule refused nearly every real portfolio.
-  - **The test** now names the two-rate series it refuses, and requires
-    interleaved flows with a single rate to be measured.
+  - **The test** now refuses a three-rate series shaped like a portfolio,
+    naming the withdrawal responsible. A two-rate series is refused by the
+    solver, since it cannot be bracketed. Interleaved flows with a single
+    rate must be measured.
 
 - **`pert` measures a return only with prices at most five days old**, whatever
   `staleness_tolerance_days` a snapshot was built under (ADR 0044 §1).
