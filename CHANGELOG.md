@@ -62,6 +62,13 @@ Two rules specific to this repository:
     the start fails it.
   - **Not in CI.** It needs `duk` and the warehouse, and writes no vendor
     price to the repository.
+  - **The estimate tier too** (portfolio E, ADR 0044). SPY's and VFIAX's
+    prices are withheld across the 2024 year end. The periods that do not
+    reach the gap equal a priced twin's, with and without `--estimate`. The
+    24 that do are refused without it, and estimated with it on
+    2024-12-31 alone. The carried prices are the rules' to the digit, and
+    the returns match `duk` to 0.0001 bp. Without the dividend lowering, a
+    year moves 13.76 bp and the rehearsal fails.
 
 - **`pert periods`** (issue 5, ADR 0045): the time-weighted return over every
   period from one walk of the history.

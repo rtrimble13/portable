@@ -15,11 +15,12 @@ python scripts/rehearse_reconciliation.py --work <a directory outside the reposi
 ```
 
 It exits 1 when any period differs from its reference by more than 0.01 bp,
-or any period is refused.
+when any period is refused, or when the estimate checks below fail.
 
 ## What it builds
 
-Two portfolios, from 2015-12-31, built through `pt` as the owner would. Prices
+Four portfolios, from 2015-12-31, built through `pt` as the owner would: the
+static one, D, E and E's priced twin. Prices
 come through `portable`'s own fafnir provider (`pt price load`). Splits and
 dividends come through `pt ca sync`, are recorded with `pt ca split` and
 `pt income dividend`, and are paid on the ex-date, since fafnir has no pay
@@ -41,6 +42,27 @@ D's ledger also holds:
 Its reference applies ADR 0040's flow timing independently: an inflow counts
 from the start of its day and an outflow from its end. The fee is added back
 at the bases that do not deduct it.
+
+**Portfolio E rehearses the estimate tier (ADR 0044).** Its accounts are:
+- E1, which holds 49 SPY and 370 AGG and takes dividends in cash;
+- E2, which holds 215 VFIAX and 30 NVDA and reinvests.
+
+SPY's and VFIAX's prices are withheld from 2024-12-10 to 2025-01-10, so
+the month end 2024-12-31 cannot be measured. Both go ex-dividend inside
+the stretch: SPY on 12-20, paid in cash, and VFIAX on 12-23, reinvested. A
+twin has the same ledger and every price. The checks:
+
+- **Without `--estimate`.** Every period that does not reach 2024-12-31
+  equals the twin's, value for value. Every period that does is refused.
+- **With `--estimate 0.5`.** The periods that were measured are unchanged,
+  with no estimate. Every refused period is estimated, on 2024-12-31 alone.
+- **Each carried price is the one the rules give**, worked out here from
+  `duk`. SPY's is its 2024-12-09 close, less its 12-20 dividend per unit
+  held. VFIAX's is the price its reinvestment paid on 12-23: a purchase at
+  the fund's price, newer than any close before the stretch.
+- **Each period's return equals the reference.** The reference is the
+  values computed from `duk`, at those carried prices on 2024-12-31 and at
+  real ones on every other day.
 
 **Why A must match the adjusted series exactly.** fafnir adjusts for a
 dividend by the factor (P_prev − D) / P_prev, so its ex-day return is
@@ -87,7 +109,53 @@ the start, a single-line change to `returns.dietz`, fails the rehearsal:
   undefined, as ADR 0040 §3 predicts;
 - A, B and C are untouched, having no flows.
 
+### The estimate tier, on portfolio E (2026-11-24)
+
+**It passed.** 57 periods were compared at three levels, the largest
+difference 0.0001 bp.
+- 33 periods that do not reach the withheld days equal the twin's, with and
+  without the flag.
+- 24 that do are refused without it. With it, all 24 are estimated on
+  2024-12-31 alone, and the gaps either side are bridged.
+- Every carried price, its date and its source were exactly what the rules
+  give.
+- The largest share carried was 45.43%, which is why the rehearsal uses a
+  limit of 50%. The limit is not what it tests.
+
+**What an estimate costs, against the priced twin.** SPY fell 3.1% from
+its last loaded close to the year end. E1 carried 38% of its value at that
+close.
+
+| Level | Share carried | 2024, priced | 2024, estimated | 2025, priced | 2025, estimated | Since inception |
+|:---|---:|---:|---:|---:|---:|:---|
+| E1 | 38.34% | 8.9279% | 10.0929% | 9.9624% | 8.7988% | equal |
+| E2 | 45.43% | 77.3526% | 77.9978% | 29.3799% | 28.9109% | equal |
+| Portfolio | 43.99% | 57.4004% | 58.1971% | 25.4615% | 24.8296% | equal |
+
+- **The error is about the share carried times the price's drift**, and
+  falls on the periods that begin or end on the estimated day. E1's is
+  38% × −3.1%, so 2024 is 116 bp too high and 2025 116 bp too low.
+- **A period across the day is not moved.** With no external flow, the
+  carried value cancels out of the linked return. A flow inside it would
+  weight the carried value, and the error would not cancel.
+- **At the owner's working limit of 5%**, the same drift would move a year
+  by about 15 bp. That is why the footnote names the oldest price's age as
+  well as the share: the limit bounds how much was carried, and only the
+  age shows how far it could have drifted.
+
+**The estimate comparison bites.** Remove the lowering of a carried price by
+the distributions since it, a one-line change to `estimates._lowering`.
+- SPY is then carried at its 12-09 close, 604.68, and its dividend is
+  counted twice: in cash and in the price.
+- E1's 2024 return moves 13.76 bp, and the portfolio's 4.01 bp.
+- 16 periods fail the carried-price check.
+
 ## What it cannot test
+
+- **Whether a carried price is a good estimate.** The rehearsal checks that
+  `pert` applies ADR 0044's rules exactly. It cannot say whether a last
+  price was a reasonable guess for a fund no one quoted. The table above
+  shows how wrong one can be.
 
 - **Bad vendor data.** The ledger and the reference both read fafnir's
   dividends, so a wrong or missing dividend in the warehouse is wrong in

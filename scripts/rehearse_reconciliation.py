@@ -6,7 +6,7 @@ owner's portfolio. This rehearses that comparison where the right answer can
 be worked out independently, on portfolios of real securities, so the engine
 is checked against cases it was not written around.
 
-It builds two portfolios through `pt`. Prices come through portable's own
+It builds four portfolios through `pt`. Prices come through portable's own
 fafnir provider (`pt price load`), and splits and dividends through
 `pt ca sync`. It values them (`pt value`) and runs `pert periods` at every
 level. Every period's return is then set beside a reference computed here

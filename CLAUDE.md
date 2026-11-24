@@ -454,8 +454,8 @@ test that fails without your change.
 - `docs/output-formats.md` — JSON envelope, versioning, agent/MCP integration
 - `docs/reconciliation-rehearsal.md` — issue 58's comparison rehearsed on
   sample portfolios of real securities priced from fafnir, against references
-  computed outside `portable`: what was built, what it found, and what it
-  cannot test
+  computed outside `portable`, and the estimate tier on prices withheld
+  from them: what was built, what it found, and what it cannot test
 - `docs/roadmap.md` — what is coming and in which milestone
 - Prior art: [fafnir](https://github.com/rtrimble13/fafnir) (market data warehouse,
   Postgres + `duk`) · [po/portopt](https://github.com/rtrimble13/po) (C++17 optimizer

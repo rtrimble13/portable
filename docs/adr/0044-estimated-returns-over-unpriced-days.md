@@ -395,6 +395,13 @@ The marker travels with the value, as `is_supplemental` does
   window of one walk is the walk of that window, and that the flag changes
   only windows refused for an unpriced day. `tests/property/` holds the
   linking rule.
+- **Rehearsed on fafnir's prices** (`docs/reconciliation-rehearsal.md`,
+  portfolio E). SPY and VFIAX are withheld across the 2024 year end, each
+  with a dividend inside the stretch. The carried prices are exactly those
+  the rules give, and every return matches a reference from `duk` to
+  0.0001 bp. Against a priced twin, the estimate's error is about the share
+  carried times the price's drift. At 38% carried it moved a year by
+  116 bp. Removing the dividend lowering fails the rehearsal.
 
 ## Consequences
 
