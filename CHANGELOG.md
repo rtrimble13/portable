@@ -1091,6 +1091,15 @@ Two rules specific to this repository:
     `staleness_tolerance_days` applied.
   - **The rule is stated once**, as `ValuationEngine.price_status`, which
     `price_holding` enforces and `pt pnl` now reads.
+- **`pt holdings` valued a holding at a price however old, too.** It showed
+  each row's price but no date. A stale price's market value went into the
+  total and the weights.
+  - **Now** such a row shows the price and, in a new **Priced** column, its
+    date, with a null market value, unrealized gain and weight. It is left
+    out of the total, as a missing price always was, and named in a warning.
+  - **In JSON**, `stale_instruments` and `staleness_tolerance_days` sit beside
+    `total_market_value`, and each row carries `price_date`. `holdings-1.0`
+    allows both, so the schema is unchanged.
 
 - **`PT-E-PRICE-STALE` and `docs/market-data.md` named a `--staleness-tolerance`
   flag that does not exist.** Both now name `staleness_tolerance_days` in

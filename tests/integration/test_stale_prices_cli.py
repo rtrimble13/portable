@@ -1,4 +1,4 @@
-"""`pt pnl`'s unrealized figure, valued only at prices `pt value` would accept.
+"""`pt pnl` and `pt holdings` value a holding only at a price `pt value` would accept.
 
 Account B is funded with 500,000 on 2024-01-02 by the base template. Here it
 buys 100 XYZ at 100 and 10 ABC at 50 on 2024-01-03. XYZ is priced once, at
@@ -88,3 +88,41 @@ def test_a_raised_tolerance_is_honoured(run_pt: CliRunner, book: str) -> None:
     assert D(data["unrealized"]) == D("2100.00")
     assert data["stale_instruments"] == []
     assert data["staleness_tolerance_days"] == 60
+
+
+@pytest.mark.gips
+def test_port_gips_a09_holdings_do_not_carry_a_stale_price_into_value(
+    run_pt: CliRunner, book: str
+) -> None:
+    """On 2024-03-01 XYZ's newest price, 120 on 2024-01-03, is shown with its
+    date, but values nothing: market value and unrealized are null, and the
+    total is the cash and ABC alone. Cash is 500,000 less 10,000 and 500:
+    489,500, so the total is 489,500 + 600 = 490,100, not 502,100."""
+    from tests.unit.test_json_schemas import _validator
+
+    result = run_pt("--port", book, "--as-of", "2024-03-01", "holdings").json()
+    errors = sorted(_validator("holdings-1.0.json").iter_errors(result), key=str)
+    assert not errors, [e.message for e in errors[:5]]
+    data = result["data"]
+    rows = {row["symbol"]: row for row in data["rows"]}
+    xyz, abc = rows["XYZ"], rows["ABC"]
+    assert (xyz["price"], xyz["price_date"]) == ("120", "2024-01-03")
+    assert (xyz["market_value"], xyz["unrealized"], xyz["weight"]) == (None, None, None)
+    assert (abc["market_value"], abc["price_date"]) == ("600.00", "2024-03-01")
+    assert data["total_market_value"] == "490100.00"
+    assert data["stale_instruments"] == [
+        {"symbol": "XYZ", "price_date": "2024-01-03", "days_old": 58}
+    ]
+    assert any(w.startswith("XYZ: the newest price is 58 days old") for w in result["warnings"])
+
+    table = run_pt("--port", book, "--as-of", "2024-03-01", "holdings", fmt="table").stdout
+    assert "older than the 5-day staleness tolerance" in table
+
+
+def test_holdings_grouped_leave_a_stale_holding_out_of_the_total(
+    run_pt: CliRunner, book: str
+) -> None:
+    data = run_pt("--port", book, "--as-of", "2024-03-01", "holdings", "--by", "account").data
+    (bucket,) = [row for row in data["rows"] if row["symbol"] == "B"]
+    assert bucket["market_value"] == "490100.00"
+    assert data["total_market_value"] == "490100.00"

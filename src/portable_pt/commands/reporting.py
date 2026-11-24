@@ -57,6 +57,11 @@ def holdings(
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
         accounts = [repos.accounts.resolve(account)] if account else repos.accounts.all()
+        # The staleness rule `pt value` applies (PORT-GIPS-A09): a price older
+        # than the tolerance values nothing, and is not carried forward.
+        tolerance = int(ctx.config.get("staleness_tolerance_days", 5))
+        engine = ValuationEngine(staleness_tolerance_days=tolerance)
+        stale: list[dict[str, object]] = []
 
         def read() -> tuple[list[dict[str, object]], list[str], Decimal]:
             # Positions, lots and cash as they stood at the end of --as-of,
@@ -79,6 +84,7 @@ def holdings(
                             price = repos.prices.newest_on_or_before(
                                 instrument.instrument_id, ctx.as_of
                             )
+                            status = engine.price_status(price, ctx.as_of)
                             lots = repos.lots.by_leg(leg.leg_id)
                             # ADR 0038. A short leg is valued negatively, and
                             # its lots hold what the short sale received, which
@@ -91,7 +97,7 @@ def holdings(
                                 quantize_money(
                                     instrument.value_of(leg.signed_quantity, price.price)
                                 )
-                                if price
+                                if price is not None and status is PriceStatus.CURRENT
                                 else None
                             )
                             if price is None:
@@ -100,6 +106,21 @@ def holdings(
                                     f"{ctx.as_of.isoformat()}; market value shown as null, "
                                     "not as zero."
                                 )
+                            elif status is PriceStatus.STALE:
+                                age = (ctx.as_of - price.price_date).days
+                                warnings.append(
+                                    f"{instrument.symbol}: the newest price is {age} days "
+                                    f"old ({price.price_date.isoformat()}), beyond the "
+                                    f"{tolerance}-day staleness tolerance; market value "
+                                    "shown as null, not carried forward."
+                                )
+                                entry = {
+                                    "symbol": instrument.symbol,
+                                    "price_date": price.price_date.isoformat(),
+                                    "days_old": age,
+                                }
+                                if entry not in stale:
+                                    stale.append(entry)
                             else:
                                 total += value or ZERO
                             rows.append(
@@ -171,10 +192,19 @@ def holdings(
                 footnotes=(
                     "Cash is included: it is always in the return unless an account "
                     "is explicitly designated operating cash (PORT-GIPS-A07).",
-                    "A missing price renders as null, never as zero.",
+                    "A missing price renders as null, never as zero. So does one "
+                    f"older than the {tolerance}-day staleness tolerance: it is not "
+                    "carried forward.",
                 ),
             ),
-            data={"total_market_value": quantize_money(total), "grouped_by": by},
+            data={
+                "total_market_value": quantize_money(total),
+                "grouped_by": by,
+                # Held, and left out of the total: priced only longer ago than
+                # the tolerance. A missing price is named in the warnings.
+                "stale_instruments": sorted(stale, key=lambda e: str(e["symbol"])),
+                "staleness_tolerance_days": tolerance,
+            },
             warnings=tuple(warnings),
             as_of=ctx.as_of,
             portfolio=ctx.portfolio_name(),
@@ -204,6 +234,9 @@ def _holdings_columns(by: str) -> tuple[Column, ...]:
             Column("role", "Role"),
             Column("quantity", "Qty", ColumnKind.QUANTITY),
             Column("price", "Price", ColumnKind.PRICE),
+            # How old the price is: one beyond the staleness tolerance values
+            # nothing, and its market value is null (PORT-GIPS-A09).
+            Column("price_date", "Priced", ColumnKind.DATE),
             *money,
         )
     headers = {
