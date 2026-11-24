@@ -24,6 +24,7 @@ What is deliberate rather than incidental:
 
 from __future__ import annotations
 
+import enum
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
@@ -51,9 +52,19 @@ from portable_core.errors.kinds import (
 )
 from portable_core.services import cash_flow
 
-__all__ = ["Holding", "ValuationEngine", "is_accruing", "receivable"]
+__all__ = ["Holding", "PriceStatus", "ValuationEngine", "is_accruing", "receivable"]
 
 ZERO = Decimal("0.00")
+
+
+class PriceStatus(enum.StrEnum):
+    """Whether a price can value a holding on a day. PORT-GIPS-A09."""
+
+    CURRENT = "current"
+    #: No price on or before the day.
+    MISSING = "missing"
+    #: The newest price is older than the staleness tolerance.
+    STALE = "stale"
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +113,21 @@ class ValuationEngine:
 
     # ── pricing ──────────────────────────────────────────────────────────────
 
+    def price_status(self, price: Price | None, as_of: date) -> PriceStatus:
+        """Whether *price*, the newest on or before *as_of*, can value a holding then.
+
+        The one statement of the staleness rule, which :meth:`price_holding`
+        enforces and any report valuing a holding applies. A price older than
+        the tolerance is not "the best approximation of current fair value"
+        (PORT-GIPS-A09), and carrying it forward silently is a plausible,
+        wrong number.
+        """
+        if price is None:
+            return PriceStatus.MISSING
+        if (as_of - price.price_date).days > self.staleness_tolerance_days:
+            return PriceStatus.STALE
+        return PriceStatus.CURRENT
+
     @staticmethod
     def without_market_price(holding: Holding, as_of: date) -> SnapshotPrice:
         """Value a holding nothing quotes: zero, at level 5. ADR 0028.
@@ -144,6 +170,7 @@ class ValuationEngine:
                 return series that looks like a calm market.
         """
         symbol = holding.instrument.symbol
+        status = self.price_status(price, as_of)
         if price is None:
             raise DataUnavailableError(
                 f"no price for {symbol} on or before {as_of.isoformat()}",
@@ -158,7 +185,7 @@ class ValuationEngine:
             )
 
         staleness = (as_of - price.price_date).days
-        if staleness > self.staleness_tolerance_days:
+        if status is PriceStatus.STALE:
             raise DataUnavailableError(
                 f"newest price for {symbol} is {staleness} days old "
                 f"({price.price_date.isoformat()}), beyond the "

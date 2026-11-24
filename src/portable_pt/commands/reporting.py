@@ -31,6 +31,7 @@ from portable_core.services.reconciliation import (
 )
 from portable_core.services.replay import effective_ledger, state_on
 from portable_core.services.tax import TaxEngine, TaxSummary
+from portable_core.services.valuation import PriceStatus, ValuationEngine
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, money_arg, price_line_row, resolve_date
 
@@ -306,6 +307,9 @@ class _PnlFigures:
     unrealized: Decimal
     estimated_tax: Decimal
     unpriced: list[str]
+    #: Held, with a price older than the staleness tolerance, so excluded from
+    #: unrealized as an unpriced holding is: (symbol, price date, days old).
+    stale: list[tuple[str, date, int]]
     #: Dispositions excluded from every total for want of a derivable basis
     #: (ADR 0017 §2b).
     unreportable: int
@@ -330,6 +334,11 @@ def pnl(
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
         account_id = repos.accounts.resolve(account).account_id if account else None
+        # The staleness rule `pt value` applies (PORT-GIPS-A09): a price older
+        # than the tolerance is not a value, and carrying it forward is a
+        # plausible, wrong unrealized figure.
+        tolerance = int(ctx.config.get("staleness_tolerance_days", 5))
+        engine = ValuationEngine(staleness_tolerance_days=tolerance)
 
         def read() -> _PnlFigures:
             # Realized through --as-of and unrealized on it, from the state at
@@ -384,6 +393,7 @@ def pnl(
 
                 unrealized = ZERO
                 unpriced: list[str] = []
+                stale: list[tuple[str, date, int]] = []
                 accounts = (
                     [repos.accounts.resolve(account)] if account else repos.accounts.all()
                 )
@@ -398,8 +408,13 @@ def pnl(
                             price = repos.prices.newest_on_or_before(
                                 instrument.instrument_id, ctx.as_of
                             )
-                            if price is None:
+                            status = engine.price_status(price, ctx.as_of)
+                            if price is None or status is PriceStatus.MISSING:
                                 unpriced.append(instrument.symbol)
+                                continue
+                            if status is PriceStatus.STALE:
+                                age = (ctx.as_of - price.price_date).days
+                                stale.append((instrument.symbol, price.price_date, age))
                                 continue
                             lots = repos.lots.by_leg(leg.leg_id)
                             basis = sum((lot.adjusted_cost_basis for lot in lots), ZERO)
@@ -415,6 +430,7 @@ def pnl(
                 unrealized=unrealized,
                 estimated_tax=estimated_tax,
                 unpriced=unpriced,
+                stale=stale,
                 unreportable=len(unreportable_pnl),
                 approximate_basis=approximate_basis,
             )
@@ -458,7 +474,14 @@ def pnl(
                     if net_of_tax
                     else None
                 ),
+                # Held, and excluded from unrealized: no price at all, or only
+                # one older than the staleness tolerance. Neither is a zero.
                 "unpriced_instruments": sorted(set(figures.unpriced)),
+                "stale_instruments": [
+                    {"symbol": symbol, "price_date": on.isoformat(), "days_old": age}
+                    for symbol, on, age in sorted(set(figures.stale))
+                ],
+                "staleness_tolerance_days": tolerance,
                 # ADR 0017 §3, carried as envelope fields for the same reason
                 # `pt tax` carries them: a consumer must not be able to take the
                 # totals without the qualification attached.
@@ -474,6 +497,12 @@ def pnl(
                     )
                     if figures.unpriced
                     else ()
+                ),
+                *(
+                    f"{symbol}: the newest price is {age} days old ({on.isoformat()}), "
+                    f"beyond the {tolerance}-day staleness tolerance; unrealized P&L "
+                    "excludes it rather than carrying a stale price forward."
+                    for symbol, on, age in sorted(set(figures.stale))
                 ),
                 *(
                     (
