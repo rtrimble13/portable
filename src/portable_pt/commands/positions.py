@@ -7,13 +7,26 @@ from typing import Annotated
 
 import typer
 
-from portable_core.domain.enums import StrategyType
+from portable_core.disclaimer import (
+    BOND_TAX_NOT_COMPUTED,
+    TAX_DISCLAIMER,
+    WASH_SALES_DETECTED,
+    WASH_SALES_NOT_DETECTED,
+)
+from portable_core.domain.enums import StrategyType, WashSaleStatus
 from portable_core.errors import ValidationError
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.persistence.repositories import Repositories
 from portable_core.services.labels import Label, record_label
 from portable_core.services.regrouping import Regroup, record_regroup
 from portable_core.services.replay import state_on
+from portable_core.services.sale_candidates import (
+    Candidate,
+    CandidateReport,
+    CandidateSort,
+    UnstatedReason,
+    sale_candidates,
+)
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, resolve_date
 
@@ -432,6 +445,333 @@ def list_lots(
         )
 
     dispatch(action)
+
+
+@lot_app.command(name="candidates")
+def lot_candidates(
+    symbol: Annotated[str | None, typer.Argument(help="Filter to one instrument.")] = None,
+    account: Annotated[str | None, typer.Option("--account", "-a")] = None,
+    losses: Annotated[
+        bool, typer.Option("--losses", help="Only lots that would be sold at a loss.")
+    ] = False,
+    sort: Annotated[
+        CandidateSort, typer.Option("--sort", help="Row order; unknown figures last.")
+    ] = CandidateSort.ACQUIRED,
+) -> None:
+    """Every open lot in a taxable account, as if sold alone on --as-of.
+
+    For each lot: the proceeds at the newest price no older than the
+    staleness tolerance, the gain, the holding period and the first day it is
+    long-term, the estimated tax, and for a loss, the replacements already
+    bought, in any account, that would wash it (ADR 0047). **An estimate, not
+    tax advice. Read-only, and it proposes nothing.** Each row is one sale on
+    its own, so the rows do not add up to anything. Sell a row with the
+    `--lots` designation it shows.
+    """
+
+    def action() -> CommandResult:
+        ctx = state.with_portfolio()
+        repos = ctx.require_portfolio()
+        # The rule `pt holdings` and `pt pnl` apply, so the report agrees with
+        # the holdings beside it (ADR 0047, answer 1).
+        tolerance = int(ctx.config.get("staleness_tolerance_days", 5))
+        report, warnings = sale_candidates(
+            repos,
+            as_of=ctx.as_of,
+            staleness_tolerance_days=tolerance,
+            account=repos.accounts.resolve(account) if account else None,
+            instrument=repos.instruments.resolve(symbol, on=ctx.as_of) if symbol else None,
+            losses_only=losses,
+            sort=sort,
+        )
+        return CommandResult(
+            command="lot candidates",
+            table=Table(
+                columns=_CANDIDATE_COLUMNS,
+                rows=tuple(_candidate_row(row) for row in report.rows),
+                title=f"Each open lot sold alone on {ctx.as_of.isoformat()}",
+                footnotes=_candidate_notes(report),
+            ),
+            data={
+                "staleness_tolerance_days": tolerance,
+                "sort": str(sort),
+                "losses_only": losses,
+                # The rows are alternatives: two loss lots can each be washed
+                # by the same recent shares, and sold together only those
+                # shares wash. A field, so a consumer cannot sum them unawares.
+                "is_additive": False,
+                "candidates": [_candidate_detail(row) for row in report.rows],
+                "not_listed": {
+                    "averaged": [
+                        {
+                            "account": a.account,
+                            "symbol": a.symbol,
+                            "lots": a.lots,
+                            "quantity": a.quantity,
+                            "reason": a.reason,
+                        }
+                        for a in report.averaged
+                    ],
+                    "short_lots": report.short_lots,
+                    "sheltered_lots": report.sheltered_lots,
+                },
+                # ADR 0037. Envelope fields, as in `pt tax`: what the check
+                # covers, and what it does not, travel with every row.
+                "wash_sales": {
+                    "detected": list(WASH_SALES_DETECTED),
+                    "not_detected": list(WASH_SALES_NOT_DETECTED),
+                },
+            },
+            human_data=False,
+            disclaimer=TAX_DISCLAIMER,
+            warnings=warnings,
+            as_of=ctx.as_of,
+            portfolio=ctx.portfolio_name(),
+        )
+
+    dispatch(action)
+
+
+_CANDIDATE_COLUMNS = (
+    Column("designation", "Sell with"),
+    Column("account", "Account"),
+    Column("symbol", "Symbol"),
+    Column("open_date", "Acquired", ColumnKind.DATE),
+    Column("quantity", "Qty", ColumnKind.QUANTITY),
+    Column("basis", "Basis", ColumnKind.MONEY),
+    Column("basis_from", "Basis from"),
+    Column("price", "Price", ColumnKind.PRICE),
+    Column("price_date", "Priced", ColumnKind.DATE),
+    Column("price_age_days", "Age", ColumnKind.INTEGER),
+    Column("price_source", "Source"),
+    Column("proceeds", "Proceeds", ColumnKind.MONEY),
+    Column("gain", "Gain/Loss", ColumnKind.MONEY),
+    Column("holding_period", "Holding"),
+    Column("long_term_from", "Long from", ColumnKind.DATE),
+    Column("days_to_long_term", "To long", ColumnKind.INTEGER),
+    Column("wash_deferred", "Wash deferred", ColumnKind.MONEY),
+    Column("wash_lost", "Wash lost", ColumnKind.MONEY),
+    Column("window_clears", "Clears", ColumnKind.DATE),
+    Column("estimated_tax", "Est. Tax", ColumnKind.MONEY),
+    Column("tax_per_dollar", "Tax/$", ColumnKind.RATE),
+    Column("waiting_saves", "Waiting saves", ColumnKind.MONEY),
+    Column("note", "Not stated"),
+)
+
+
+def _candidate_row(row: Candidate) -> dict[str, object]:
+    """The row as the table shows it: one line, nulls where nothing is known."""
+    wash = row.wash
+    price = row.price
+    return {
+        "designation": row.designation,
+        "account": row.account.name,
+        "symbol": row.instrument.symbol,
+        "open_date": row.lot.open_date.isoformat(),
+        "quantity": row.lot.remaining_quantity,
+        "basis": row.lot.adjusted_cost_basis,
+        "basis_from": str(row.lot.basis_source),
+        "price": price.price if price is not None else None,
+        "price_date": price.price_date.isoformat() if price is not None else None,
+        "price_age_days": row.price_age_days,
+        "price_source": price.source if price is not None else None,
+        "proceeds": row.proceeds,
+        "gain": row.gain,
+        "holding_period": str(row.holding_period),
+        "long_term_from": row.long_term_from.isoformat(),
+        "days_to_long_term": row.days_to_long_term,
+        "wash_deferred": wash.disallowed(WashSaleStatus.DEFERRED) if wash else None,
+        "wash_lost": wash.disallowed(WashSaleStatus.PERMANENT) if wash else None,
+        "window_clears": (
+            wash.window_clears.isoformat() if wash and wash.window_clears else None
+        ),
+        "estimated_tax": row.estimated_tax,
+        "tax_per_dollar": row.tax_per_dollar,
+        "waiting_saves": row.waiting_saves,
+        "note": "; ".join(_SHORT_REASON[u.reason] for u in row.unstated) or None,
+    }
+
+
+_SHORT_REASON = {
+    UnstatedReason.PRICE_MISSING: "no price",
+    UnstatedReason.PRICE_STALE: "stale price",
+    UnstatedReason.NO_MARKET_PRICE: "no market price",
+    UnstatedReason.BASIS_UNAVAILABLE: "basis unavailable",
+    UnstatedReason.NO_RATE_SCHEDULE: "no rate schedule",
+}
+
+
+def _candidate_detail(row: Candidate) -> dict[str, object]:
+    """Everything about one row, for a machine: `data.candidates`, in row order."""
+    price = row.price
+    wash = row.wash
+    tax = row.tax
+    notes: list[str] = []
+    if row.instrument.is_bond:
+        notes.extend(f"not computed for a bond: {item}" for item in BOND_TAX_NOT_COMPUTED)
+    if row.instrument.is_option:
+        notes.append(
+            "a wash by another option, or by the underlying, is not detected: "
+            + WASH_SALES_NOT_DETECTED[1]
+        )
+    return {
+        "lot_id": row.lot.lot_id,
+        "lot_key": row.lot.lot_key,
+        "designation": row.designation,
+        "account": row.account.name,
+        "symbol": row.instrument.symbol,
+        "instrument_type": str(row.instrument.instrument_type),
+        "open_date": row.lot.open_date.isoformat(),
+        "quantity": row.lot.remaining_quantity,
+        "basis": row.lot.adjusted_cost_basis,
+        "basis_from": str(row.lot.basis_source),
+        "is_approximate_basis": row.is_approximate,
+        "holding_period_start": row.lot.holding_period_start.isoformat(),
+        "holding_period": str(row.holding_period),
+        "days_held": row.days_held,
+        "long_term_from": row.long_term_from.isoformat(),
+        "days_to_long_term": row.days_to_long_term,
+        "price": (
+            {
+                "price": price.price,
+                "price_date": price.price_date.isoformat(),
+                "source": price.source,
+                "age_days": row.price_age_days,
+                "status": str(row.price_status),
+                # PORT-GIPS-A02: a judged estimate is a price, and is used,
+                # but a sale decided at it should know it is one.
+                "valuation_level": price.valuation_level,
+                "is_estimate": price.is_estimate,
+            }
+            if price is not None
+            else None
+        ),
+        "proceeds": row.proceeds,
+        "gain": row.gain,
+        "wash": (
+            {
+                "replacements": [
+                    {
+                        "lot_key": r.lot_key,
+                        "account": r.account,
+                        "acquired": r.acquired.isoformat(),
+                        "quantity": r.quantity,
+                        "disallowed": r.disallowed,
+                        "status": str(r.status),
+                    }
+                    for r in wash.replacements
+                ],
+                "washed_quantity": wash.washed_quantity,
+                "deferred": wash.disallowed(WashSaleStatus.DEFERRED),
+                "permanently_disallowed": wash.disallowed(WashSaleStatus.PERMANENT),
+                "manual": wash.disallowed(WashSaleStatus.MANUAL),
+                "window_clears": wash.window_clears.isoformat() if wash.window_clears else None,
+                "buying_washes_through": wash.buying_washes_through.isoformat(),
+            }
+            if wash is not None
+            else None
+        ),
+        "allowed_gain": row.allowed_gain,
+        "tax": (
+            {
+                "is_estimate": True,
+                "federal_rate": tax.federal_rate,
+                "state_rate": tax.state_rate,
+                "niit_rate": tax.niit_rate,
+                "estimated_tax": tax.estimated_tax,
+            }
+            if tax is not None
+            else None
+        ),
+        "tax_per_dollar": row.tax_per_dollar,
+        "waiting_saves": row.waiting_saves,
+        "unstated": [
+            {"reason": str(u.reason), "message": u.message, "code": u.code}
+            for u in row.unstated
+        ],
+        "notes": notes,
+    }
+
+
+def _candidate_notes(report: CandidateReport) -> tuple[str, ...]:
+    """What a reader must know before using any row."""
+    rows = report.rows
+    notes = [
+        "Each row is its lot sold alone, all of it, on this date. The rows are "
+        "alternatives, not parts of one sale, and do not add up: two loss lots can "
+        "each be washed by the same recent shares, and sold together only those "
+        "shares wash. There are no totals.",
+        f"Priced at the newest price on or before the date, no older than "
+        f"{report.staleness_tolerance_days} days. No selling cost is deducted, since "
+        "none is known before the trade.",
+        "Est. Tax is the allowed gain times the account's rate in force for the "
+        "holding period (ADR 0011); Tax/$ is it over the proceeds, negative where a "
+        "loss saves tax. Waiting saves: the estimate today less the estimate on the "
+        "first long-term day, at today's price and before any wash sale; positive "
+        "means waiting saves tax.",
+    ]
+    if any(row.lot.holding_period_start != row.lot.open_date for row in rows):
+        notes.append(
+            "Long from counts from the holding-period start, not the acquisition: a "
+            "spinoff's shares inherit their parent's, and a wash sale's replacement "
+            "absorbs the days of the shares sold."
+        )
+    if any(row.wash is not None for row in rows):
+        notes.append(
+            "A loss is also washed by buying the instrument, or one declared "
+            "substantially identical, in any account, IRAs included, within 30 days "
+            "after the sale -- a dividend reinvestment too. Wash lost: a replacement "
+            "in a sheltered account loses the loss for good; it is not deferred. "
+            "Clears: the first day no replacement already bought is within 30 days "
+            "before the sale, if nothing more is bought."
+        )
+    if any(r.status is WashSaleStatus.MANUAL for row in rows if row.wash
+           for r in row.wash.replacements):  # fmt: skip
+        notes.append(
+            "Some replacements were disposed of before the date; a sale would report "
+            "them for manual handling and mark its tax year incomplete (ADR 0037)."
+        )
+    estimated = sorted(
+        {
+            row.instrument.symbol
+            for row in rows
+            if row.price is not None and row.price.is_estimate and row.proceeds is not None
+        }
+    )
+    if estimated:
+        notes.append(
+            f"Priced at a judged estimate, not a market price: {', '.join(estimated)}. "
+            "Its proceeds, gain and tax are only as good as that judgement."
+        )
+    if any(row.is_approximate for row in rows):
+        notes.append(
+            "Only 'derived' basis is this portfolio's own arithmetic; the other rungs "
+            "came from a custodian or a reconstruction, and their gains are "
+            "approximate (ADR 0017)."
+        )
+    bonds = sorted({row.instrument.symbol for row in rows if row.instrument.is_bond})
+    if bonds:
+        notes.append(
+            f"Bonds ({', '.join(bonds)}): accrued interest is not proceeds (ADR 0041), "
+            "and NOT computed -- " + "; ".join(BOND_TAX_NOT_COMPUTED) + "."
+        )
+    if any(row.unstated for row in rows):
+        notes.append(
+            "A blank figure is not stated, never zero: no price, a price older than "
+            "the tolerance, a basis that cannot be derived, or no rate schedule."
+        )
+    left_out: list[str] = []
+    if report.short_lots:
+        left_out.append(f"{report.short_lots} short lot(s); closing one is a purchase")
+    if report.sheltered_lots:
+        left_out.append(
+            f"{report.sheltered_lots} lot(s) in sheltered accounts, which owe no tax on a sale"
+        )
+    left_out.extend(f"{a.symbol} in {a.account} ({a.reason})" for a in report.averaged)
+    if left_out:
+        notes.append("Not listed: " + "; ".join(left_out) + ".")
+    notes.append("Wash sales NOT detected: " + "; ".join(WASH_SALES_NOT_DETECTED) + ".")
+    return tuple(notes)
 
 
 @lot_app.command(name="show")

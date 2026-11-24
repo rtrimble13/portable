@@ -81,6 +81,15 @@ is refused for the same reason.
 
 Run `pt lot list SYMBOL --as-of DATE` first: it shows which lots are already
 long-term and what each carries, which is the table you need in order to choose.
+`pt lot candidates` goes further (ADR 0047). It shows each lot sold alone on
+that date:
+- what it would realize at a current price;
+- the estimated tax, and what waiting until it is long-term would change;
+- for a loss, the replacements already bought, in any account, that would
+  wash it.
+
+Each row carries the `--lots` designation that makes the sale. The rows are
+alternatives, not one sale, so they do not add up.
 
 ### A designation names the lot, and nothing can re-point it
 
