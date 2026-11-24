@@ -24,6 +24,7 @@ from portable_core.importers import TabularAdapter
 from portable_core.importers.source import REALIZED
 from portable_core.persistence.repositories import Repositories
 from portable_core.services import benchmarks, cash_flow, restatement, wash_sales
+from portable_core.services import holdings as holdings_service
 from portable_core.services.reconciliation import (
     ExternalHolding,
     RealizedTieLine,
@@ -51,7 +52,13 @@ def holdings(
         typer.Option("--by", help="account | position | instrument | sector | asset-class"),
     ] = "instrument",
 ) -> None:
-    """What the portfolio holds, as of --as-of."""
+    """What the portfolio holds, as of --as-of, valued as `pt mark` values it.
+
+    Accrued interest and declared dividends are part of market value, each on
+    its own line, so the total is the market value of a snapshot. A holding
+    that cannot be valued leaves no total and no weight, rather than a total
+    of the rest.
+    """
 
     def action() -> CommandResult:
         ctx = state.with_portfolio()
@@ -60,128 +67,43 @@ def holdings(
         # The staleness rule `pt value` applies (PORT-GIPS-A09): a price older
         # than the tolerance values nothing, and is not carried forward.
         tolerance = int(ctx.config.get("staleness_tolerance_days", 5))
-        engine = ValuationEngine(staleness_tolerance_days=tolerance)
-        stale: list[dict[str, object]] = []
+        view, replay_warnings = holdings_service.holdings_on(
+            repos, accounts, ctx.as_of, staleness_tolerance_days=tolerance
+        )
+        rows = [_holding_row(view, line) for line in view.lines]
+        rows = _group_holdings(rows, by, view)
 
-        def read() -> tuple[list[dict[str, object]], list[str], Decimal]:
-            # Positions, lots and cash as they stood at the end of --as-of,
-            # not today's (ADR 0021): state_on runs this against a replay
-            # rewound to that date whenever the ledger has anything later.
-            rows: list[dict[str, object]] = []
-            warnings: list[str] = []
-            with money_context():
-                total = ZERO
-                for target in accounts:
-                    for position in repos.positions.all(
-                        account_id=target.account_id, open_only=True
-                    ):
-                        for leg in position.legs:
-                            if leg.quantity == 0:
-                                continue
-                            instrument = repos.instruments.get(leg.instrument_id)
-                            if instrument is None:
-                                continue
-                            price = repos.prices.newest_on_or_before(
-                                instrument.instrument_id, ctx.as_of
-                            )
-                            status = engine.price_status(price, ctx.as_of)
-                            lots = repos.lots.by_leg(leg.leg_id)
-                            # ADR 0038. A short leg is valued negatively, and
-                            # its lots hold what the short sale received, which
-                            # is shown negative beside it: value less basis is
-                            # then the unrealized P&L in either direction.
-                            basis = sum((lot.adjusted_cost_basis for lot in lots), ZERO)
-                            if leg.sign < 0:
-                                basis = ZERO - basis
-                            value = (
-                                quantize_money(
-                                    instrument.value_of(leg.signed_quantity, price.price)
-                                )
-                                if price is not None and status is PriceStatus.CURRENT
-                                else None
-                            )
-                            if price is None:
-                                warnings.append(
-                                    f"{instrument.symbol}: no price on or before "
-                                    f"{ctx.as_of.isoformat()}; market value shown as null, "
-                                    "not as zero."
-                                )
-                            elif status is PriceStatus.STALE:
-                                age = (ctx.as_of - price.price_date).days
-                                warnings.append(
-                                    f"{instrument.symbol}: the newest price is {age} days "
-                                    f"old ({price.price_date.isoformat()}), beyond the "
-                                    f"{tolerance}-day staleness tolerance; market value "
-                                    "shown as null, not carried forward."
-                                )
-                                entry = {
-                                    "symbol": instrument.symbol,
-                                    "price_date": price.price_date.isoformat(),
-                                    "days_old": age,
-                                }
-                                if entry not in stale:
-                                    stale.append(entry)
-                            else:
-                                total += value or ZERO
-                            rows.append(
-                                {
-                                    "account": target.name,
-                                    "position_id": position.position_id,
-                                    "symbol": instrument.symbol,
-                                    "sector": instrument.sector,
-                                    "asset_class": instrument.asset_class,
-                                    "role": str(leg.role),
-                                    "quantity": leg.signed_quantity,
-                                    "price": price.price if price else None,
-                                    "price_date": (
-                                        price.price_date.isoformat() if price else None
-                                    ),
-                                    "market_value": value,
-                                    "cost_basis": basis,
-                                    "unrealized": (
-                                        quantize_money(value - basis)
-                                        if value is not None
-                                        else None
-                                    ),
-                                }
-                            )
-
-                    cash, margin = repos.valuations.cash(
-                        target.account_id, currency=target.currency
-                    )
-                    if cash != 0 or margin != 0:
-                        total += cash - margin
-                        rows.append(
-                            {
-                                "account": target.name,
-                                "position_id": None,
-                                "symbol": "CASH",
-                                "sector": None,
-                                "asset_class": "cash",
-                                "role": "cash",
-                                "quantity": None,
-                                "price": None,
-                                "price_date": None,
-                                "market_value": quantize_money(cash - margin),
-                                "cost_basis": quantize_money(cash - margin),
-                                "unrealized": ZERO,
-                            }
-                        )
-
-                for row in rows:
-                    row_value = row.get("market_value")
-                    row["weight"] = (
-                        (row_value / total)
-                        if isinstance(row_value, Decimal) and total
-                        else None
-                    )
-            return rows, warnings, total
-
-        as_of_state = state_on(repos, ctx.as_of, read)
-        rows, warnings, total = as_of_state.results[0]
-        warnings = [*warnings, *as_of_state.warnings]
-
-        rows = _group_holdings(rows, by)
+        stale = sorted(
+            {
+                (gap.symbol, gap.price_date, gap.days_old)
+                for gap in view.unvalued
+                if gap.price_date is not None and gap.days_old is not None
+            }
+        )
+        warnings = [
+            *(_unvalued_warning(gap, ctx.as_of, tolerance) for gap in view.unvalued),
+            *replay_warnings,
+        ]
+        footnotes = [
+            "Cash is included: it is always in the return unless an account is "
+            "explicitly designated operating cash (PORT-GIPS-A07).",
+            "Accrued interest and declared dividends are part of market value "
+            "(PORT-GIPS-A06), each on its own line, so the total is what `pt mark` "
+            "values the accounts at.",
+            "A missing price renders as null, never as zero. So does one older than "
+            f"the {tolerance}-day staleness tolerance: it is not carried forward.",
+        ]
+        if not view.is_complete:
+            footnotes.append(
+                "Not every holding could be valued, so there is no total and no "
+                "weight: a weight over the rest would overstate every other holding. "
+                f"What could be valued comes to {view.valued_market_value:,}."
+            )
+        for name, amount in view.excluded_cash:
+            footnotes.append(
+                f"{name} holds operating cash ({amount:,}): shown, and not in the "
+                "total or any weight (PORT-GIPS-A07)."
+            )
 
         return CommandResult(
             command="holdings",
@@ -189,28 +111,74 @@ def holdings(
                 columns=_holdings_columns(by),
                 rows=tuple(rows),
                 title=f"Holdings as of {ctx.as_of.isoformat()}",
-                footnotes=(
-                    "Cash is included: it is always in the return unless an account "
-                    "is explicitly designated operating cash (PORT-GIPS-A07).",
-                    "A missing price renders as null, never as zero. So does one "
-                    f"older than the {tolerance}-day staleness tolerance: it is not "
-                    "carried forward.",
-                ),
+                footnotes=tuple(footnotes),
             ),
             data={
-                "total_market_value": quantize_money(total),
+                # Null unless every line could be valued: a total of the rest is
+                # not the portfolio's (invariant 10).
+                "total_market_value": view.total_market_value,
+                "valued_market_value": view.valued_market_value,
+                "is_complete": view.is_complete,
+                "unvalued": [
+                    {"account": gap.account, "symbol": gap.symbol, "code": gap.code}
+                    for gap in sorted(view.unvalued, key=lambda g: (g.account, g.symbol))
+                ],
+                "excluded_operating_cash": [
+                    {"account": name, "amount": amount} for name, amount in view.excluded_cash
+                ],
                 "grouped_by": by,
-                # Held, and left out of the total: priced only longer ago than
-                # the tolerance. A missing price is named in the warnings.
-                "stale_instruments": sorted(stale, key=lambda e: str(e["symbol"])),
+                "stale_instruments": [
+                    {"symbol": symbol, "price_date": on.isoformat(), "days_old": age}
+                    for symbol, on, age in stale
+                ],
                 "staleness_tolerance_days": tolerance,
             },
             warnings=tuple(warnings),
+            schema_ref="holdings-2.0.json",
             as_of=ctx.as_of,
             portfolio=ctx.portfolio_name(),
         )
 
     dispatch(action)
+
+
+def _holding_row(
+    view: holdings_service.HoldingsView, line: holdings_service.HoldingLine
+) -> dict[str, object]:
+    instrument = line.instrument
+    is_cash = line.kind in {holdings_service.LineKind.CASH, holdings_service.LineKind.MARGIN}
+    return {
+        "account": line.account.name,
+        "position_id": line.position_id,
+        "symbol": "CASH" if is_cash else (instrument.symbol if instrument else "INCOME"),
+        "sector": instrument.sector if instrument else None,
+        "asset_class": "cash" if is_cash else (instrument.asset_class if instrument else None),
+        "role": line.role,
+        "quantity": line.quantity,
+        "price": line.price.price if line.price else None,
+        "price_date": line.price.price_date.isoformat() if line.price else None,
+        "market_value": line.market_value,
+        "cost_basis": line.cost_basis,
+        "unrealized": line.unrealized,
+        "weight": view.weight(line.market_value, in_total=line.in_total),
+        # Not a column: what grouping needs to weigh a group as the lines are.
+        "_in_total": line.in_total,
+    }
+
+
+def _unvalued_warning(gap: holdings_service.Unvalued, as_of: date, tolerance: int) -> str:
+    if gap.price_date is not None and gap.days_old is not None:
+        return (
+            f"{gap.symbol}: the newest price is {gap.days_old} days old "
+            f"({gap.price_date.isoformat()}), beyond the {tolerance}-day staleness "
+            "tolerance; market value shown as null, not carried forward."
+        )
+    if gap.code == "PT-E-PRICE-MISSING":
+        return (
+            f"{gap.symbol}: no price on or before {as_of.isoformat()}; market value "
+            "shown as null, not as zero."
+        )
+    return f"{gap.symbol} in {gap.account}: {gap.message}; its accrued interest is null."
 
 
 def _holdings_columns(by: str) -> tuple[Column, ...]:
@@ -253,14 +221,17 @@ def _holdings_columns(by: str) -> tuple[Column, ...]:
     )
 
 
-def _group_holdings(rows: list[dict[str, object]], by: str) -> list[dict[str, object]]:
+def _group_holdings(
+    rows: list[dict[str, object]], by: str, view: holdings_service.HoldingsView
+) -> list[dict[str, object]]:
     """Aggregate holdings by the requested dimension.
 
     `--by instrument` (the default) is the ungrouped view, one row per leg.
     Anything else sums market value, cost and unrealized P&L into one row per
     group, and blanks the fields that stop meaning anything once summed: a
     group has no single quantity or price, and rendering the first member's is
-    worse than rendering nothing.
+    worse than rendering nothing. A group holding a line that cannot be valued
+    has no market value: the sum of the rest is not the group's.
     """
     keys = {
         "instrument": None,
@@ -283,6 +254,8 @@ def _group_holdings(rows: list[dict[str, object]], by: str) -> list[dict[str, ob
         return sorted(rows, key=lambda r: (str(r["account"]), str(r["symbol"])))
 
     grouped: dict[str, dict[str, object]] = {}
+    unvalued: set[str] = set()
+    weighed: dict[str, Decimal] = {}
     with money_context():
         for row in rows:
             # An ungrouped attribute is "(unclassified)", not blank: a holding
@@ -307,23 +280,24 @@ def _group_holdings(rows: list[dict[str, object]], by: str) -> list[dict[str, ob
             )
             count = bucket["holdings"]
             bucket["holdings"] = (count if isinstance(count, int) else 0) + 1
+            value = row.get("market_value")
+            if not isinstance(value, Decimal):
+                unvalued.add(label)
+            elif row.get("_in_total"):
+                weighed[label] = weighed.get(label, ZERO) + value
             for field in ("market_value", "cost_basis", "unrealized"):
-                value = row.get(field)
+                member = row.get(field)
                 running = bucket[field]
-                if isinstance(value, Decimal) and isinstance(running, Decimal):
-                    bucket[field] = running + value
+                if isinstance(member, Decimal) and isinstance(running, Decimal):
+                    bucket[field] = running + member
 
-        total = sum(
-            (
-                b["market_value"]
-                for b in grouped.values()
-                if isinstance(b["market_value"], Decimal)
-            ),
-            ZERO,
-        )
-        for bucket in grouped.values():
-            value = bucket["market_value"]
-            bucket["weight"] = value / total if isinstance(value, Decimal) and total else None
+        for label, bucket in grouped.items():
+            if label in unvalued:
+                bucket["market_value"] = None
+                bucket["unrealized"] = None
+            bucket["weight"] = view.weight(
+                weighed.get(label, ZERO) if label not in unvalued else None
+            )
 
     return sorted(grouped.values(), key=lambda r: str(r["symbol"]))
 

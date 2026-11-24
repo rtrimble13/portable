@@ -122,7 +122,7 @@ def test_decimals_are_specified_as_strings_not_numbers() -> None:
     ("schema", "args"),
     [
         (
-            "holdings-1.0.json",
+            "holdings-2.0.json",
             ("--port", "examples/sample.port", "holdings", "--as-of", "2025-06-30"),
         ),
         ("tax-2.0.json", ("--port", "examples/sample.port", "tax", "--year", "2025")),

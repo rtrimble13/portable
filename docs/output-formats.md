@@ -24,7 +24,7 @@ those lines.
   "generated_at": "2026-08-27T12:00:00Z",
   "as_of": "2025-06-30",
   "portfolio": "Sample Portfolio",
-  "data": { "columns": [...], "rows": [...], "total_market_value": "103372.30" },
+  "data": { "columns": [...], "rows": [...], "total_market_value": "103372.30", "is_complete": true },
   "warnings": [],
   "disclaimer": null
 }
@@ -73,6 +73,16 @@ disclaimer", the other means it went missing.
 Carrying it as a named key rather than a rendered string means a consumer who
 drops it has to delete `payload["disclaimer"]`, which shows up in their code. A
 footnote at the end of a formatted block can be lost by accident.
+
+`pt holdings` (`holdings-2.0`) values as a snapshot does, so its
+`total_market_value` is what `pt mark` gives for the same accounts, accrued
+income included. A total of the part that could be priced is not the
+portfolio's, so when any line cannot be valued:
+- the total and every weight are null, and `is_complete` is `false`;
+- `valued_market_value` gives what could be valued, under its own name;
+- `unvalued` names each missing line and its error code.
+
+The schema enforces all three.
 
 `pt tax` requires a non-empty disclaimer **in the schema**, and a
 `wash_sales.not_detected` list with at least one entry (`tax-2.0`, ADR 0037).

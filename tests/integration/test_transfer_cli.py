@@ -139,8 +139,12 @@ def test_no_cash_moved(run_pt: CliRunner, seeded: Path) -> None:
     data = _transfer_in(run_pt, seeded)
     assert data["net_cash_effect"] == "0.00"
 
-    cash = run_pt("--port", str(seeded), "holdings", "--as-of", "2022-06-01").ok().data
-    assert cash["total_market_value"] is not None
+    held = run_pt("--port", str(seeded), "holdings", "--as-of", "2022-06-01").ok().data
+    # Nothing prices the shares that arrived, so there is no total; what can
+    # be valued is the cash, and there is none.
+    assert held["total_market_value"] is None
+    assert held["valued_market_value"] == "0.00"
+    assert [gap["code"] for gap in held["unvalued"]] == ["PT-E-PRICE-MISSING"]
     con = sqlite3.connect(seeded)
     try:
         balances = [r[0] for r in con.execute("SELECT balance FROM cash_balance")]

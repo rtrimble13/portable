@@ -25,18 +25,19 @@ Nothing answers "am I where I meant to be?"
 
 Each of these produces a plausible, wrong weight.
 
-- **A weight over part of the total.** `pt holdings` divides each holding by
-  the total of the holdings it could price. A missing or stale price leaves
-  its holding out of the total, so every other weight rises, and the column
-  still sums to 100%. A drift report built that way would show drift that
-  is not there, and hide drift that is.
-- **A total that is not the market value.** `pt holdings` values a bond at
-  its clean price, without its accrued interest, and leaves out accrued
-  dividends. The snapshot `pt value` records includes both (`PORT-GIPS-A06`,
-  ADR 0041). So the two totals differ by the accrued income, and a weight
-  over the smaller one overstates everything else. On the sample at
-  2025-12-31, `pt holdings` totals 819,411.48 and `pt mark` 819,681.51. The
-  270.03 between them is the Treasury's accrued interest.
+- **A weight over part of the total.** `pt holdings` divided each holding by
+  the total of the holdings it could price, until `holdings-2.0`. A missing
+  or stale price left its holding out of the total, so every other weight
+  rose, and the column still summed to 100%. A drift report built that way
+  would show drift that is not there, and hide drift that is.
+- **A total that is not the market value.** Until `holdings-2.0`,
+  `pt holdings` valued a bond at its clean price, without its accrued
+  interest, and left out accrued dividends. The snapshot `pt value` records
+  includes both (`PORT-GIPS-A06`, ADR 0041). So the two totals differed by
+  the accrued income, and a weight over the smaller one overstated
+  everything else. On the sample at 2025-12-31, `pt holdings` totalled
+  819,411.48 and `pt mark` 819,681.51. The 270.03 between them is the
+  Treasury's accrued interest.
 - **Unclassified folded into a class.** A holding with no class put into
   "other", or into the largest class, makes drift look settled when it is not
   known.
@@ -245,9 +246,9 @@ And from this ADR:
 - **`pt holdings --by asset-class`** reads the declared classification, if
   question 5 is answered as recommended.
 - **The two traps in `pt holdings`** recorded in the Context (weights over a
-  partial total, accrued income left out) are not changed here. They are
-  existing behaviour, and the report built here does not share them. They
-  are worth fixing in their own change.
+  partial total, accrued income left out) were fixed in their own change,
+  `holdings-2.0`, before this ADR was decided. `pt holdings` now values
+  through the snapshot's functions, as §4 asks of drift.
 - **Issue 36's rebalancing** reads this report's figures and policy, and
   proposes trades against them.
 

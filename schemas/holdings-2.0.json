@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rtrimble13/portable/schemas/holdings-2.0.json",
+  "title": "pt holdings",
+  "description": "What the portfolio holds on the envelope's `as_of`, valued as a snapshot values it: securities, plus cash, less the margin loan, plus accrued income, so `total_market_value` is what `pt mark` gives for the same accounts (PORT-GIPS-A06, A07). Accrued interest and declared dividends are lines of their own, with roles `accrued_interest` and `accrued_dividend`.\n\nSupersedes holdings-1.0, whose total left out accrued income and, when a holding could not be priced, summed the rest under the name of the total, with every weight a share of that. Here a line that cannot be valued makes `is_complete` false, and the total and every weight null. What could be valued is `valued_market_value`, under its own name, and `unvalued` says why the rest could not be. The schema holds that together.",
+  "allOf": [{ "$ref": "envelope-1.0.json" }],
+  "type": "object",
+  "properties": {
+    "command": { "const": "holdings" },
+    "data": {
+      "type": "object",
+      "required": [
+        "rows", "columns", "total_market_value", "valued_market_value", "is_complete",
+        "unvalued", "excluded_operating_cash", "grouped_by", "stale_instruments",
+        "staleness_tolerance_days"
+      ],
+      "properties": {
+        "total_market_value": {
+          "description": "Null when any line could not be valued. Never the sum of the rest.",
+          "anyOf": [{ "$ref": "envelope-1.0.json#/$defs/decimal" }, { "type": "null" }]
+        },
+        "valued_market_value": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+        "is_complete": { "type": "boolean" },
+        "unvalued": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["account", "symbol", "code"],
+            "additionalProperties": false,
+            "properties": {
+              "account": { "type": "string" },
+              "symbol": { "type": "string" },
+              "code": {
+                "enum": [
+                  "PT-E-PRICE-MISSING", "PT-E-PRICE-STALE", "PT-E-ACCRUAL-UNAVAILABLE",
+                  "PT-E-COUPON-UNRECORDED"
+                ]
+              }
+            }
+          }
+        },
+        "excluded_operating_cash": {
+          "description": "Cash an account holds as operating cash: shown, and in no total or weight (PORT-GIPS-A07).",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["account", "amount"],
+            "additionalProperties": false,
+            "properties": {
+              "account": { "type": "string" },
+              "amount": { "$ref": "envelope-1.0.json#/$defs/decimal" }
+            }
+          }
+        },
+        "grouped_by": { "type": "string" },
+        "stale_instruments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["symbol", "price_date", "days_old"],
+            "properties": {
+              "symbol": { "type": "string" },
+              "price_date": { "type": "string" },
+              "days_old": { "type": "integer" }
+            }
+          }
+        },
+        "staleness_tolerance_days": { "type": "integer", "minimum": 0 },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["symbol", "market_value", "weight"],
+            "properties": {
+              "account": { "type": ["string", "null"] },
+              "symbol": { "type": "string" },
+              "role": { "type": ["string", "null"] },
+              "quantity": {
+                "description": "Null for cash and accrued income. Null is never zero.",
+                "anyOf": [{ "$ref": "envelope-1.0.json#/$defs/decimal" }, { "type": "null" }]
+              },
+              "price": {
+                "anyOf": [{ "$ref": "envelope-1.0.json#/$defs/decimal" }, { "type": "null" }]
+              },
+              "market_value": {
+                "description": "Null when the line could not be valued. NOT zero.",
+                "anyOf": [{ "$ref": "envelope-1.0.json#/$defs/decimal" }, { "type": "null" }]
+              },
+              "cost_basis": {
+                "description": "Null for accrued income, which has no basis.",
+                "anyOf": [{ "$ref": "envelope-1.0.json#/$defs/decimal" }, { "type": "null" }]
+              },
+              "weight": {
+                "anyOf": [{ "$ref": "envelope-1.0.json#/$defs/decimal" }, { "type": "null" }]
+              }
+            }
+          }
+        }
+      },
+      "if": { "properties": { "is_complete": { "const": false } } },
+      "then": {
+        "properties": {
+          "total_market_value": { "type": "null" },
+          "unvalued": { "minItems": 1 },
+          "rows": { "items": { "properties": { "weight": { "type": "null" } } } }
+        }
+      },
+      "else": {
+        "properties": {
+          "total_market_value": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+          "unvalued": { "maxItems": 0 }
+        }
+      }
+    }
+  }
+}

@@ -50,6 +50,7 @@ __all__ = [
     "AccruedIncome",
     "PriceLookup",
     "SnapshotProblem",
+    "Unaccrued",
     "accrued_income",
     "build",
     "coupons_by_account",
@@ -97,6 +98,15 @@ class Accrual:
 
 
 @dataclass(frozen=True, slots=True)
+class Unaccrued:
+    """A bond whose accrued interest cannot be stated on a date, and why."""
+
+    instrument: Instrument
+    code: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
 class AccruedIncome:
     """An account's accrued income on a date, part by part."""
 
@@ -104,7 +114,7 @@ class AccruedIncome:
     #: Bonds whose interest cannot be accrued on the date, or whose last
     #: coupon is not in the ledger. Either leaves the value unknown, as a
     #: missing price does.
-    unavailable: tuple[Instrument, ...]
+    unavailable: tuple[Unaccrued, ...]
 
     def total(self, kind: AccrualKind) -> Decimal:
         with money_context():
@@ -128,7 +138,7 @@ def accrued_income(
     them.
     """
     parts: list[Accrual] = []
-    unavailable: list[Instrument] = []
+    unavailable: list[Unaccrued] = []
     for holding in held_now:
         if holding.instrument.bond is None:
             continue
@@ -141,8 +151,8 @@ def accrued_income(
                 on,
                 (coupons or {}).get(holding.instrument.instrument_id, frozenset()),
             )
-        except DataUnavailableError:
-            unavailable.append(holding.instrument)
+        except DataUnavailableError as gap:
+            unavailable.append(Unaccrued(holding.instrument, gap.code, gap.message))
             continue
         parts.append(Accrual(holding.instrument.instrument_id, AccrualKind.INTEREST, amount))
     # A coupon entitled and not yet paid is accrued interest; any other
@@ -197,7 +207,7 @@ def build(
     income = accrued_income(held_now, on, engine=engine, declared=declared, coupons=coupons)
     # Interest that cannot be accrued leaves the snapshot incomplete, as a
     # missing price does.
-    missing = [instrument.symbol for instrument in income.unavailable]
+    missing = [gap.instrument.symbol for gap in income.unavailable]
     for holding in held_now:
         if not holding.instrument.has_market_price:
             # ADR 0028: nothing quotes it, so no price is looked for.

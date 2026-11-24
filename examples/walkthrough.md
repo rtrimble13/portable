@@ -311,7 +311,9 @@ a JSON number cannot round-trip a decimal, and a consumer parsing one as a float
 loses the exactness the whole tool is built on.
 
 A missing value is `null`, never `0`. An unpriced holding says "we do not know",
-not "it is worthless".
+not "it is worthless". It also leaves `pt holdings` with no total and no weights,
+because a total of the rest is not the portfolio's. What could be valued is
+`valued_market_value`, under its own name.
 
 ---
 

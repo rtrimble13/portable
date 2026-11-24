@@ -699,6 +699,15 @@ Two rules specific to this repository:
 
 ### Schema
 
+- **`holdings-2.0`** supersedes `holdings-1.0` for `pt holdings --format json`.
+  - **`total_market_value` is null** when any line cannot be valued, and so
+    is every row's `weight`. The schema enforces both.
+  - **New required fields:** `valued_market_value`, `is_complete`, `unvalued`,
+    `excluded_operating_cash`, `grouped_by`, `stale_instruments` and
+    `staleness_tolerance_days`.
+  - **New row roles:** `accrued_interest` and `accrued_dividend` (and
+    `margin_loan` for an account holding operating cash).
+  - **The output names its schema** in `$schema`.
 - **`schema_version` 11 → 12**, migration `0012_bond_accrued_interest`
   (ADR 0041, accepted by the owner). It adds one nullable column,
   `transaction.accrued_interest`: the interest accrued to settlement that a
@@ -1116,6 +1125,38 @@ Two rules specific to this repository:
   `duk` with `th`, `ca` and `tc` (fafnir's release after 3.0.5).
 
 ### Fixed
+
+- **`pt holdings` gave weights over part of the portfolio, and a total short of
+  its market value.** It now values as a snapshot does, so its total is what
+  `pt mark` gives for the same accounts.
+  - **Weights over the priced part only.** A holding with a missing or stale
+    price was left out of the total, so every other weight rose, and the
+    column still summed to 100%. The sum of the rest was shown as
+    `total_market_value`, and as a group's value under `--by`.
+    - **Now** a line that cannot be valued leaves the total, every weight,
+      and the value of any group holding it null, with `is_complete: false`.
+    - **What could be valued** is `valued_market_value`, under its own name,
+      and `unvalued` names each line and its error code.
+  - **Accrued income left out** (`PORT-GIPS-A06`). A bond was valued at its
+    clean price with none of its accrued interest, and declared dividends were
+    missing. On the sample at 2025-12-31 the total was 819,411.48, against
+    `pt mark`'s 819,681.51: the Treasury's 270.03 of accrued interest.
+    - **Now** each is a line of its own, `accrued_interest` or
+      `accrued_dividend`, beside what it accrues on, and grouped with it.
+    - **The bond's own line stays clean**, so its unrealized gain is against
+      a basis that holds no accrued interest (ADR 0041).
+    - **A coupon the ledger does not record**, or interest that cannot be
+      accrued, leaves the line null and the report incomplete, as it leaves
+      the snapshot incomplete.
+  - **Operating cash was counted.** It is shown, and now left out of the
+    total and every weight, as the snapshot leaves it out (`PORT-GIPS-A07`),
+    and is listed in `excluded_operating_cash`.
+  - **An instrument nothing quotes** was shown unpriced. It is now held at
+    zero, at level 5, as the snapshot holds it (ADR 0028).
+  - **One statement of value.** The valuation is now `services/holdings.py`,
+    and calls the snapshot's own functions: `price_holding`, and
+    `snapshots.accrued_income`, which a behaviour-neutral refactor took out of
+    `snapshots.build` so that both share it.
 
 - **`pt pnl` valued unrealized P&L at a price however old.** It took the newest
   cached price on or before `--as-of` with no age check. A holding priced once,
