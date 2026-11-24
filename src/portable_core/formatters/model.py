@@ -98,7 +98,8 @@ class ReturnValue:
     is_supplemental: bool = False
     #: Computed over a price carried forward, not measured (ADR 0044 §2).
     #: Rendered on the value, so no call site can present an estimate as a
-    #: measurement. Nothing sets it until `pert twr --estimate` exists.
+    #: measurement. Set only under `pert twr --estimate` or
+    #: `pert periods --estimate`.
     is_estimated: bool = False
     label: str | None = None
 

@@ -16,6 +16,9 @@ departures, both in §2:
 
 A row that cannot be measured is null with its refusal, never zero, and the
 rest of the table stands (§3).
+
+Under an estimate limit each row is estimated, or not, on its own (ADR 0044
+§3): a row the measured path can measure is measured, and shown plainly.
 """
 
 from __future__ import annotations
@@ -128,12 +131,16 @@ def period_table(
     through: date,
     account: Account | None = None,
     staleness_days: int,
+    estimate: Decimal | None = None,
 ) -> PeriodTable:
     """Every period of *account*, or of the portfolio, ending on *through*. ADR 0045.
 
     Raises before any row for a fiscal year end that is not a month end, and
     for no ledger row on or before *through*. When no row can be measured,
     raises the first row's refusal, as `pert twr` over it would (§3).
+
+    *estimate* is the limit of :func:`portable_core.services.returns.window`,
+    applied to every row.
     """
     fiscal = fiscal_year_end(repos)
     walked = returns.walk(
@@ -146,8 +153,8 @@ def period_table(
         through=through,
         fiscal_year_end=fiscal,
         records=records,
-        summary=tuple(_summary(walked, records, fiscal, through)),
-        fiscal_years=tuple(_fiscal_years(walked, records, fiscal, through)),
+        summary=tuple(_summary(walked, records, fiscal, through, estimate)),
+        fiscal_years=tuple(_fiscal_years(walked, records, fiscal, through, estimate)),
     )
     if not any(row.result is not None for row in table.rows):
         first = next(row.refusal for row in table.rows if row.refusal is not None)
@@ -176,7 +183,11 @@ def fiscal_year_end(repos: Repositories) -> FiscalYearEnd:
 
 
 def _summary(
-    walked: Walk, records: Sequence[TrackRecord], fiscal: FiscalYearEnd, through: date
+    walked: Walk,
+    records: Sequence[TrackRecord],
+    fiscal: FiscalYearEnd,
+    through: date,
+    estimate: Decimal | None,
 ) -> Iterator[PeriodRow]:
     calendar_year = fiscal.month == 12
     current = len(records) - 1 if records else None
@@ -193,24 +204,29 @@ def _summary(
             fiscal.last_end_before(through),
         ),
     ):
-        yield _clipped(walked, records, current, Window(kind, label, after, through))
+        yield _clipped(walked, records, current, Window(kind, label, after, through), estimate)
     for count in TRAILING_YEARS:
         label = f"{count} year" if count == 1 else f"{count} years"
         window = Window(
             PeriodKind.TRAILING, label, shift_years(through, -count), through, count
         )
-        yield _trailing(walked, records, current, window)
+        yield _trailing(walked, records, current, window, estimate)
     began = records[current].inception if current is not None else walked.anchor + _DAY
     yield _clipped(
         walked,
         records,
         current,
         Window(PeriodKind.SINCE_INCEPTION, "Since inception", began - _DAY, through),
+        estimate,
     )
 
 
 def _fiscal_years(
-    walked: Walk, records: Sequence[TrackRecord], fiscal: FiscalYearEnd, through: date
+    walked: Walk,
+    records: Sequence[TrackRecord],
+    fiscal: FiscalYearEnd,
+    through: date,
+    estimate: Decimal | None,
 ) -> Iterator[PeriodRow]:
     """Each record's fiscal years, clipped to it. PORT-GIPS-H01, H02, A04.
 
@@ -235,16 +251,23 @@ def _fiscal_years(
                 max(window.first, record.inception),
                 min(year_end, last),
                 record=index,
+                estimate=estimate,
             )
             year_end = fiscal.in_year(year_end.year + 1)
 
 
 def _clipped(
-    walked: Walk, records: Sequence[TrackRecord], current: int | None, window: Window
+    walked: Walk,
+    records: Sequence[TrackRecord],
+    current: int | None,
+    window: Window,
+    estimate: Decimal | None,
 ) -> PeriodRow:
     """A period-to-date row, or since inception, measured on the current record only."""
     if current is None:
-        return _measure(walked, window, window.first, window.through, record=None)
+        return _measure(
+            walked, window, window.first, window.through, record=None, estimate=estimate
+        )
     record = records[current]
     start = max(window.first, record.inception)
     end = window.through
@@ -253,12 +276,18 @@ def _clipped(
     if start > end:
         # Wholly after the record ended: measured as asked, and refused as
         # holding nothing, as `pert twr` over it is.
-        return _measure(walked, window, window.first, window.through, record=None)
-    return _measure(walked, window, start, end, record=current)
+        return _measure(
+            walked, window, window.first, window.through, record=None, estimate=estimate
+        )
+    return _measure(walked, window, start, end, record=current, estimate=estimate)
 
 
 def _trailing(
-    walked: Walk, records: Sequence[TrackRecord], current: int | None, window: Window
+    walked: Walk,
+    records: Sequence[TrackRecord],
+    current: int | None,
+    window: Window,
+    estimate: Decimal | None,
 ) -> PeriodRow:
     """A fixed-length row: the whole window inside the current record, or null."""
     if current is not None:
@@ -266,14 +295,22 @@ def _trailing(
         ended = record.termination is not None and record.termination < window.through
         if window.first < record.inception or ended:
             return _null(window, current, _outside_record(window, record))
-    return _measure(walked, window, window.first, window.through, record=current)
+    return _measure(
+        walked, window, window.first, window.through, record=current, estimate=estimate
+    )
 
 
 def _measure(
-    walked: Walk, window: Window, start: date, end: date, *, record: int | None
+    walked: Walk,
+    window: Window,
+    start: date,
+    end: date,
+    *,
+    record: int | None,
+    estimate: Decimal | None,
 ) -> PeriodRow:
     try:
-        result = returns.window(walked, start=start, end=end)
+        result = returns.window(walked, start=start, end=end, estimate=estimate)
     except PortableError as refusal:
         return _null(window, record, refusal)
     partial: list[str] = []
@@ -281,13 +318,10 @@ def _measure(
         partial.append(INCEPTION if not record else RESTART)
     if result.end < window.through:
         partial.append(TERMINATION)
-    held = [
-        snapshot
-        for (account_id, on), snapshot in walked.stored.items()
-        if on == result.end and walked.begun[account_id] <= result.end
-    ]
+    # As the return valued the day: with its carried prices if it was estimated.
+    held = returns.ending_values(walked, result)
     with decimal.localcontext(RETURN_CONTEXT):
-        ending = sum((snapshot.ending_market_value for snapshot in held), Decimal(0))
+        ending = sum(held.values(), Decimal(0))
     return PeriodRow(
         window=window,
         record=record,
@@ -296,7 +330,7 @@ def _measure(
         partial=tuple(partial),
         annualized=tuple(_annualized(result)),
         ending_value=ending,
-        accounts_holding_value=sum(1 for s in held if s.ending_market_value != 0),
+        accounts_holding_value=sum(1 for value in held.values() if value != 0),
     )
 
 

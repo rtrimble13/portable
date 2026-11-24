@@ -42,6 +42,7 @@ __all__ = [
     "build",
     "coupons_by_account",
     "declared_by_account",
+    "held",
     "problems_between",
     "rederived_differently",
     "removal_notices",
@@ -463,6 +464,17 @@ def _recorded(entries: Iterable[SnapshotPrice]) -> PriceLookup:
         )
 
     return lookup
+
+
+def held(repos: Repositories, account_id: int) -> list[Holding]:
+    """The holdings a snapshot of *account_id* prices, in derived state as it stands.
+
+    Inside :func:`~portable_core.services.replay.over_dates`, the state of the
+    day being visited. An estimate reads exactly what valuation read, so a
+    carried holding is one valuation could not price, never one it did not
+    see (ADR 0044 §1).
+    """
+    return _holdings(repos, account_id)
 
 
 def _holdings(repos: Repositories, account_id: int) -> list[Holding]:

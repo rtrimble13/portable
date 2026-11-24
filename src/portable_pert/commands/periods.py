@@ -27,7 +27,16 @@ from portable_core.services.periods import (
     period_table,
 )
 from portable_pert import state
-from portable_pert.commands.twr import BASES_NOTE, BASIS_LABELS, FLOW_TIMING, disclosure_data
+from portable_pert.commands.twr import (
+    BASES_NOTE,
+    BASIS_LABELS,
+    ESTIMATE_HELP,
+    FLOW_TIMING,
+    disclosure_data,
+    estimate_data,
+    estimate_limit,
+    estimate_note,
+)
 
 __all__ = ["periods"]
 
@@ -58,6 +67,9 @@ def periods(
             ),
         ),
     ] = str(Basis.NET_OF_FEES),
+    estimate: Annotated[
+        str | None, typer.Option("--estimate", metavar="MAX_SHARE", help=ESTIMATE_HELP)
+    ] = None,
 ) -> None:
     """Time-weighted return over every period: to date, trailing, since inception, each year.
 
@@ -73,9 +85,14 @@ def periods(
     each record's years are its own. A period that cannot be measured is
     shown empty with its reason, never as zero. A 3-year row over a record
     shorter than three years is empty, not a shorter figure.
+
+    With --estimate, each row the measured return refuses for a missing or
+    older price is estimated on its own, and marked ESTIMATED. A row that
+    can be measured is measured.
     """
 
     def action() -> CommandResult:
+        limit = estimate_limit(estimate)
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
         through = state.resolve_date(end, ctx, what="--to")
@@ -86,6 +103,7 @@ def periods(
             through=through,
             account=target,
             staleness_days=int(ctx.config.get("staleness_tolerance_days", 5)),
+            estimate=limit,
         )
         return _render(table, shown, portfolio=ctx.portfolio_name())
 
@@ -118,6 +136,7 @@ def _value(row: PeriodRow, basis: Basis, value: Any, *, annualized: bool) -> Ret
         period_end=row.result.end,
         is_annualized=annualized,
         is_supplemental=basis is Basis.NET_OF_ALL_COSTS,
+        is_estimated=row.result.is_estimated,
         label=BASIS_LABELS[basis],
     )
 
@@ -158,9 +177,8 @@ def _row_data(row: PeriodRow) -> dict[str, Any]:
         "ending_value": row.ending_value,
         "accounts_holding_value": row.accounts_holding_value,
         "disclosures": disclosure_data(result.disclosures) if result else None,
-        # ADR 0044 §3: each row is estimated, or not, on its own. Nothing is
-        # until `--estimate` exists.
-        "estimate": None,
+        # ADR 0044 §3: each row is estimated, or not, on its own.
+        "estimate": estimate_data(result.estimate) if result else None,
         "refusal": _refusal(row.refusal),
     }
 
@@ -187,6 +205,9 @@ def _render(table: PeriodTable, shown: Basis, *, portfolio: str | None) -> Comma
                 rows.append(_table_row(row, shown, mark))
 
     scope = table.account or "portfolio"
+    estimated = [
+        row for row in table.rows if row.result is not None and row.result.is_estimated
+    ]
     fiscal = ""
     if table.fiscal_year_end.month != 12:
         fiscal = f", fiscal year ending {table.fiscal_year_end}"
@@ -221,7 +242,12 @@ def _render(table: PeriodTable, shown: Basis, *, portfolio: str | None) -> Comma
             ),
             rows=tuple(rows),
             title=(
-                f"Time-weighted returns, {scope}, through {table.through.isoformat()}{fiscal}"
+                (
+                    "ESTIMATED where marked: time-weighted returns"
+                    if estimated
+                    else "Time-weighted returns"
+                )
+                + f", {scope}, through {table.through.isoformat()}{fiscal}"
             ),
             footnotes=(*_general_notes(table), *(f"[{n}] {t}" for n, t in enumerate(notes, 1))),
         ),
@@ -230,6 +256,11 @@ def _render(table: PeriodTable, shown: Basis, *, portfolio: str | None) -> Comma
             f"{row.window.label}: {row.refusal.code}: {row.refusal.message}"
             for row in table.rows
             if row.refusal is not None
+        )
+        + tuple(
+            f"{row.window.label}: {estimate_note(row.result.estimate)}"
+            for row in estimated
+            if row.result is not None and row.result.estimate is not None
         ),
         as_of=table.through,
         portfolio=portfolio,
@@ -255,6 +286,8 @@ def _table_row(row: PeriodRow, shown: Basis, mark: Any) -> dict[str, Any]:
             "accounts": None,
         }
     period = window.label
+    if result.estimate is not None:
+        period += mark(f"{window.label}: {estimate_note(result.estimate)}")
     if row.partial:
         why = " and ".join(_WHY[reason] for reason in row.partial)
         period += mark(

@@ -21,7 +21,7 @@ When in doubt, refuse and explain.
 | CLI | Purpose | Status |
 |---|---|---|
 | `pt` | Portfolio and account definition, transactions, history | **built** |
-| `pert` | Performance, attribution, risk-adjusted returns | **partly built** — `pert twr` (ADR 0040) and `pert periods` (ADR 0045); the rest is milestone `v0.2` |
+| `pert` | Performance, attribution, risk-adjusted returns | **partly built** — `pert twr` (ADR 0040) and `pert periods` (ADR 0045), each with `--estimate` (ADR 0044); the rest is milestone `v0.2` |
 | `po` | Portfolio optimization (wraps `rtrimble13/po`) | stub — see milestone `v0.3` |
 | `risky` | Risk and scenario analysis | stub — see milestone `v0.4` |
 | `portable` | Commands shared by the family: `portable config show` | **built** |
@@ -138,7 +138,11 @@ scripts/                 # bootstrap, fixture generator, the spreadsheet-to-CSV 
   `portable` must never couple to fafnir internals outside that module, and that
   module reaches fafnir **only by running `duk`**: no SQL, no database driver, no
   fafnir config file (ADR 0032). A capability `duk` lacks is added to `duk`, in
-  fafnir, not worked around here.
+  fafnir, not worked around here. The one exception is outside `portable`:
+  `scripts/rehearse_reconciliation.py` reads `duk` directly, on purpose, because
+  it is the outside reference that `portable`'s fafnir path is checked
+  against, and a reference read through the same code would check it against
+  itself.
 - New output formatting rules go in `formatters/`, once, not inline at call sites.
 - **Valuation, cash-flow, and return logic must satisfy `docs/gips-standard.md`.** Cite the
   requirement ID (`PORT-GIPS-B02`, `PORT-GIPS-F01`, …) in the code comment and in the test
@@ -448,6 +452,10 @@ test that fails without your change.
   are read locally and no amount, position or account number from them goes
   into a file under version control
 - `docs/output-formats.md` — JSON envelope, versioning, agent/MCP integration
+- `docs/reconciliation-rehearsal.md` — issue 58's comparison rehearsed on
+  sample portfolios of real securities priced from fafnir, against references
+  computed outside `portable`, and the estimate tier on prices withheld
+  from them: what was built, what it found, and what it cannot test
 - `docs/roadmap.md` — what is coming and in which milestone
 - Prior art: [fafnir](https://github.com/rtrimble13/fafnir) (market data warehouse,
   Postgres + `duk`) · [po/portopt](https://github.com/rtrimble13/po) (C++17 optimizer

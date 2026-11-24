@@ -20,7 +20,11 @@ __all__ = [
     "BASES",
     "Basis",
     "BasisReturn",
+    "CarriedHolding",
+    "CarrySource",
     "Disclosures",
+    "Estimate",
+    "EstimatedDay",
     "ReturnMethod",
     "SubPeriod",
     "TimeWeightedReturn",
@@ -97,6 +101,8 @@ class SubPeriod:
     flows: tuple[TimedFlow, ...]
     #: Per basis, in :data:`BASES` order.
     returns: tuple[BasisReturn, ...]
+    #: Either end was valued at a carried price (ADR 0044 §2).
+    is_estimated: bool = False
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)
@@ -107,6 +113,87 @@ class SubPeriod:
 
     def return_for(self, basis: Basis) -> Decimal:
         return next(entry.value for entry in self.returns if entry.basis is basis)
+
+
+class CarrySource(enum.StrEnum):
+    """Where a carried price was last observed. ADR 0044 §1."""
+
+    PRICE = "price"
+    FILL = "fill"
+    #: A reinvested distribution: a purchase at the fund's price that day.
+    REINVESTMENT = "reinvestment"
+
+
+@dataclass(frozen=True, slots=True)
+class CarriedHolding:
+    """One holding valued at a carried price on an estimated day. ADR 0044 §2."""
+
+    account: str
+    symbol: str
+    quantity: Decimal
+    #: The price it was valued at: the last known price, lowered by every
+    #: cash distribution since (ADR 0044 §1).
+    price: Decimal
+    last_known: Decimal
+    price_date: date
+    #: Days from the last known price to the day estimated.
+    age_days: int
+    source: CarrySource
+    #: The price row's id, or the fill's or the reinvestment's txn_id.
+    source_id: int
+    #: Per unit, the distributions since the last known price.
+    lowered_by: Decimal
+    value: Decimal
+    #: Its value, unsigned, over the level's value that day. Set once the
+    #: day is valued (ADR 0044 §2).
+    share: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        check_decimal_fields(self)
+
+
+@dataclass(frozen=True, slots=True)
+class EstimatedDay:
+    """A day valued with a carried price, and how much of it was carried."""
+
+    on: date
+    #: The level's value that day, the carried holdings included.
+    value: Decimal
+    #: The carried holdings' value over the level's value that day.
+    share: Decimal
+    holdings: tuple[CarriedHolding, ...]
+
+    def __post_init__(self) -> None:
+        check_decimal_fields(self)
+
+
+@dataclass(frozen=True, slots=True)
+class Estimate:
+    """What made a return an estimate rather than a measurement. ADR 0044 §2.
+
+    A result carrying one is never part of the track record (§3).
+    """
+
+    #: The largest share of a day's value that could be carried: the
+    #: `--estimate` given, echoed so the figure is reproducible.
+    limit: Decimal
+    days: tuple[EstimatedDay, ...]
+
+    def __post_init__(self) -> None:
+        check_decimal_fields(self)
+
+    @property
+    def peak(self) -> EstimatedDay:
+        """The day the most was carried; the earliest of equals."""
+        return max(self.days, key=lambda day: (day.share, -day.on.toordinal()))
+
+    @property
+    def holdings(self) -> int:
+        return sum(len(day.holdings) for day in self.days)
+
+    @property
+    def oldest_age_days(self) -> int:
+        return max(holding.age_days for day in self.days for holding in day.holdings)
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,9 +249,24 @@ class TimeWeightedReturn:
     #: requested end. None when the record did not end inside the period.
     nothing_held_after: tuple[date, date] | None
     disclosures: Disclosures
+    #: None for a measured return. Set only under `--estimate`, and only when
+    #: a carried price was needed (ADR 0044 §2).
+    estimate: Estimate | None = None
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)
+        # ADR 0044 §3: a result is estimated if any sub-period linked into it
+        # is, and is otherwise not. Checked here, where every linked result is
+        # made, so no caller can link an estimate into a measurement.
+        if any(sub.is_estimated for sub in self.subperiods) != (self.estimate is not None):
+            raise ValueError(
+                "a time-weighted return carries an estimate exactly when a sub-period "
+                "linked into it is estimated"
+            )
+
+    @property
+    def is_estimated(self) -> bool:
+        return self.estimate is not None
 
     @property
     def days(self) -> int:

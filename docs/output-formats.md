@@ -87,10 +87,28 @@ supplemental figure for a GIPS basis without the schema noticing.
 
 Every return also carries `is_estimated`, and `data.estimate` says what was
 estimated (ADR 0044). Both are required from `twr-2.0` on, so a consumer
-reads them before it reads a value. Until `pert twr --estimate` exists,
-`is_estimated` is always `false` and `estimate` always `null`. Nothing is
-estimated without the flag. In `table` and `markdown` an estimated return
-reads `… (TWR, net-of-fees, ESTIMATED)`.
+reads them before it reads a value.
+
+- **Only under `--estimate MAX_SHARE`.** Without the flag `is_estimated` is
+  always `false` and `estimate` always `null`. With it, they stay so unless
+  a day the period needs could not be priced. Then the day is valued at
+  carried prices, and `estimate` is an object.
+- **What the object holds.** The `limit` given; the `peak` share and its
+  day; the counts of carried `holdings` and the `oldest_age_days`; and
+  `days`. Each day has the level's `value`, the carried `share` of it, and
+  every holding carried. A holding gives its account, symbol, quantity, the
+  `price` carried and the `last_known_price` it came from, its
+  `price_date` and `age_days`, and its `source`, which is `price`, `fill`
+  or `reinvestment`, with that row's id. It also gives `lowered_by`, the
+  distributions per unit taken off since, and its `value` and `share`.
+- **The schema ties the marks together.** When `estimate` is an object,
+  every return must say `is_estimated: true`, and when it is `null`, none
+  may. A consumer that drops one mark fails validation. Each `--daily`
+  sub-period carries `is_estimated` too.
+- **In `table` and `markdown`** an estimated return reads
+  `… (TWR, net-of-fees, ESTIMATED)`. The title begins `ESTIMATED`. A
+  footnote, repeated as a warning on stderr, states the days, holdings,
+  peak share, limit and the oldest price's age.
 
 A track record ends where nothing is held, and `pert twr` never links one
 record to the next (ADR 0045 §4, `PORT-GIPS-H06`). Two refusals follow:
@@ -120,8 +138,12 @@ record. `period.start` and `period.end` are what was measured, beside
 - **Annualized or the reason it isn't.** Each basis has `cumulative`, and
   either `annualized` or `not_annualized`, the reason it has none: under a
   year, `PORT-GIPS-B07`, or a total loss.
-- **Its own disclosures, and room for an estimate.** Every row has its own
-  `disclosures`, `twr-2.0`'s object for its own window, and an `estimate`.
+- **Its own disclosures, and its own estimate.** Every row has its own
+  `disclosures`, `twr-2.0`'s object for its own window. Under `--estimate`
+  each row is estimated or not on its own (ADR 0044 §3). A row that could
+  be measured is measured, with `estimate: null`. A row that needed a
+  carried price has `twr-2.0`'s estimate object, and every figure in it is
+  marked, which the schema enforces. A refused row has neither.
 
 In `table` and `markdown` the rows are shown at one basis, `--basis`,
 net-of-fees by default. Each row's detail stays in JSON, and footnotes give

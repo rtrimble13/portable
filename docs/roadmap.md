@@ -139,20 +139,28 @@ Then:
 2. **Reconcile `pert twr` to the custodian's reported performance**, on the
    real portfolio (issue 58, P0). Positions, cash and realized gains tie to the
    custodian; returns do not yet, and everything below is built on them.
+   *Rehearsed* on samples of real securities priced from fafnir
+   ([docs/reconciliation-rehearsal.md](reconciliation-rehearsal.md)):
+   - 152 period returns matched references computed outside `portable` to
+     0.0004 bp, through splits, monthly income, a mutual fund, flows and a fee;
+   - a deliberately broken flow timing fails the rehearsal.
+
+   The real run still needs the owner's file and statements.
 3. **The sample must produce a return** (issue 59) — *done*. The generator
    prices every instrument at each month end, at every external flow and the
    day before it, and either side of each corporate action, writes those
    prices to `examples/sample_prices.csv`, and stores the snapshots, so
    `pert twr` runs on the committed file. Two of its returns are checked
    against hand arithmetic from the CSV.
-4. **An estimate tier for days that cannot be priced** (issue 60) — accepted
-   in [ADR 0044](adr/0044-estimated-returns-over-unpriced-days.md), built
-   after item 5's walk, which records why each unusable day is unusable. A
-   carried price, only under `pert twr --estimate MAX_SHARE` (the owner
-   works with `0.05`), only on days the measured path refuses, marked
+4. **An estimate tier for days that cannot be priced** (issue 60) — *Done*,
+   in [ADR 0044](adr/0044-estimated-returns-over-unpriced-days.md). A
+   carried price, only under `pert twr --estimate MAX_SHARE` or
+   `pert periods --estimate MAX_SHARE` (the owner works with `0.05`), only
+   on the days the measured path refuses and the bridge needs, marked
    `ESTIMATED` on every return and never linked into the track record. A
    judged estimate (`pt price set --estimate`) already counts, as
-   `PORT-GIPS-A09` allows; a carried price is not one.
+   `PORT-GIPS-A09` allows; a carried price is not one. It does not shorten
+   issue 58, which remains the only route to a measured track record.
 5. **Multi-period reporting** (issue 5) — MTD, QTD, YTD, 1/3/5/10-year,
    since-inception, calendar-year table. Sub-one-year returns are never
    annualized — a requirement, not a convention (`PORT-GIPS-B07`). *Done*:

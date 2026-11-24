@@ -249,8 +249,18 @@ naming the symbol, the price date, and the gap.
 
 Carrying a stale price forward silently produces a flat return series that looks
 like a calm market. That is worse than an error, because nothing about the
-output says anything is wrong. Raise `--staleness-tolerance` when the gap is
-genuine — a holiday, a halted security — or price it by hand.
+output says anything is wrong.
+- **Prefer a real price.** Price the gap by hand, with `pt price set`, and
+  `--estimate` when the figure is a judgement (`PORT-GIPS-A09`).
+- **A genuine gap** — a halted security — can be allowed by raising
+  `staleness_tolerance_days` in configuration. There is no flag for it.
+
+The tolerance governs `pt value` and `pt holdings`. **`pert` measures a return
+only with prices at most five days old**, whatever the tolerance allowed when a
+snapshot was built (ADR 0044 §1). A day valued with an older price is refused,
+and the refusal names the price's age, the five days and the configured
+tolerance. Otherwise one `.port` file would give different returns on machines
+configured differently.
 
 `--offline` forces cache-only operation. It is the right flag when the warehouse
 is down and the prices you need are already in the file. The configured provider

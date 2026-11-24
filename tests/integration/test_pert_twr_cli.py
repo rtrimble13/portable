@@ -286,3 +286,27 @@ def test_the_report_is_utf8_whatever_the_code_page(
     table = run_pert("--port", invested, "twr", "--to", "2024-01-05", fmt="table",
                      extra_env={"PYTHONIOENCODING": "cp1252"}).stdout  # fmt: skip
     assert "GIPS®" in table
+
+
+@pytest.mark.gips
+def test_a_price_older_than_five_days_is_carried_whatever_the_tolerance(
+    run_pt: CliRunner, run_pert: CliRunner, invested: str
+) -> None:
+    """ADR 0044 §1. XYZ's last price is 01-05. With staleness_tolerance_days
+    raised to 10, `pt value` calls 01-12 complete on it, seven days old. `pert`
+    measures only with prices at most five days old, so it refuses the day,
+    naming the age, the five days and the tolerance that allowed it. Five
+    days after the price, 01-10, is still measured."""
+    ten = {"PORTABLE_STALENESS_TOLERANCE_DAYS": "10"}
+    run_pt("--port", invested, "value", "--from", "2024-01-02", "--to", "2024-01-12",
+           extra_env=ten)  # fmt: skip
+    error = run_pert("--port", invested, "twr", "--to", "2024-01-12", expect=5,
+                     extra_env=ten).json()["error"]  # fmt: skip
+    assert error["code"] == "PT-E-PRICE-STALE"
+    assert (
+        error["context"]["price_age_days"],
+        error["context"]["pert_staleness_days"],
+        error["context"]["staleness_tolerance_days"],
+    ) == (7, 5, 10)
+    assert "whatever staleness_tolerance_days (10 here) allowed `pt value`" in error["message"]
+    run_pert("--port", invested, "twr", "--to", "2024-01-10", extra_env=ten)
