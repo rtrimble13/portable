@@ -117,9 +117,9 @@ def test_accrued_interest_and_a_declared_dividend_are_lines_of_their_own(
     assert (bond["market_value"], bond["cost_basis"]) == ("10150.00", "10124.00")
     assert bond["unrealized"] == "26.00"
     # Each weight is a quotient to 28 digits, so they sum to 1 within the last.
-    assert abs(sum(D(row["weight"]) for row in rows if row["weight"] is not None) - 1) < D(
-        "1e-26"
-    )
+    assert abs(
+        sum((D(row["weight"]) for row in rows if row["weight"] is not None), D(0)) - 1
+    ) < D("1e-26")
 
 
 def test_grouped_by_asset_class_income_goes_with_what_it_accrues_on(
@@ -129,9 +129,9 @@ def test_grouped_by_asset_class_income_goes_with_what_it_accrues_on(
     groups = {row["symbol"]: D(row["market_value"]) for row in data["rows"]}
     assert groups["fixed_income"] == D("10150.00") + D("64.67")
     assert groups["equity"] == D("5500.00") + D("25.00")
-    assert abs(sum(D(r["weight"]) for r in data["rows"] if r["weight"] is not None) - 1) < D(
-        "1e-26"
-    )
+    assert abs(
+        sum((D(r["weight"]) for r in data["rows"] if r["weight"] is not None), D(0)) - 1
+    ) < D("1e-26")
 
 
 @pytest.mark.gips

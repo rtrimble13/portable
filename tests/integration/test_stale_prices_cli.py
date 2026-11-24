@@ -141,7 +141,7 @@ def test_a_weight_over_the_priced_holdings_alone_is_not_given(
     weights = {row["symbol"]: D(row["weight"]) for row in data["rows"]}
     assert weights["XYZ"] == D("12500") / D("502600")
     # Each weight is a quotient to 28 digits, so they sum to 1 within the last.
-    assert abs(sum(weights.values()) - 1) < D("1e-26")
+    assert abs(sum(weights.values(), D(0)) - 1) < D("1e-26")
 
 
 def test_holdings_grouped_give_no_value_to_a_group_holding_a_stale_line(
