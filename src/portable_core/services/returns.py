@@ -67,6 +67,7 @@ from portable_core.errors.kinds import (
 )
 from portable_core.persistence.repositories import Repositories
 from portable_core.services import price_acceptance, snapshots
+from portable_core.services.estimates import PERT_STALENESS_DAYS
 from portable_core.services.price_acceptance import PriceLine
 from portable_core.services.replay import effective_ledger
 from portable_core.services.snapshots import SnapshotProblem
@@ -97,12 +98,6 @@ _ONE: Final = Decimal(1)
 _ZERO: Final = Decimal(0)
 _DAY: Final = timedelta(days=1)
 
-#: ADR 0044 §1. The oldest a snapshot's price may be for `pert` to measure the
-#: day with it, whatever `staleness_tolerance_days` the snapshot was built
-#: under: a weekend and a holiday or two. An older price is a carried price,
-#: not PORT-GIPS-A09's best approximation, and only an estimate values a day
-#: with one. Fixed here so that one file gives one answer on every machine.
-PERT_STALENESS_DAYS: Final = 5
 
 #: What each basis undoes (PORT-GIPS-D01, ADR 0040 §8). Transaction costs and
 #: embedded fund fees are deducted at every basis and undone by none.

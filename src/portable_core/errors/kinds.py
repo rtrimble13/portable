@@ -163,6 +163,16 @@ E_RETURN_TOTAL_LOSS: Final = "PT-E-RETURN-TOTAL-LOSS"
 #: ADR 0045 §2, PORT-GIPS-A04. A fiscal year end that is not the last day of
 #: a month.
 E_FISCAL_YEAR_END: Final = "PT-E-FISCAL-YEAR-END"
+#: ADR 0044 §1. A holding that cannot be estimated: no price, fill or
+#: reinvestment on or before the day, or distributions that take its carried
+#: price to zero.
+E_ESTIMATE_UNAVAILABLE: Final = "PT-E-ESTIMATE-UNAVAILABLE"
+#: ADR 0044 §1. A carried price across a split, spinoff, merger, stock
+#: dividend or delisting of the instrument: unadjusted, it is the wrong price.
+E_ESTIMATE_ACROSS_ACTION: Final = "PT-E-ESTIMATE-ACROSS-ACTION"
+#: ADR 0044 §4. A day on which more than `--estimate` of the value is
+#: carried, or whose value is not positive, so that no share is defined.
+E_ESTIMATE_LIMIT: Final = "PT-E-ESTIMATE-LIMIT"
 #: ADR 0045 §2. A fixed-length period the track record does not cover all of:
 #: its figure over fewer days would be a different number under its label.
 E_PERIOD_OUTSIDE_RECORD: Final = "PT-E-PERIOD-OUTSIDE-RECORD"
@@ -253,6 +263,9 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_RETURN_TOTAL_LOSS,
     E_FISCAL_YEAR_END,
     E_PERIOD_OUTSIDE_RECORD,
+    E_ESTIMATE_UNAVAILABLE,
+    E_ESTIMATE_ACROSS_ACTION,
+    E_ESTIMATE_LIMIT,
     E_RESTATES_HISTORY,
     E_PRICE_MISSING,
     E_PRICE_STALE,
