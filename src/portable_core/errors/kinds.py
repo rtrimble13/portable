@@ -176,6 +176,12 @@ E_ESTIMATE_LIMIT: Final = "PT-E-ESTIMATE-LIMIT"
 #: ADR 0045 §2. A fixed-length period the track record does not cover all of:
 #: its figure over fewer days would be a different number under its label.
 E_PERIOD_OUTSIDE_RECORD: Final = "PT-E-PERIOD-OUTSIDE-RECORD"
+#: ADR 0046 §2. The money-weighted solve found no rate in its bracket (none,
+#: or more than one), or did not converge within its steps.
+E_MWR_NO_CONVERGENCE: Final = "PT-E-MWR-NO-CONVERGENCE"
+#: ADR 0046 §3, PORT-GIPS-C04. Compounded at the rate found, the balance falls
+#: below zero before the end, so the rate cannot be shown to be the only one.
+E_MWR_NOT_UNIQUE: Final = "PT-E-MWR-NOT-UNIQUE"
 #: An effective-dated config row that would change a figure already recorded,
 #: offered without `--restate` (ADR 0025).
 E_RESTATES_HISTORY: Final = "PT-E-RESTATES-HISTORY"
@@ -263,6 +269,8 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_RETURN_TOTAL_LOSS,
     E_FISCAL_YEAR_END,
     E_PERIOD_OUTSIDE_RECORD,
+    E_MWR_NO_CONVERGENCE,
+    E_MWR_NOT_UNIQUE,
     E_ESTIMATE_UNAVAILABLE,
     E_ESTIMATE_ACROSS_ACTION,
     E_ESTIMATE_LIMIT,

@@ -21,7 +21,7 @@ When in doubt, refuse and explain.
 | CLI | Purpose | Status |
 |---|---|---|
 | `pt` | Portfolio and account definition, transactions, history | **built** |
-| `pert` | Performance, attribution, risk-adjusted returns | **partly built** — `pert twr` (ADR 0040) and `pert periods` (ADR 0045), each with `--estimate` (ADR 0044); the rest is milestone `v0.2` |
+| `pert` | Performance, attribution, risk-adjusted returns | **partly built** — `pert twr` (ADR 0040), `pert periods` (ADR 0045) and `pert mwr` (ADR 0046), each with `--estimate` (ADR 0044); the rest is milestone `v0.2` |
 | `po` | Portfolio optimization (wraps `rtrimble13/po`) | stub — see milestone `v0.3` |
 | `risky` | Risk and scenario analysis | stub — see milestone `v0.4` |
 | `portable` | Commands shared by the family: `portable config show` | **built** |
@@ -429,6 +429,7 @@ test that fails without your change.
   | 0043 | The pure-Python CI job skips the integration tests while nothing computes natively |
   | 0044 | A return over unpriced days is estimated only on request, marked, and never linked into the track record |
   | 0045 | Multi-period returns: one walk, rows that stand alone, and a record that breaks where nothing was held |
+  | 0046 | Money-weighted return: one solve from the walk's flows, beside the TWR, refused unless its rate is provably the only one |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

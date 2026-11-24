@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rtrimble13/portable/schemas/mwr-1.0.json",
+  "title": "pert mwr",
+  "description": "The money-weighted return, beside the time-weighted return over the same days (ADR 0046).\n\nThe disclaimer is required and non-empty (docs/gips-standard.md §9.3). The money-weighted return is never presented alone (PORT-GIPS-C01): `twr` is required beside it. It is solved once from the level's flows, which at portfolio level are every account's together (PORT-GIPS-C05), and is annualized only for a period of a year or more, counted by anniversary (PORT-GIPS-B07, C03). The schema holds that together: `period.is_annualized` fixes every money-weighted value's `is_annualized`, and under a year the time-weighted return has no annualized figure. Each basis records its solve and the test that its rate is the only one (PORT-GIPS-C04 as amended).",
+  "allOf": [{ "$ref": "envelope-1.0.json" }],
+  "type": "object",
+  "required": ["disclaimer"],
+  "properties": {
+    "command": { "const": "mwr" },
+    "disclaimer": { "type": "string", "minLength": 1 },
+    "data": {
+      "type": "object",
+      "required": [
+        "level", "account", "method", "flow_timing", "year_count", "period",
+        "beginning_value", "ending_value", "flows", "is_estimated", "returns", "twr",
+        "gross_equals_net_of_external_costs_only", "disclosures", "rows", "columns"
+      ],
+      "properties": {
+        "level": { "enum": ["account", "portfolio"] },
+        "account": { "type": ["string", "null"] },
+        "method": { "const": "mwr" },
+        "flow_timing": { "type": "string", "minLength": 1 },
+        "year_count": { "const": "anniversary" },
+        "period": {
+          "type": "object",
+          "required": [
+            "requested_start", "start", "end", "requested_end", "days", "years",
+            "is_since_inception", "is_annualized"
+          ],
+          "properties": {
+            "requested_start": { "$ref": "#/$defs/date" },
+            "start": { "$ref": "#/$defs/date" },
+            "end": { "$ref": "#/$defs/date" },
+            "requested_end": { "$ref": "#/$defs/date" },
+            "days": { "type": "integer", "minimum": 1 },
+            "years": {
+              "description": "From the end of the day before `start` to the end of `end`: whole anniversaries, then days of a year `of` days long (ADR 0045 §5).",
+              "type": "object",
+              "required": ["whole", "days", "of"],
+              "additionalProperties": false,
+              "properties": {
+                "whole": { "type": "integer", "minimum": 0 },
+                "days": { "type": "integer", "minimum": 0 },
+                "of": { "enum": [365, 366] }
+              }
+            },
+            "is_since_inception": {
+              "description": "The period starts where a track record does, so this is the MWR, not a period MWR (PORT-GIPS-C02).",
+              "type": "boolean"
+            },
+            "is_annualized": { "type": "boolean" }
+          }
+        },
+        "beginning_value": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+        "ending_value": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+        "flows": {
+          "type": "object",
+          "required": ["count", "net_paid_in"],
+          "additionalProperties": false,
+          "properties": {
+            "count": { "type": "integer", "minimum": 0 },
+            "net_paid_in": { "$ref": "envelope-1.0.json#/$defs/decimal" }
+          }
+        },
+        "is_estimated": {
+          "description": "The beginning or ending value was valued at carried prices (ADR 0044 §3). The money-weighted return reads no other value.",
+          "type": "boolean"
+        },
+        "returns": {
+          "description": "In presentation order: net-of-fees first.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "required": ["basis", "mwr", "solve", "only_rate"],
+            "additionalProperties": false,
+            "properties": {
+              "basis": { "$ref": "#/$defs/basis" },
+              "mwr": { "$ref": "#/$defs/mwrValue" },
+              "solve": {
+                "description": "ADR 0046 §2 as built: Newton guarded by bisection (rtsafe), for g = ln(1 + R), inside a bracket computed from the flows so that it holds a rate: above its top the first amount outweighs the rest, and below its bottom the last does.",
+                "type": "object",
+                "required": ["variable", "newton_steps", "bisection_steps", "bracket", "residual"],
+                "additionalProperties": false,
+                "properties": {
+                  "variable": { "const": "ln(1 + R)" },
+                  "newton_steps": { "type": "integer", "minimum": 0 },
+                  "bisection_steps": { "type": "integer", "minimum": 0 },
+                  "bracket": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "items": { "$ref": "envelope-1.0.json#/$defs/decimal" }
+                  },
+                  "residual": { "$ref": "envelope-1.0.json#/$defs/decimal" }
+                }
+              },
+              "only_rate": {
+                "description": "ADR 0046 §3: compounded at the rate, the lowest balance before the end, and the day at whose end it stood. Never negative, or there is no result.",
+                "type": "object",
+                "required": ["test", "lowest_balance", "lowest_balance_date"],
+                "additionalProperties": false,
+                "properties": {
+                  "test": { "const": "balance_at_rate" },
+                  "lowest_balance": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+                  "lowest_balance_date": { "$ref": "#/$defs/date" }
+                }
+              }
+            }
+          }
+        },
+        "twr": {
+          "description": "The time-weighted return over the same days, required beside the money-weighted (PORT-GIPS-C01).",
+          "type": "object",
+          "required": ["returns", "annualized", "subperiods", "estimate"],
+          "additionalProperties": false,
+          "properties": {
+            "returns": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "items": { "$ref": "#/$defs/twrValue" }
+            },
+            "annualized": {
+              "description": "Null under a year (PORT-GIPS-B07), or where the cumulative return is a total loss.",
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "items": { "anyOf": [{ "$ref": "#/$defs/twrValue" }, { "type": "null" }] }
+            },
+            "subperiods": {
+              "type": "object",
+              "required": ["daily", "modified_dietz"],
+              "properties": {
+                "daily": { "type": "integer", "minimum": 0 },
+                "modified_dietz": { "type": "integer", "minimum": 0 }
+              }
+            },
+            "estimate": {
+              "anyOf": [{ "type": "null" }, { "$ref": "twr-2.0.json#/$defs/estimate" }]
+            }
+          }
+        },
+        "gross_equals_net_of_external_costs_only": { "type": "boolean" },
+        "disclosures": { "type": "object" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "period": { "properties": { "is_annualized": { "const": false } } } }
+          },
+          "then": {
+            "properties": {
+              "returns": {
+                "items": { "properties": { "mwr": { "properties": { "is_annualized": { "const": false } } } } }
+              },
+              "twr": { "properties": { "annualized": { "items": { "type": "null" } } } }
+            }
+          },
+          "else": {
+            "properties": {
+              "returns": {
+                "items": { "properties": { "mwr": { "properties": { "is_annualized": { "const": true } } } } }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "is_estimated": { "const": true } } },
+          "then": {
+            "properties": {
+              "returns": {
+                "items": { "properties": { "mwr": { "properties": { "is_estimated": { "const": true } } } } }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "returns": {
+                "items": { "properties": { "mwr": { "properties": { "is_estimated": { "const": false } } } } }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["twr"],
+            "properties": { "twr": { "properties": { "estimate": { "type": "object" } } } }
+          },
+          "then": {
+            "properties": {
+              "twr": { "properties": { "returns": { "items": { "properties": { "is_estimated": { "const": true } } } } } }
+            }
+          },
+          "else": {
+            "properties": {
+              "twr": { "properties": { "returns": { "items": { "properties": { "is_estimated": { "const": false } } } } } }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "basis": {
+      "enum": ["net_of_fees", "net_of_external_costs_only", "gross_of_fees", "net_of_all_costs"]
+    },
+    "returnValue": {
+      "type": "object",
+      "required": [
+        "value", "method", "basis", "period_start", "period_end", "period_days",
+        "is_annualized", "is_supplemental", "is_estimated"
+      ],
+      "properties": {
+        "value": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+        "basis": { "$ref": "#/$defs/basis" },
+        "period_start": { "$ref": "#/$defs/date" },
+        "period_end": { "$ref": "#/$defs/date" },
+        "period_days": { "type": "integer", "minimum": 1 },
+        "is_annualized": { "type": "boolean" },
+        "is_supplemental": { "type": "boolean" },
+        "is_estimated": { "type": "boolean" }
+      },
+      "if": { "properties": { "basis": { "const": "net_of_all_costs" } } },
+      "then": { "properties": { "is_supplemental": { "const": true } } },
+      "else": { "properties": { "is_supplemental": { "const": false } } }
+    },
+    "mwrValue": {
+      "allOf": [{ "$ref": "#/$defs/returnValue" }],
+      "properties": { "method": { "const": "mwr" } }
+    },
+    "twrValue": {
+      "allOf": [{ "$ref": "#/$defs/returnValue" }],
+      "properties": { "method": { "const": "twr" } }
+    }
+  }
+}

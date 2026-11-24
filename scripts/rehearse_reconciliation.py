@@ -29,6 +29,13 @@ from `duk` directly:
   computation written here from the ledger it was built with: inflows count
   from the start of their day and outflows from its end (ADR 0040 §3), and
   the custody fee is added back at the bases that do not deduct it (§8).
+* **The money-weighted return** (ADR 0046) of every level, since inception,
+  from `pert mwr`. Its reference is solved here by plain bisection, with
+  years counted by anniversary in code of this script's own. A, B and C have
+  no flow after their funding, so theirs is their growth annualized. D's is
+  solved from its ledger: the deposit counted from the start of its day,
+  the withdrawal from its end, and at the bases that add the custody fee
+  back, the fee as an outflow at the end of its day.
 * **Portfolio E** rehearses the estimate tier (ADR 0044). Account E1 holds
   SPY and AGG and takes dividends in cash; E2 holds VFIAX and NVDA and
   reinvests. SPY's and VFIAX's prices are withheld from 2024-12-10 to
@@ -66,6 +73,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import calendar
 import csv
 import decimal
 import io
@@ -730,6 +738,93 @@ def daily_chain(ledger: Ledger, spy: Series, through: date) -> dict[str, dict[da
     return index
 
 
+def anniversary_years(after: date, on: date) -> Decimal:
+    """Whole anniversaries from *after*, then the days left over of the year they fall in.
+
+    Written here rather than imported, so the reference does not share
+    `portable`'s year count (ADR 0045 §5).
+    """
+
+    def shifted(day: date, count: int) -> date:
+        year = day.year + count
+        if day.month == 2 and day.day == 29 and not calendar.isleap(year):
+            return date(year, 2, 28)
+        return day.replace(year=year)
+
+    whole = on.year - after.year
+    while whole > 0 and shifted(after, whole) > on:
+        whole -= 1
+    base, following = shifted(after, whole), shifted(after, whole + 1)
+    with decimal.localcontext(CONTEXT):
+        return D(whole) + D((on - base).days) / D((following - base).days)
+
+
+def irr(after: date, amounts: Sequence[tuple[date, Decimal]]) -> Decimal:
+    """The annual rate at which money in (positive) and out (negative) balance, by bisection.
+
+    Each amount is at the end of its day. A plain search on 1 + R between 0.01
+    and 10, which holds any portfolio here, so nothing of `portable`'s solver
+    is reused.
+    """
+    with decimal.localcontext(CONTEXT):
+        timed = [(anniversary_years(after, on), amount) for on, amount in amounts]
+
+        def value(growth: Decimal) -> Decimal:
+            return sum((a * (-t * growth.ln()).exp() for t, a in timed), D(0))
+
+        low, high = D("0.01"), D(10)
+        for _ in range(250):
+            mid = (low + high) / 2
+            if (value(low) > 0) == (value(mid) > 0):
+                low = mid
+            else:
+                high = mid
+        return mid - 1
+
+
+def d_mwr_amounts(
+    ledger: Ledger, spy: Series, through: date, basis: str
+) -> list[tuple[date, Decimal]]:
+    """Portfolio D's money in and out, as ADR 0040 §3 and §8 time it."""
+    amounts: list[tuple[date, Decimal]] = []
+    for on, rows in sorted(ledger.days.items()):
+        for _units, _cash, came, went, charged in rows:
+            if came:
+                amounts.append((on - DAY, came))
+            if went:
+                amounts.append((on, -went))
+            if charged and basis in ADDS_BACK_CUSTODY:
+                amounts.append((on, -charged))
+    amounts.append((through, -(ledger.units * spy.at(through) + ledger.cash)))
+    return amounts
+
+
+def mwr_lines(
+    cli: Cli,
+    port: Path,
+    through: date,
+    account: str | None,
+    level: str,
+    bases: Sequence[str],
+    reference: Callable[[str, date], Decimal],
+) -> Iterator[Line]:
+    """`pert mwr` since inception, beside the reference, per basis."""
+    scope = ["--account", account] if account else []
+    data = cli.pert(port, "mwr", "--to", through, *scope)["data"]
+    after = date.fromisoformat(data["period"]["start"]) - DAY
+    for entry in data["returns"]:
+        if entry["basis"] in bases:
+            yield Line(
+                f"Money-weighted: {level}",
+                "Since inception, annualized",
+                data["period"]["start"],
+                data["period"]["end"],
+                entry["basis"],
+                D(entry["mwr"]["value"]),
+                reference(entry["basis"], after),
+            )
+
+
 # ── the comparison ───────────────────────────────────────────────────────────
 
 
@@ -966,6 +1061,22 @@ def main() -> int:
             lambda _basis, a, t, between=between: between(a, t),
         )
 
+    for level, account in (("portfolio", None), ("A", "A"), ("B", "B"), ("C", "C")):
+        # Funded at the close of inception and never again: the deposit counts
+        # from the start of that day, and the rate is the growth annualized.
+        value = values[level]
+        lines += mwr_lines(
+            cli,
+            static,
+            through,
+            account,
+            f"static {level}",
+            BASES[:1],
+            lambda _basis, after, value=value: irr(
+                after, [(after, value(INCEPTION)), (through, -value(through))]
+            ),
+        )
+
     flows = args.work / "flows.port"
     ledger = build_flows(cli, flows, through, raw)
     index = daily_chain(ledger, raw["SPY"], through)
@@ -976,6 +1087,15 @@ def main() -> int:
 
     lines += compare(
         "Flows portfolio: D", period_rows(cli, flows, through, "D"), BASES, chained
+    )
+    lines += mwr_lines(
+        cli,
+        flows,
+        through,
+        "D",
+        "D",
+        BASES,
+        lambda basis, after: irr(after, d_mwr_amounts(ledger, raw["SPY"], through, basis)),
     )
 
     estimated, failures, findings = rehearse_estimates(cli, args.work, through, raw)

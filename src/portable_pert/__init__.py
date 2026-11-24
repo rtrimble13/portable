@@ -4,12 +4,13 @@
 daily sub-periods from stored, checked valuation snapshots, Modified Dietz
 across a gap of unpriced days, every return basis from the stored fee
 classes, the method recorded per sub-period. `pert periods` gives it over
-every period from one walk of the history (ADR 0045). Both take
-`--estimate`, which values a day refused for want of a price at carried
-prices, marked (ADR 0044). `pert` reads and never writes.
+every period from one walk of the history (ADR 0045). `pert mwr` gives the
+money-weighted return beside it (ADR 0046). All three take `--estimate`,
+which values a day refused for want of a price at carried prices, marked
+(ADR 0044). `pert` reads and never writes.
 
-The rest of milestone `v0.2` -- money-weighted returns, benchmarks, risk,
-attribution, the tearsheet -- is not built, and
+The rest of milestone `v0.2` -- benchmarks, risk, attribution, the
+tearsheet -- is not built, and
 `pert` offers no command for it rather than one that returns a plausible
 default (`CLAUDE.md` invariant 10). See `docs/roadmap.md` and the `area:pert`
 issues.
