@@ -49,13 +49,14 @@ from portable_core.errors.kinds import (
     E_GIPS_VALUATION_GAP,
 )
 from portable_core.persistence.repositories import Repositories
-from portable_core.services.replay import over_dates
-from portable_core.services.snapshots import held
+from portable_core.services.replay import effective_ledger, over_dates
+from portable_core.services.snapshots import coupons_by_account, held
 from portable_core.services.valuation import Holding, ValuationEngine
 
 __all__ = [
     "PERT_STALENESS_DAYS",
     "AccountDay",
+    "DayEstimator",
     "Entitlements",
     "HoldingsBook",
     "LastKnown",
@@ -413,6 +414,101 @@ def estimate_account_day(
     if not carried and not snapshot.is_complete:
         raise _not_estimated(account, on, None)
     return AccountDay(value=value, carried=tuple(carried))
+
+
+class DayEstimator:
+    """A level's days valued with carried prices, each day once. ADR 0044 §2.
+
+    Over a walk's accounts and stored snapshots. Nothing is read until a day
+    is asked for, so a walk no window estimates costs nothing. A day's value,
+    or its refusal, is kept: every window of `pert periods` that needs the
+    day reads the one answer.
+    """
+
+    def __init__(
+        self,
+        repos: Repositories,
+        *,
+        names: Mapping[int, str],
+        begun: Mapping[int, date],
+        stored: Mapping[tuple[int, date], ValuationSnapshot],
+    ) -> None:
+        self.repos = repos
+        self._names = names
+        self._begun = begun
+        self._stored = stored
+        self._ledger: Ledger | None = None
+        self._book: HoldingsBook | None = None
+        self._coupons: dict[int, dict[int, frozenset[date]]] = {}
+        self._done: dict[date, dict[int, AccountDay] | PortableError] = {}
+
+    def load(self, days: Iterable[date]) -> None:
+        """Estimate *days* not yet estimated, together: one replay for them all."""
+        self._estimate(sorted(set(days) - set(self._done)))
+
+    def on(self, day: date) -> dict[int, AccountDay]:
+        """The day's accounts, valued, by account id.
+
+        Every account begun by the day must have a stored snapshot of it, as
+        a window checks before it reads any day. An account the day does not
+        need estimated is its stored value, with nothing carried.
+
+        Raises:
+            PortableError: the day cannot be estimated, for the first reason
+                found on it.
+        """
+        self.load((day,))
+        found = self._done[day]
+        if isinstance(found, PortableError):
+            raise found
+        return found
+
+    def _begun_by(self, on: date) -> list[int]:
+        return [account_id for account_id, first in sorted(self._begun.items()) if first <= on]
+
+    def _estimate(self, days: Sequence[date]) -> None:
+        if not days:
+            return
+        if self._ledger is None:
+            self._ledger = Ledger(effective_ledger(self.repos.transactions.in_ledger_order()))
+            self._book = HoldingsBook(self.repos, self._begun)
+            self._coupons = coupons_by_account(self.repos)
+        ledger, book = self._ledger, self._book
+        assert book is not None
+        book.load(days)
+        # The day before each distribution a carry is lowered by: what the
+        # account was entitled to (carried_price).
+        entitled: set[date] = set()
+        for on in days:
+            for account_id in self._begun_by(on):
+                if needs_estimate(self._stored[(account_id, on)]):
+                    entitled |= entitlement_days(
+                        self.repos, ledger, account_id, book.on(account_id, on), on
+                    )
+        book.load(entitled)
+        for on in days:
+            try:
+                self._done[on] = {
+                    account_id: self._account(ledger, book, account_id, on)
+                    for account_id in self._begun_by(on)
+                }
+            except PortableError as refusal:
+                self._done[on] = refusal
+
+    def _account(
+        self, ledger: Ledger, book: HoldingsBook, account_id: int, on: date
+    ) -> AccountDay:
+        snapshot = self._stored[(account_id, on)]
+        if not needs_estimate(snapshot):
+            return AccountDay(value=snapshot.ending_market_value, carried=())
+        return estimate_account_day(
+            self.repos,
+            ledger,
+            book,
+            snapshot,
+            account=self._names[account_id],
+            coupons=self._coupons.get(account_id, {}),
+        )
 
 
 def _not_estimated(account: str, on: date, cause: PortableError | None) -> GipsRefusalError:

@@ -233,8 +233,8 @@
         "accounts_holding_value": { "type": ["integer", "null"], "minimum": 0 },
         "disclosures": { "anyOf": [{ "$ref": "#/$defs/disclosures" }, { "type": "null" }] },
         "estimate": {
-          "description": "What was estimated in this row (ADR 0044 §3). Null when nothing was, which is always until `pert twr --estimate` exists. Its object form is specified when the estimate tier is built.",
-          "anyOf": [{ "type": "null" }, { "type": "object" }]
+          "description": "What was estimated in this row, which is `pert twr`'s object over the row's dates (ADR 0044 §3). Null when nothing was: always without `--estimate`, and with it for a row that could be measured.",
+          "anyOf": [{ "type": "null" }, { "$ref": "twr-2.0.json#/$defs/estimate" }]
         },
         "refusal": { "anyOf": [{ "$ref": "#/$defs/refusal" }, { "type": "null" }] }
       },
@@ -254,10 +254,31 @@
             "refusal": { "type": "object" },
             "start": { "type": "null" },
             "ending_value": { "type": "null" },
-            "disclosures": { "type": "null" }
+            "disclosures": { "type": "null" },
+            "estimate": { "type": "null" }
           }
         }
-      ]
+      ],
+      "if": {
+        "required": ["estimate"],
+        "properties": { "estimate": { "type": "object" } }
+      },
+      "then": { "properties": { "returns": { "items": { "$ref": "#/$defs/estimatedReturns" } } } },
+      "else": { "properties": { "returns": { "items": { "$ref": "#/$defs/measuredReturns" } } } }
+    },
+    "estimatedReturns": {
+      "description": "ADR 0044 §3: in a row with an estimate, every figure is marked.",
+      "properties": {
+        "cumulative": { "properties": { "is_estimated": { "const": true } } },
+        "annualized": { "properties": { "is_estimated": { "const": true } } }
+      }
+    },
+    "measuredReturns": {
+      "description": "In a row with no estimate, no figure is marked.",
+      "properties": {
+        "cumulative": { "properties": { "is_estimated": { "const": false } } },
+        "annualized": { "properties": { "is_estimated": { "const": false } } }
+      }
     }
   }
 }

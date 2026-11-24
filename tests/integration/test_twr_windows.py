@@ -29,6 +29,7 @@ from portable_core.clock import FixedClock
 from portable_core.domain.returns import TimeWeightedReturn
 from portable_core.errors import PortableError, ValidationError
 from portable_core.errors.kinds import (
+    E_ESTIMATE_LIMIT,
     E_FEE_EMBEDDED_IN_CASH,
     E_GIPS_VALUATION_GAP,
     E_RETURN_BLOCKED,
@@ -95,6 +96,9 @@ REACHED = {
     },
 }
 REACHED["B"] = REACHED[None]
+
+#: A limit no day here reaches: XYZ is at most a fifth of B's value.
+LIMIT = D("0.5")
 
 _XYZ = """
 2024-01-03 100 | 2024-01-04 101 | 2024-01-05 99  | 2024-01-08 102 | 2024-01-09 103
@@ -258,6 +262,68 @@ def test_port_gips_b04_windows_of_the_sample_are_its_walks(tmp_path: Path) -> No
             assert seen[:2] == alone[:2], (start, end)
     finally:
         con.close()
+
+
+@pytest.mark.gips
+@pytest.mark.parametrize("level", [None, "B", "C"], ids=["portfolio", "B", "C"])
+def test_port_gips_b04_an_estimated_window_of_a_walk_is_the_walk_of_the_window(
+    mixed: Repositories, level: str | None
+) -> None:
+    """The same, under an estimate (ADR 0044). The walk keeps each day it
+    estimates for one window and reads it for the next, so a cached day
+    that differed from a fresh one would show here."""
+    account = mixed.accounts.resolve(level) if level is not None else None
+    walked = walk(mixed, first=FIRST, through=THROUGH, account=account, staleness_days=5)
+    estimated = 0
+    for start, end in WINDOWS:
+        code, seen, result = _outcome(
+            window, walked=walked, start=start, end=end, estimate=LIMIT
+        )
+        alone = _outcome(
+            time_weighted_return,
+            repos=mixed,
+            start=start,
+            end=end,
+            account=account,
+            staleness_days=5,
+            estimate=LIMIT,
+        )
+        assert (code, seen) == alone[:2], (level, start, end)
+        estimated += result is not None and result.estimate is not None
+    # C holds only cash, so it never needs a price.
+    assert (estimated > 0) == (level != "C"), estimated
+
+
+@pytest.mark.gips
+@pytest.mark.parametrize("level", [None, "B", "C"], ids=["portfolio", "B", "C"])
+def test_an_estimate_answers_only_a_window_refused_for_a_price(
+    mixed: Repositories, level: str | None
+) -> None:
+    """ADR 0044 §1, §2, over every window. Measured without the flag: the
+    same result with it, unmarked. Refused for anything but an unpriced day
+    (a missing or stale snapshot, a block, an unpriced trade, a fee, a
+    break, nothing held): the same refusal. Refused for unpriced days, which
+    XYZ's two gaps are: estimated, and marked."""
+    account = mixed.accounts.resolve(level) if level is not None else None
+    walked = walk(mixed, first=FIRST, through=THROUGH, account=account, staleness_days=5)
+    answered: Counter[str] = Counter()
+    for start, end in WINDOWS:
+        plain = _outcome(window, walked=walked, start=start, end=end)
+        flagged = _outcome(window, walked=walked, start=start, end=end, estimate=LIMIT)
+        if plain[0] != E_GIPS_VALUATION_GAP:
+            assert flagged[:2] == plain[:2], (level, start, end)
+            continue
+        result = flagged[2]
+        assert result is not None, (level, start, end, flagged[1])
+        assert result.estimate is not None and result.estimate.limit == LIMIT
+        assert all(day.share <= LIMIT for day in result.estimate.days)
+        answered[min(day.on for day in result.estimate.days).isoformat()] += 1
+    if level != "C":
+        assert answered, "the fixture's gaps were not reached"
+    with pytest.raises(PortableError) as refused:
+        window(walked, start=date(2024, 1, 29), end=date(2024, 2, 5), estimate=D("0.01"))
+    # C held nothing then, which no estimate changes.
+    assert refused.value.code == (E_ESTIMATE_LIMIT if level != "C" else E_RETURN_NOTHING_HELD)
 
 
 def test_a_window_outside_its_walk_is_a_mistake_in_the_caller(mixed: Repositories) -> None:

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/rtrimble13/portable/schemas/twr-2.0.json",
   "title": "pert twr",
-  "description": "The time-weighted return, cumulative, at every return basis (ADR 0040).\n\nThe disclaimer is required and non-empty: every return carries it (docs/gips-standard.md §9.3). Every return names its method, basis and period, and none is annualized (PORT-GIPS-B07). The flow timing and the count of sub-periods by method travel with the number (PORT-GIPS-B05).\n\nVersion 2.0, from 1.0 (ADR 0045 §7, ADR 0044 §2): a track record ends where nothing is held, and a period is moved to the record rather than linked across the gap (PORT-GIPS-H06). So `period` carries the requested end beside the end, and the days with nothing held that moved either one. `subperiods.idle_days` is gone: a measured period never holds such a day. Every return carries `is_estimated`, and `estimate` is at the top of `data`. A consumer must read both, because a return computed over carried prices is an estimate, not a measurement.",
+  "description": "The time-weighted return, cumulative, at every return basis (ADR 0040).\n\nThe disclaimer is required and non-empty: every return carries it (docs/gips-standard.md §9.3). Every return names its method, basis and period, and none is annualized (PORT-GIPS-B07). The flow timing and the count of sub-periods by method travel with the number (PORT-GIPS-B05).\n\nVersion 2.0, from 1.0 (ADR 0045 §7, ADR 0044 §2): a track record ends where nothing is held, and a period is moved to the record rather than linked across the gap (PORT-GIPS-H06). So `period` carries the requested end beside the end, and the days with nothing held that moved either one. `subperiods.idle_days` is gone: a measured period never holds such a day. Every return carries `is_estimated`, and `estimate` is at the top of `data`. A consumer must read both, because a return computed over carried prices is an estimate, not a measurement. The schema holds them together: every return is estimated when `estimate` is an object, and none is when it is null.",
   "allOf": [{ "$ref": "envelope-1.0.json" }],
   "type": "object",
   "required": ["disclaimer"],
@@ -80,7 +80,7 @@
               "is_annualized": { "const": false },
               "is_supplemental": { "type": "boolean" },
               "is_estimated": {
-                "description": "True when the return was computed over a price carried forward, which makes it an estimate, not a measurement (ADR 0044 §2). False until `pert twr --estimate` exists.",
+                "description": "True when the return was computed over a price carried forward, which makes it an estimate, not a measurement (ADR 0044 §2). Only ever true under `--estimate`.",
                 "type": "boolean"
               }
             },
@@ -99,8 +99,8 @@
           }
         },
         "estimate": {
-          "description": "What was estimated, and against what limit (ADR 0044 §2). Null when nothing was estimated, which is always until `pert twr --estimate` exists. Its object form is specified when the estimate tier is built.",
-          "anyOf": [{ "type": "null" }, { "type": "object" }]
+          "description": "What was estimated, and against what limit (ADR 0044 §2). Null when nothing was: always without `--estimate`, and with it when every day the period needs could be measured.",
+          "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/estimate" }]
         },
         "disclosures": {
           "type": "object",
@@ -157,15 +157,98 @@
               "returns": {
                 "type": "object",
                 "additionalProperties": { "$ref": "envelope-1.0.json#/$defs/decimal" }
+              },
+              "is_estimated": {
+                "description": "Either end was valued with carried prices (ADR 0044 §2). Emitted on every sub-period; not required, since `twr-2.0` documents from before the estimate tier lack it.",
+                "type": "boolean"
               }
             }
           }
+        }
+      },
+      "if": {
+        "required": ["estimate"],
+        "properties": { "estimate": { "type": "object" } }
+      },
+      "then": {
+        "properties": {
+          "returns": { "items": { "properties": { "is_estimated": { "const": true } } } }
+        }
+      },
+      "else": {
+        "properties": {
+          "returns": { "items": { "properties": { "is_estimated": { "const": false } } } }
         }
       }
     }
   },
   "$defs": {
     "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "estimate": {
+      "description": "ADR 0044 §2: the limit given, the day the most was carried, and every day valued with a carried price, with each holding carried. Shares are of the level's value that day, unsigned. `pert periods` carries the same object per row.",
+      "type": "object",
+      "required": ["limit", "peak", "holdings", "oldest_age_days", "days"],
+      "additionalProperties": false,
+      "properties": {
+        "limit": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+        "peak": {
+          "type": "object",
+          "required": ["date", "share"],
+          "additionalProperties": false,
+          "properties": {
+            "date": { "$ref": "#/$defs/date" },
+            "share": { "$ref": "envelope-1.0.json#/$defs/decimal" }
+          }
+        },
+        "holdings": { "type": "integer", "minimum": 1 },
+        "oldest_age_days": { "type": "integer", "minimum": 0 },
+        "days": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["date", "value", "share", "holdings"],
+            "additionalProperties": false,
+            "properties": {
+              "date": { "$ref": "#/$defs/date" },
+              "value": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+              "share": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+              "holdings": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "$ref": "#/$defs/carriedHolding" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "carriedHolding": {
+      "description": "One holding valued at a carried price: the last known price, lowered by each cash distribution since it per unit entitled (ADR 0044 §1).",
+      "type": "object",
+      "required": [
+        "account", "symbol", "quantity", "price", "last_known_price", "price_date",
+        "age_days", "source", "source_id", "lowered_by", "value", "share"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "account": { "type": "string", "minLength": 1 },
+        "symbol": { "type": "string", "minLength": 1 },
+        "quantity": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+        "price": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+        "last_known_price": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+        "price_date": { "$ref": "#/$defs/date" },
+        "age_days": { "type": "integer", "minimum": 0 },
+        "source": {
+          "description": "price: a stored price row, by price_id; fill: a buy, sell, short or cover, by txn_id; reinvestment: a reinvested distribution with no tax withheld, by txn_id.",
+          "enum": ["price", "fill", "reinvestment"]
+        },
+        "source_id": { "type": "integer" },
+        "lowered_by": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+        "value": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+        "share": { "$ref": "envelope-1.0.json#/$defs/decimal" }
+      }
+    },
     "span": {
       "type": "object",
       "required": ["from", "to"],

@@ -21,6 +21,10 @@ decides a number is here, cited to the requirement it serves:
   them. :func:`time_weighted_return` is a walk over one window, so a window
   of a longer walk and `pert twr` over the same dates are one code path, and
   agree value for value and refusal for refusal.
+* **Estimates only where measurement refuses** (ADR 0044). Under an estimate
+  limit, a day the measured path cannot use, and the bridge needs, is
+  valued with carried prices (:mod:`portable_core.services.estimates`). Its
+  sub-periods are marked, and so is any result they are linked into.
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ from __future__ import annotations
 import calendar
 import decimal
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Final
@@ -40,7 +44,10 @@ from portable_core.domain.returns import (
     BASES,
     Basis,
     BasisReturn,
+    CarriedHolding,
     Disclosures,
+    Estimate,
+    EstimatedDay,
     ReturnMethod,
     SubPeriod,
     TimedFlow,
@@ -53,6 +60,7 @@ from portable_core.errors import (
     ValidationError,
 )
 from portable_core.errors.kinds import (
+    E_ESTIMATE_LIMIT,
     E_FEE_EMBEDDED_IN_CASH,
     E_GIPS_NO_FLOW_POLICY,
     E_GIPS_VALUATION_GAP,
@@ -67,7 +75,7 @@ from portable_core.errors.kinds import (
 )
 from portable_core.persistence.repositories import Repositories
 from portable_core.services import price_acceptance, snapshots
-from portable_core.services.estimates import PERT_STALENESS_DAYS
+from portable_core.services.estimates import PERT_STALENESS_DAYS, DayEstimator
 from portable_core.services.price_acceptance import PriceLine
 from portable_core.services.replay import effective_ledger
 from portable_core.services.snapshots import SnapshotProblem
@@ -77,6 +85,7 @@ __all__ = [
     "RETURN_CONTEXT",
     "Walk",
     "dietz",
+    "ending_values",
     "fee_addback",
     "link",
     "time_weighted_return",
@@ -237,6 +246,8 @@ class _Day:
     complete: bool = True
     #: The age of the oldest price the day's snapshots recorded.
     oldest_price_days: int = 0
+    #: Valued with carried prices, under an estimate limit (ADR 0044 §2).
+    estimated: bool = False
 
     @property
     def carried_only(self) -> bool:
@@ -281,6 +292,7 @@ class _Linked:
     end: date
     before: tuple[date, date] | None
     after: tuple[date, date] | None
+    estimate: Estimate | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,6 +328,9 @@ class Walk:
     pieces: tuple[_Piece, ...]
     #: The configured `staleness_tolerance_days`, named in a refusal it explains.
     configured_staleness: int
+    #: Values a day with carried prices when a window under an estimate limit
+    #: asks, and keeps the answer (ADR 0044 §2).
+    estimator: DayEstimator
 
 
 def time_weighted_return(
@@ -325,6 +340,7 @@ def time_weighted_return(
     start: date | None = None,
     account: Account | None = None,
     staleness_days: int,
+    estimate: Decimal | None = None,
 ) -> TimeWeightedReturn:
     """The cumulative TWR of *account*, or of the portfolio, through *end*.
 
@@ -340,13 +356,16 @@ def time_weighted_return(
     measures only with prices at most :data:`PERT_STALENESS_DAYS` old,
     whatever it says, and names it in a refusal caused by the difference
     (ADR 0044 §1).
+
+    *estimate* is the largest share of a day's value that may be carried, as
+    a fraction. None measures only. See :func:`window`.
     """
     accounts = [account] if account is not None else repos.accounts.all()
     _, first_day, _ = _open(repos, _begun(repos, accounts, end), start, end)
     walked = walk(
         repos, first=first_day, through=end, account=account, staleness_days=staleness_days
     )
-    return window(walked, start=start, end=end)
+    return window(walked, start=start, end=end, estimate=estimate)
 
 
 def walk(
@@ -406,15 +425,25 @@ def walk(
         days=days,
         pieces=_pieces(repos, days, staleness_days),
         configured_staleness=staleness_days,
+        estimator=DayEstimator(repos, names=names, begun=begun, stored=stored),
     )
 
 
-def window(walked: Walk, *, start: date | None, end: date) -> TimeWeightedReturn:
+def window(
+    walked: Walk, *, start: date | None, end: date, estimate: Decimal | None = None
+) -> TimeWeightedReturn:
     """The return of *walked*'s level from *start* through *end*. ADR 0045 §1.
 
     It is exactly what a walk over this window alone would give: the same
     checks, in the order `pert twr` has always made them, on the window's own
     accounts and days.
+
+    Under *estimate*, the largest share of a day's value that may be carried
+    (ADR 0044 §4), a day the measured path refuses for want of a price is
+    valued with carried prices, where the window needs it (:func:`_linked`).
+    Every check before the days is made as without it: an estimate supplies
+    a price and nothing else. When nothing needs estimating, the result is
+    the measured one, unmarked.
 
     Raises:
         ValueError: the window does not lie inside the walk. That is a
@@ -458,7 +487,7 @@ def window(walked: Walk, *, start: date | None, end: date) -> TimeWeightedReturn
         if refusal is not None:
             raise refusal
 
-    linked = _linked(walked, anchor, end)
+    linked = _linked(walked, anchor, end, estimate)
     cumulative = tuple(
         BasisReturn(basis, link(sub.return_for(basis) for sub in linked.subperiods))
         for basis in BASES
@@ -477,9 +506,32 @@ def window(walked: Walk, *, start: date | None, end: date) -> TimeWeightedReturn
         nothing_held_before=linked.before,
         nothing_held_after=linked.after,
         disclosures=_disclosures(
-            repos, stored, measured, linked.subperiods, linked.start, linked.end
+            repos,
+            stored,
+            measured,
+            linked.subperiods,
+            linked.start,
+            linked.end,
+            ending=linked.subperiods[-1].ending_value if linked.estimate else None,
         ),
+        estimate=linked.estimate,
     )
+
+
+def ending_values(walked: Walk, result: TimeWeightedReturn) -> dict[int, Decimal]:
+    """Each account's value on *result*'s last day, as the return valued it.
+
+    The stored value, or, on a day the result estimated, the value with its
+    carried prices (ADR 0044 §2).
+    """
+    on = result.end
+    if result.estimate is not None and any(day.on == on for day in result.estimate.days):
+        return {account_id: day.value for account_id, day in walked.estimator.on(on).items()}
+    return {
+        account_id: snapshot.ending_market_value
+        for (account_id, day), snapshot in walked.stored.items()
+        if day == on and walked.begun[account_id] <= on
+    }
 
 
 def track_records(walked: Walk) -> tuple[TrackRecord, ...]:
@@ -719,12 +771,19 @@ def _days(
 
 
 def _pieces(
-    repos: Repositories, days: Sequence[_Day], configured_staleness: int
+    repos: Repositories,
+    days: Sequence[_Day],
+    configured_staleness: int,
+    known: dict[tuple[date, date], _Piece] | None = None,
 ) -> tuple[_Piece, ...]:
     """Cut the series at every usable day and compute each piece. ADR 0040 §3 to §6.
 
     A piece that cannot be computed keeps its refusal rather than raising it:
     only a window that covers the piece is refused for it.
+
+    *known* holds pieces already computed, by their two ends. A piece between
+    the same two usable days covers the same days, since every usable day is
+    a cut, so it is reused rather than computed again; a new one is added.
     """
     pieces: list[_Piece] = []
     begin: _Day | None = None
@@ -738,6 +797,11 @@ def _pieces(
         between.append(day)
         if not day.usable:
             continue
+        reused = known.get((begin.on, day.on)) if known is not None else None
+        if reused is not None:
+            pieces.append(reused)
+            begin, between = day, []
+            continue
         uncertain = not all(d.reliable for d in (begin, *between))
         try:
             subperiod = _subperiod(repos, begin, day, between)
@@ -748,12 +812,14 @@ def _pieces(
             piece = _Piece(begin.on, day.on, None, refusal, uncertain)
         else:
             piece = _Piece(begin.on, day.on, subperiod, None, uncertain)
+        if known is not None:
+            known[(piece.after, piece.through)] = piece
         pieces.append(piece)
         begin, between = day, []
     return tuple(pieces)
 
 
-def _linked(walked: Walk, anchor: date, end: date) -> _Linked:
+def _linked(walked: Walk, anchor: date, end: date, limit: Decimal | None) -> _Linked:
     """The window's sub-periods, from the walk's pieces. ADR 0045 §4, PORT-GIPS-H06.
 
     The window's two ends must be usable, so each is a cut. The pieces
@@ -773,12 +839,23 @@ def _linked(walked: Walk, anchor: date, end: date) -> _Linked:
 
     A piece that cannot be computed is not one with nothing held, so its
     refusal follows these. Pricing more days would not remove a break.
+
+    Under an estimate *limit*, the days the measured path cannot use are
+    valued with carried prices, and only those (ADR 0044 §1): the window's
+    two ends if they are unusable, and then, inside a gap the bridge cannot
+    cross, the days it needs (:func:`_bridged`). A gap the bridge crosses is
+    bridged, measured. The breaks are found first, as without the limit,
+    and no day is estimated to cross one.
     """
-    first_day = walked.days[(anchor - walked.anchor).days]
-    last_day = walked.days[(end - walked.anchor).days]
+    span = walked.days[(anchor - walked.anchor).days : (end - walked.anchor).days + 1]
+    estimated: dict[date, EstimatedDay] = {}
+    if limit is not None:
+        ends = [day.on for day in (span[0], span[-1]) if not day.usable]
+        estimated.update(_estimate(walked, ends, limit))
+    days = _valued(span, estimated)
     for day, which in (
-        (first_day, "the day before the period"),
-        (last_day, "the period's last day"),
+        (days[0], "the day before the period"),
+        (days[-1], "the period's last day"),
     ):
         if day.usable:
             continue
@@ -786,7 +863,11 @@ def _linked(walked: Walk, anchor: date, end: date) -> _Linked:
             raise _carried(day, which, walked.configured_staleness)
         raise _gap(day.on, day.on, f"{which} cannot be valued")
 
-    pieces = [p for p in walked.pieces if anchor <= p.after and p.through <= end]
+    known = {(piece.after, piece.through): piece for piece in walked.pieces}
+    if estimated:
+        pieces = list(_pieces(walked.repos, days, walked.configured_staleness, known))
+    else:
+        pieces = [p for p in walked.pieces if anchor <= p.after and p.through <= end]
     held = [index for index, piece in enumerate(pieces) if not piece.held_nothing]
     if not held:
         raise _nothing_held(walked, anchor + _DAY, end)
@@ -796,6 +877,8 @@ def _linked(walked: Walk, anchor: date, end: date) -> _Linked:
             raise _break(walked, pieces, index)
 
     measured = pieces[first : last + 1]
+    if limit is not None:
+        measured = _bridged(walked, span, measured, estimated, known, limit)
     subperiods: list[SubPeriod] = []
     for piece in measured:
         if piece.refusal is not None:
@@ -803,12 +886,152 @@ def _linked(walked: Walk, anchor: date, end: date) -> _Linked:
         assert piece.subperiod is not None  # held_nothing is false and no refusal
         subperiods.append(piece.subperiod)
     start, through = measured[0].after + _DAY, measured[-1].through
+    # ADR 0044 §3: the result is estimated exactly when a sub-period linked
+    # into it is, and it names every estimated day such a sub-period ends on.
+    used = sorted(
+        {on for sub in subperiods if sub.is_estimated for on in (sub.after, sub.through)}
+        & estimated.keys()
+    )
     return _Linked(
         subperiods=subperiods,
         start=start,
         end=through,
         before=(anchor + _DAY, measured[0].after) if first > 0 else None,
         after=(through + _DAY, end) if last < len(pieces) - 1 else None,
+        estimate=(
+            Estimate(limit, tuple(estimated[on] for on in used))
+            if used and limit is not None
+            else None
+        ),
+    )
+
+
+def _bridged(
+    walked: Walk,
+    span: Sequence[_Day],
+    measured: Sequence[_Piece],
+    estimated: dict[date, EstimatedDay],
+    known: dict[tuple[date, date], _Piece],
+    limit: Decimal,
+) -> list[_Piece]:
+    """*measured*, with each gap the bridge cannot cross cut where it needs a value.
+
+    ADR 0044 §1. The days are each month end inside the gap and the valuation
+    a large flow inside it requires (:func:`_unbridgeable`). They are valued
+    with carried prices into *estimated*, and the gap is cut at them. What is
+    left between the cuts is bridged by Modified Dietz, or, if a large flow's
+    test now finds one inside a shorter stretch, cut again. A day estimated
+    is always one the measured path could not use, so this ends.
+    """
+    lo, hi = measured[0].after, measured[-1].through
+    pieces = list(measured)
+    while True:
+        days = _valued(span, estimated)
+        needed: set[date] = set()
+        for piece in pieces:
+            if isinstance(piece.refusal, GipsRefusalError) and (
+                piece.refusal.code == E_GIPS_VALUATION_GAP
+            ):
+                needed |= _bridge_needs(walked.repos, days, piece)
+        needed -= estimated.keys()
+        if not needed:
+            return pieces
+        estimated.update(_estimate(walked, needed, limit))
+        days = _valued(span, estimated)
+        pieces = [
+            piece
+            for piece in _pieces(walked.repos, days, walked.configured_staleness, known)
+            if lo <= piece.after and piece.through <= hi
+        ]
+
+
+def _bridge_needs(repos: Repositories, days: Sequence[_Day], piece: _Piece) -> set[date]:
+    """The days inside *piece*, a gap the bridge refused, that it needs valued."""
+    offset = days[0].on
+    begin = days[(piece.after - offset).days]
+    end = days[(piece.through - offset).days]
+    covered = days[(piece.after - offset).days + 1 : (piece.through - offset).days + 1]
+    flows = _timed_flows(repos, begin, end, covered)
+    return {needed for needed, _ in _unbridgeable(piece.after, piece.through, flows)}
+
+
+def _valued(span: Sequence[_Day], estimated: dict[date, EstimatedDay]) -> list[_Day]:
+    """*span*, each estimated day usable at its value with carried prices."""
+    if not estimated:
+        return list(span)
+    return [
+        replace(day, value=estimated[day.on].value, usable=True, estimated=True)
+        if day.on in estimated
+        else day
+        for day in span
+    ]
+
+
+def _estimate(walked: Walk, days: Iterable[date], limit: Decimal) -> dict[date, EstimatedDay]:
+    """*days* valued with carried prices, each within *limit*. ADR 0044 §2, §4.
+
+    The share of a day is its carried holdings' value, unsigned, over the
+    level's value that day. A day whose value is not positive has no share,
+    as ``level5_share`` has none, and is refused with the day over the
+    limit, earliest first.
+    """
+    wanted = sorted(set(days))
+    walked.estimator.load(wanted)
+    found: dict[date, EstimatedDay] = {}
+    for on in wanted:
+        accounts = walked.estimator.on(on)
+        carried = [holding for day in accounts.values() for holding in day.carried]
+        with decimal.localcontext(RETURN_CONTEXT):
+            value = sum((day.value for day in accounts.values()), _ZERO)
+            if value <= 0:
+                raise _no_share(walked, on, value, limit)
+            share = sum((abs(holding.value) for holding in carried), _ZERO) / value
+            holdings = tuple(
+                replace(holding, share=abs(holding.value) / value) for holding in carried
+            )
+        if share > limit:
+            raise _over_limit(walked, on, share, limit, holdings)
+        found[on] = EstimatedDay(on=on, value=value, share=share, holdings=holdings)
+    return found
+
+
+def _no_share(walked: Walk, on: date, value: Decimal, limit: Decimal) -> ValidationError:
+    return ValidationError(
+        f"{_scope(walked)} on {on.isoformat()} is worth {value} with its carried prices, "
+        "so no share of it can be called carried",
+        code=E_ESTIMATE_LIMIT,
+        remedy=(
+            "The limit is a share of the day's value, and a value of zero or less has "
+            "none (ADR 0044 §4). Measure a period that avoids the day, or price it."
+        ),
+        day=on.isoformat(),
+        value=str(value),
+        limit=str(limit),
+    )
+
+
+def _over_limit(
+    walked: Walk,
+    on: date,
+    share: Decimal,
+    limit: Decimal,
+    holdings: Sequence[CarriedHolding],
+) -> ValidationError:
+    largest = max(holdings, key=lambda holding: (holding.share or _ZERO, holding.symbol))
+    return ValidationError(
+        f"{_scope(walked)} on {on.isoformat()} would carry {share:.4f} of its value, "
+        f"over the --estimate limit of {limit}: {len(holdings)} holding(s), the "
+        f"largest {largest.symbol} at a price of {largest.price_date.isoformat()}",
+        code=E_ESTIMATE_LIMIT,
+        remedy=(
+            "An estimate carrying that much is a guess at the return, not an estimate "
+            "of it. Price the holdings for the day (`pt price set`, `pt price load`, "
+            "then `pt value`), or measure a period that avoids it."
+        ),
+        day=on.isoformat(),
+        share=str(share),
+        limit=str(limit),
+        holdings=[holding.symbol for holding in holdings],
     )
 
 
@@ -854,11 +1077,10 @@ def _break(walked: Walk, pieces: Sequence[_Piece], index: int) -> GipsRefusalErr
     )
 
 
-def _subperiod(
+def _timed_flows(
     repos: Repositories, begin: _Day, end: _Day, covered: Sequence[_Day]
-) -> SubPeriod | None:
-    span = (end.on - begin.on).days
-    method = ReturnMethod.DAILY if span == 1 else ReturnMethod.MODIFIED_DIETZ
+) -> list[TimedFlow]:
+    """The flows from *begin* to *end*, each called large or not by the policy in force."""
     flows: list[TimedFlow] = []
     for day in covered:
         for flow in day.flows:
@@ -874,6 +1096,15 @@ def _subperiod(
                     is_large=policy.is_large_flow(flow.amount, weight_base),
                 )
             )
+    return flows
+
+
+def _subperiod(
+    repos: Repositories, begin: _Day, end: _Day, covered: Sequence[_Day]
+) -> SubPeriod | None:
+    span = (end.on - begin.on).days
+    method = ReturnMethod.DAILY if span == 1 else ReturnMethod.MODIFIED_DIETZ
+    flows = _timed_flows(repos, begin, end, covered)
     undone = {basis: sum((day.undone[basis] for day in covered), _ZERO) for basis in BASES}
 
     if method is ReturnMethod.MODIFIED_DIETZ:
@@ -914,6 +1145,7 @@ def _subperiod(
         ending_value=end.value,
         flows=tuple(flows),
         returns=tuple(returns),
+        is_estimated=begin.estimated or end.estimated,
     )
 
 
@@ -964,16 +1196,43 @@ def _check_gap(after: date, through: date, flows: Sequence[TimedFlow]) -> None:
     Never a month end (PORT-GIPS-A03 a, b), and never a large flow the
     valuation it requires is missing for (PORT-GIPS-B03, A03 c).
     """
+    reasons = _unbridgeable(after, through, flows)
+    if reasons:
+        raise _gap(after, through, reasons[0][1])
+
+
+def _unbridgeable(
+    after: date, through: date, flows: Sequence[TimedFlow]
+) -> list[tuple[date, str]]:
+    """Every reason the bridge from *after* to *through* is refused, in order.
+
+    Each with the day inside the gap whose value would answer it, which is
+    what an estimate values (ADR 0044 §1). For a month end, the month end.
+    For a large flow, the valuation it requires: the end of the day before an
+    inflow, which counts from the start of its day, and the end of the day of
+    an outflow.
+
+    ADR 0040 §6 calls any large flow before the gap's last day inside it, so
+    a large inflow on a gap's first day is refused although the gap's start
+    is the valuation it requires. For that one its own day is the one
+    valued, and the stretch to it is a single day. So a large inflow inside
+    a gap is estimated around twice: the day before it, and then, in the
+    stretch that day begins, its own day.
+    """
+    reasons: list[tuple[date, str]] = []
     for day in _span(after + _DAY, through - _DAY):
         if day.day == calendar.monthrange(day.year, day.month)[1]:
-            raise _gap(after, through, f"it spans the month end {day.isoformat()}")
+            reasons.append((day, f"it spans the month end {day.isoformat()}"))
     for flow in flows:
         if flow.is_large and (flow.on < through or flow.amount > 0):
-            raise _gap(
-                after,
-                through,
-                f"a large flow of {flow.amount} on {flow.on.isoformat()} falls inside it",
+            needed = flow.on - _DAY if flow.amount > 0 else flow.on
+            reasons.append(
+                (
+                    needed if needed > after else flow.on,
+                    f"a large flow of {flow.amount} on {flow.on.isoformat()} falls inside it",
+                )
             )
+    return reasons
 
 
 def _gap(after: date, through: date, why: str) -> GipsRefusalError:
@@ -997,12 +1256,17 @@ def _disclosures(
     subperiods: Sequence[SubPeriod],
     first_day: date,
     end: date,
+    *,
+    ending: Decimal | None = None,
 ) -> Disclosures:
+    """*ending*, when given, is the level's value on *end* as the return valued it."""
     used = [s for (_, on), s in sorted(stored.items()) if first_day <= on <= end]
-    ending = [s for (_, on), s in stored.items() if on == end]
+    final = [s for (_, on), s in stored.items() if on == end]
     with decimal.localcontext(RETURN_CONTEXT):
-        level5 = sum((s.level5_market_value for s in ending), _ZERO)
-        value = sum((s.ending_market_value for s in ending), _ZERO)
+        level5 = sum((s.level5_market_value for s in final), _ZERO)
+        value = (
+            ending if ending is not None else sum((s.ending_market_value for s in final), _ZERO)
+        )
         share = level5 / value if value != 0 else None
     unpriced: set[str] = set()
     for snapshot in used:

@@ -275,8 +275,8 @@ pert periods [--to DATE] [--account NAME] [--basis BASIS]
   `nothing_held_before` and `nothing_held_after`, each a `{from, to}` or
   `null`. These replace `idle_days`. Without them a reader sees that a date
   moved but not why. `estimate` is typed as `null` or an object. Its fields
-  are specified when the estimate tier is built, and no output ever had any
-  other shape.
+  were specified when the estimate tier was built (ADR 0044), and until
+  then no output had any other shape.
 
 ### 8. Stability (`PORT-GIPS-A04`)
 

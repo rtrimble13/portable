@@ -8,6 +8,7 @@ result out. Every number is decided in the service.
 from __future__ import annotations
 
 from datetime import date, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any
 
 import typer
@@ -17,14 +18,33 @@ from portable_core.domain.returns import (
     BASES,
     Basis,
     Disclosures,
+    Estimate,
     ReturnMethod,
     TimeWeightedReturn,
 )
-from portable_core.formatters import Column, ColumnKind, CommandResult, ReturnValue, Table
+from portable_core.errors import UsageError
+from portable_core.formatters import (
+    Column,
+    ColumnKind,
+    CommandResult,
+    ReturnValue,
+    Table,
+    rate,
+)
 from portable_core.services.returns import time_weighted_return
 from portable_pert import state
 
-__all__ = ["BASES_NOTE", "BASIS_LABELS", "FLOW_TIMING", "disclosure_data", "twr"]
+__all__ = [
+    "BASES_NOTE",
+    "BASIS_LABELS",
+    "ESTIMATE_HELP",
+    "FLOW_TIMING",
+    "disclosure_data",
+    "estimate_data",
+    "estimate_limit",
+    "estimate_note",
+    "twr",
+]
 
 #: ADR 0040 §3, answer 1. Recorded on every result as the method.
 FLOW_TIMING = "inflows at the start of the day, outflows at the end"
@@ -45,6 +65,86 @@ BASES_NOTE = (
     "gross-of-fees adds back external management fees too. Other administrative "
     "costs reduce only the supplemental net-of-all-costs figure."
 )
+
+
+#: ADR 0044 §4: the limit is required with the flag, and has no default.
+ESTIMATE_HELP = (
+    "Value a day that cannot be priced at the last price known for each holding it "
+    "lacks, where the measured return is refused for it, carrying at most MAX_SHARE "
+    "of the day's value (0.05 is 5%). The result is marked ESTIMATED and is not part "
+    "of the track record. Without it, nothing is estimated."
+)
+
+
+def estimate_limit(text: str | None) -> Decimal | None:
+    """`--estimate MAX_SHARE`: a fraction above zero and at most one. ADR 0044 §4."""
+    if text is None:
+        return None
+    try:
+        limit = Decimal(text)
+    except InvalidOperation:
+        limit = None
+    if limit is None or not limit.is_finite() or not Decimal(0) < limit <= Decimal(1):
+        raise UsageError(
+            f"--estimate must be a share of a day's value above 0 and at most 1, got {text!r}",
+            remedy="Give it as a fraction: --estimate 0.05 carries at most 5% of a day.",
+            value=text,
+        )
+    return limit
+
+
+def estimate_note(estimate: Estimate) -> str:
+    """The sentence an estimated result carries, in its footnotes and on stderr.
+
+    ADR 0044 §2. The age is in it, not only in JSON: the limit bounds how much
+    was carried, and only the age shows how long it had to drift.
+    """
+    peak = estimate.peak
+    return (
+        f"ESTIMATED, not measured, and not part of the track record: "
+        f"{len(estimate.days)} day(s) valued with {estimate.holdings} carried "
+        f"holding(s), at most {rate(peak.share)} of a day's value, on "
+        f"{peak.on.isoformat()}, against a limit of {rate(estimate.limit)}. The oldest "
+        f"price carried was {estimate.oldest_age_days} days old (ADR 0044)."
+    )
+
+
+def estimate_data(estimate: Estimate | None) -> dict[str, Any] | None:
+    """What was estimated, for JSON: every day and every carried holding. ADR 0044 §2."""
+    if estimate is None:
+        return None
+    peak = estimate.peak
+    return {
+        "limit": estimate.limit,
+        "peak": {"date": peak.on.isoformat(), "share": peak.share},
+        "holdings": estimate.holdings,
+        "oldest_age_days": estimate.oldest_age_days,
+        "days": [
+            {
+                "date": day.on.isoformat(),
+                "value": day.value,
+                "share": day.share,
+                "holdings": [
+                    {
+                        "account": holding.account,
+                        "symbol": holding.symbol,
+                        "quantity": holding.quantity,
+                        "price": holding.price,
+                        "last_known_price": holding.last_known,
+                        "price_date": holding.price_date.isoformat(),
+                        "age_days": holding.age_days,
+                        "source": str(holding.source),
+                        "source_id": holding.source_id,
+                        "lowered_by": holding.lowered_by,
+                        "value": holding.value,
+                        "share": holding.share,
+                    }
+                    for holding in day.holdings
+                ],
+            }
+            for day in estimate.days
+        ],
+    }
 
 
 def disclosure_data(disclosures: Disclosures) -> dict[str, Any]:
@@ -71,6 +171,9 @@ def twr(
         typer.Option("--account", "-a", help="One account. Default: the whole portfolio."),
     ] = None,
     daily: Annotated[bool, typer.Option("--daily", help="Also emit every sub-period.")] = False,
+    estimate: Annotated[
+        str | None, typer.Option("--estimate", metavar="MAX_SHARE", help=ESTIMATE_HELP)
+    ] = None,
 ) -> None:
     """Time-weighted return, cumulative, at every return basis.
 
@@ -83,9 +186,15 @@ def twr(
     A track record ends where nothing is held, and two are never linked. A
     period across the gap is refused, as is one with nothing held at all. A
     period that starts or ends in it is moved to the record, and says so.
+
+    A day is measured only with prices at most five days old. With
+    --estimate, a day refused for a missing or older price is valued at the
+    last price known instead, if the period needs it, and the result is
+    marked ESTIMATED.
     """
 
     def action() -> CommandResult:
+        limit = estimate_limit(estimate)
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
         last = state.resolve_date(end, ctx, what="--to")
@@ -97,6 +206,7 @@ def twr(
             end=last,
             account=target,
             staleness_days=int(ctx.config.get("staleness_tolerance_days", 5)),
+            estimate=limit,
         )
         return _render(result, daily=daily, portfolio=ctx.portfolio_name())
 
@@ -113,6 +223,7 @@ def _value(result: TimeWeightedReturn, basis: Basis) -> ReturnValue:
         period_start=result.start - timedelta(days=1),
         period_end=result.end,
         is_supplemental=basis is Basis.NET_OF_ALL_COSTS,
+        is_estimated=result.is_estimated,
         label=BASIS_LABELS[basis],
     )
 
@@ -158,9 +269,8 @@ def _render(result: TimeWeightedReturn, *, daily: bool, portfolio: str | None) -
             "daily": result.count(ReturnMethod.DAILY),
             "modified_dietz": result.count(ReturnMethod.MODIFIED_DIETZ),
         },
-        # ADR 0044 §2. Nothing is estimated until `--estimate` exists, and the
-        # field is there from the first `twr-2.0` so a consumer reads it.
-        "estimate": None,
+        # ADR 0044 §2: null unless a carried price was needed under --estimate.
+        "estimate": estimate_data(result.estimate),
         "disclosures": {**disclosure_data(disclosures), "notes": list(notes)},
     }
     if daily:
@@ -176,6 +286,7 @@ def _render(result: TimeWeightedReturn, *, daily: bool, portfolio: str | None) -
                     for f in sub.flows
                 ],
                 "returns": {str(entry.basis): entry.value for entry in sub.returns},
+                "is_estimated": sub.is_estimated,
             }
             for sub in result.subperiods
         ]
@@ -190,12 +301,18 @@ def _render(result: TimeWeightedReturn, *, daily: bool, portfolio: str | None) -
             ),
             rows=tuple(rows),
             title=(
-                f"Time-weighted return, {scope}, {result.start.isoformat()} to "
+                (
+                    "ESTIMATED time-weighted return"
+                    if result.is_estimated
+                    else "Time-weighted return"
+                )
+                + f", {scope}, {result.start.isoformat()} to "
                 f"{result.end.isoformat()} ({result.days} days, cumulative)"
             ),
             footnotes=notes,
         ),
         data=data,
+        warnings=(estimate_note(result.estimate),) if result.estimate is not None else (),
         as_of=result.requested_end,
         portfolio=portfolio,
         disclaimer=GIPS_DISCLAIMER,
@@ -217,6 +334,8 @@ def _notes(result: TimeWeightedReturn) -> tuple[str, ...]:
         "Time-weighted, from daily sub-periods linked geometrically. Inflows count "
         "from the start of their day and outflows from its end. Not annualized.",
     ]
+    if result.estimate is not None:
+        notes.insert(0, estimate_note(result.estimate))
     md = result.count(ReturnMethod.MODIFIED_DIETZ)
     if md:
         notes.append(

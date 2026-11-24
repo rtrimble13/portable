@@ -16,6 +16,37 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`pert twr --estimate MAX_SHARE` and `pert periods --estimate MAX_SHARE`**
+  (issue 60, ADR 0044): a return over days that cannot be priced, as an
+  estimate, marked so.
+  - **What is estimated.** A holding valuation could not price, or priced
+    more than five days old, is valued at its last known price: the newest
+    stored price, fill or untaxed reinvestment. That price is never carried
+    across a corporate action. It is lowered by each cash distribution
+    since, from the day the snapshot holds it, so nothing is counted twice.
+    Nothing else is estimated: a missing snapshot, a failed accrual, an
+    unrecorded coupon and an ADR 0031 block refuse as before.
+  - **Only where the measured return is refused.** The period's ends, and
+    within a gap the Modified Dietz bridge cannot cross, the days it needs:
+    each month end, and the valuations a large flow requires. Everything
+    else is measured, and a period that can be measured is measured. With
+    nothing to estimate, the output is byte for byte the run without the
+    flag.
+  - **How much.** No day may carry more than `MAX_SHARE` of its value. The
+    value is required and has no default, and a day worth nothing or less
+    has no share. Both refuse with `PT-E-ESTIMATE-LIMIT`.
+  - **Marked, and never linked into the track record.** Every figure reads
+    `ESTIMATED`, and so does the title. A footnote, repeated on stderr,
+    gives the days, the holdings, the peak share against the limit, and
+    the oldest price's age. In `pert periods` each row is estimated or not
+    on its own.
+  - **JSON.** `estimate` is specified in `twr-2.0` and `periods-1.0`, which
+    always allowed an object there. Both schemas now reject an estimate
+    whose returns are not all marked, and a mark with no estimate. Each
+    `--daily` sub-period gains `is_estimated`, not required.
+  - **`PORT-GIPS-A09`** names `pert periods --estimate` beside
+    `pert twr --estimate`, and the days a carried price may value.
+
 - **A rehearsal of issue 58's reconciliation, on samples priced from fafnir**
   (`scripts/rehearse_reconciliation.py`, `docs/reconciliation-rehearsal.md`).
   - **What it builds.** Portfolios of real securities are built through `pt`.
@@ -732,7 +763,7 @@ Two rules specific to this repository:
     could move.
 - **A return marked estimated reads `ESTIMATED`** in `table` and `markdown`,
   wherever it is rendered (ADR 0044 §2). The formatter adds the word, so no
-  call site can drop it. Nothing sets the mark yet.
+  call site can drop it. `--estimate` sets the mark (above).
 - **Four `PORT-GIPS` requirements say more**, under ADR 0044 and ADR 0045,
   accepted 2026-11-23. Nothing computes differently yet; each line records
   an obligation the code takes on as the ADRs are built.

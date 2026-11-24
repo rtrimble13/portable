@@ -144,6 +144,9 @@ class CarriedHolding:
     #: Per unit, the distributions since the last known price.
     lowered_by: Decimal
     value: Decimal
+    #: Its value, unsigned, over the level's value that day. Set once the
+    #: day is valued (ADR 0044 §2).
+    share: Decimal | None = None
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)
@@ -154,6 +157,8 @@ class EstimatedDay:
     """A day valued with a carried price, and how much of it was carried."""
 
     on: date
+    #: The level's value that day, the carried holdings included.
+    value: Decimal
     #: The carried holdings' value over the level's value that day.
     share: Decimal
     holdings: tuple[CarriedHolding, ...]
@@ -250,6 +255,18 @@ class TimeWeightedReturn:
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)
+        # ADR 0044 §3: a result is estimated if any sub-period linked into it
+        # is, and is otherwise not. Checked here, where every linked result is
+        # made, so no caller can link an estimate into a measurement.
+        if any(sub.is_estimated for sub in self.subperiods) != (self.estimate is not None):
+            raise ValueError(
+                "a time-weighted return carries an estimate exactly when a sub-period "
+                "linked into it is estimated"
+            )
+
+    @property
+    def is_estimated(self) -> bool:
+        return self.estimate is not None
 
     @property
     def days(self) -> int:

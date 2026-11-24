@@ -12,16 +12,20 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from decimal import Decimal as D
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 from portable_core.domain.enums import TransactionType
 from portable_core.domain.models import Account, Instrument, Price
-from portable_core.domain.returns import CarrySource
+from portable_core.domain.returns import CarriedHolding, CarrySource, EstimatedDay
 from portable_core.errors import PortableError
 from portable_core.persistence.repositories import Repositories
-from portable_core.services.estimates import Ledger, carried_price, last_known
+from portable_core.services import returns
+from portable_core.services.estimates import AccountDay, Ledger, carried_price, last_known
 from portable_core.services.replay import effective_ledger
+from portable_core.services.returns import Walk
 from tests.conftest import append
 
 pytestmark = pytest.mark.unit
@@ -217,3 +221,51 @@ def test_nothing_is_estimated_from_nothing(
     with pytest.raises(PortableError) as refused:
         _carry(repos, taxable_account, aapl, date(2024, 1, 21))
     assert refused.value.code == "PT-E-ESTIMATE-UNAVAILABLE"
+
+
+class _Days:
+    """A walk's estimator that values every day at one figure, one holding carried."""
+
+    def __init__(self, value: str, carried: str) -> None:
+        self.day = AccountDay(
+            value=D(value),
+            carried=(
+                CarriedHolding(
+                    account="B", symbol="XYZ", quantity=D(100), price=D(1), last_known=D(1),
+                    price_date=date(2024, 1, 2), age_days=8, source=CarrySource.PRICE,
+                    source_id=1, lowered_by=D(0), value=D(carried),
+                ),
+            ),
+        )  # fmt: skip
+
+    def load(self, days: object) -> None:
+        pass
+
+    def on(self, day: date) -> dict[int, AccountDay]:
+        return {1: self.day}
+
+
+def _estimated(value: str, carried: str, limit: str = "0.05") -> object:
+    walked = cast(Walk, SimpleNamespace(estimator=_Days(value, carried), account=None))
+    return returns._estimate(walked, [date(2024, 1, 10)], D(limit))
+
+
+@pytest.mark.gips
+@pytest.mark.parametrize("value", ["0.00", "-250.00"])
+def test_a_day_worth_nothing_or_less_has_no_share_and_is_refused(value: str) -> None:
+    """ADR 0044 §4, as level5_share is null there: a share of a value that is
+    not positive is no share at all, whatever the limit."""
+    with pytest.raises(PortableError) as refused:
+        _estimated(value, "100.00", limit="1")
+    assert refused.value.code == "PT-E-ESTIMATE-LIMIT"
+    assert refused.value.context["value"] == value
+
+
+@pytest.mark.gips
+def test_a_share_is_of_the_carried_value_unsigned() -> None:
+    """A short carried at -100 on a day worth 2,000 is 5% of it, at the limit."""
+    (day,) = cast(dict[date, EstimatedDay], _estimated("2000.00", "-100.00")).values()
+    assert (day.share, day.holdings[0].share) == (D("0.05"), D("0.05"))
+    with pytest.raises(PortableError) as refused:
+        _estimated("2000.00", "-100.01")
+    assert refused.value.code == "PT-E-ESTIMATE-LIMIT"
