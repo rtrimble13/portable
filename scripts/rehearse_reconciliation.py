@@ -29,6 +29,19 @@ from `duk` directly:
   computation written here from the ledger it was built with: inflows count
   from the start of their day and outflows from its end (ADR 0040 §3), and
   the custody fee is added back at the bases that do not deduct it (§8).
+* **Portfolio E** rehearses the estimate tier (ADR 0044). Account E1 holds
+  SPY and AGG and takes dividends in cash; E2 holds VFIAX and NVDA and
+  reinvests. SPY's and VFIAX's prices are withheld from 2024-12-10 to
+  2025-01-10, across the year end, and both go ex-dividend inside that
+  stretch. A twin with every price loaded has the same ledger. Without
+  `--estimate`, every period that does not reach the stretch must equal the
+  twin's, and every one that does must be refused. With it, those must be
+  estimated on 2024-12-31 alone, the one month end inside, and the rest
+  unchanged. Each carried price is worked out here from the rules: SPY's
+  last close before the stretch, less its dividend per unit; VFIAX's
+  reinvestment, a purchase at the fund's price. Every period's return must
+  equal the values computed from `duk` with those carried prices on
+  2024-12-31 and real ones elsewhere.
 
 Why the reference reads `duk` itself: `CLAUDE.md` keeps every use of fafnir
 inside `providers/fafnir.py`, and that path is part of what is under test. A
@@ -86,6 +99,17 @@ STATIC: dict[str, tuple[dict[str, Decimal], bool]] = {
     "B": ({"NVDA": D(3000), "AGG": D(1000), "VFIAX": D(500)}, True),
     "C": ({"SPY": D(1000)}, False),
 }
+#: Portfolio E: SPY and VFIAX go unpriced across a year end (ADR 0044).
+WITHHELD: dict[str, tuple[dict[str, Decimal], bool]] = {
+    "E1": ({"SPY": D(49), "AGG": D(370)}, False),
+    "E2": ({"VFIAX": D(215), "NVDA": D(30)}, True),
+}
+WITHHOLD = ("SPY", "VFIAX")
+WITHHELD_FROM, WITHHELD_TO = date(2024, 12, 10), date(2025, 1, 10)
+#: The one month end inside the withheld days: the one day an estimate needs.
+ESTIMATED_ON = date(2024, 12, 31)
+#: Well above either account's carried share. The limit is not under test.
+LIMIT = D("0.5")
 DEPOSIT_ON, DEPOSIT, INVEST = date(2020, 3, 23), D("100250.00"), D("100000.00")
 SALE_ON, SALE_UNITS = date(2022, 1, 3), D(500)
 FEE_ON, FEE = date(2023, 6, 30), D("250.00")
@@ -152,6 +176,20 @@ def dividends(symbol: str, through: date) -> list[tuple[date, Decimal]]:
         (date.fromisoformat(a["ex_date"]), D(str(a["dividend_amount"])))
         for a in actions
         if a["action_type"] == "dividend"
+        and INCEPTION < date.fromisoformat(a["ex_date"]) <= through
+    )
+
+
+def splits(symbol: str, through: date) -> list[tuple[date, Decimal]]:
+    """Each split's ex-date and the units it gives per unit held."""
+    actions = json.loads(duk("ca", symbol, "--json"))
+    return sorted(
+        (
+            date.fromisoformat(a["ex_date"]),
+            D(str(a["split_numerator"])) / D(str(a["split_denominator"])),
+        )
+        for a in actions
+        if a["action_type"] == "split"
         and INCEPTION < date.fromisoformat(a["ex_date"]) <= through
     )
 
@@ -308,10 +346,15 @@ def apply_actions(
     return len(events)
 
 
-def build_static(cli: Cli, port: Path, through: date, raw: dict[str, Series]) -> int:
-    start_portfolio(cli, port, "Rehearsal: static")
+def fund_accounts(
+    cli: Cli,
+    port: Path,
+    accounts: dict[str, tuple[dict[str, Decimal], bool]],
+    raw: dict[str, Series],
+) -> dict[str, dict[str, Decimal]]:
+    """Open each account, fund it with the cost of its holdings, and buy them at inception."""
     units: dict[str, dict[str, Decimal]] = {}
-    for account, (holdings, reinvest) in STATIC.items():
+    for account, (holdings, reinvest) in accounts.items():
         open_account(cli, port, account, fractional=reinvest)
         cost = sum((cents(n * raw[s].at(INCEPTION)) for s, n in holdings.items()), D(0))
         cli.pt(port, "cash", "deposit", "-a", account, "--amount", cost, "--date", INCEPTION)
@@ -330,12 +373,43 @@ def build_static(cli: Cli, port: Path, through: date, raw: dict[str, Series]) ->
                 account,
             )
         units[account] = dict(holdings)
+    return units
+
+
+def build_static(cli: Cli, port: Path, through: date, raw: dict[str, Series]) -> int:
+    start_portfolio(cli, port, "Rehearsal: static")
+    units = fund_accounts(cli, port, STATIC, raw)
     cli.pt(port, "price", "load", "--from", INCEPTION, "--to", through)
     found = apply_actions(
         cli, port, through, raw, units, {a: r for a, (_, r) in STATIC.items()}
     )
     cli.pt(port, "value", "--from", INCEPTION, "--to", through)
     return found
+
+
+def build_withheld(
+    cli: Cli, port: Path, through: date, raw: dict[str, Series], *, withhold: bool
+) -> None:
+    """Portfolio E, with SPY's and VFIAX's prices withheld or, for the twin, not."""
+    start_portfolio(cli, port, "Rehearsal: withheld" if withhold else "Rehearsal: priced twin")
+    units = fund_accounts(cli, port, WITHHELD, raw)
+    if not withhold:
+        cli.pt(port, "price", "load", "--from", INCEPTION, "--to", through)
+    else:
+        kept = [s for holdings, _ in WITHHELD.values() for s in holdings if s not in WITHHOLD]
+        cli.pt(port, "price", "load", *kept, "--from", INCEPTION, "--to", through)
+        for first, last in ((INCEPTION, WITHHELD_FROM - DAY), (WITHHELD_TO + DAY, through)):
+            cli.pt(port, "price", "load", *WITHHOLD, "--from", first, "--to", last)
+        for symbol in WITHHOLD:
+            shown = cli.pt(
+                port, "price", "show", symbol, "--from", WITHHELD_FROM, "--to", WITHHELD_TO
+            )
+            if shown["data"]["rows"]:
+                raise SystemExit(
+                    f"{symbol} has prices in the withheld stretch: {shown['data']}"
+                )
+    apply_actions(cli, port, through, raw, units, {a: r for a, (_, r) in WITHHELD.items()})
+    cli.pt(port, "value", "--from", INCEPTION, "--to", through)
 
 
 @dataclass
@@ -488,6 +562,130 @@ def held_with_cash(count: Decimal, series: Series, paid: list[tuple[date, Decima
     return value
 
 
+@dataclass
+class Reinvested:
+    """A holding reinvesting every dividend, unit for unit as `apply_actions` records it."""
+
+    #: (first day, units held from it), in order.
+    units: list[tuple[date, Decimal]]
+    #: (ex-date, amount over units bought): the price each reinvestment paid.
+    prices: list[tuple[date, Decimal]]
+
+    def held(self, day: date) -> Decimal:
+        return [count for first, count in self.units if first <= day][-1]
+
+
+def reinvested(
+    count: Decimal,
+    series: Series,
+    paid: list[tuple[date, Decimal]],
+    split: Sequence[tuple[date, Decimal]] = (),
+) -> Reinvested:
+    """In date order, a split before a dividend on its day, as `apply_actions` takes them."""
+    held = count
+    units, prices = [(INCEPTION, count)], []
+    events = sorted(
+        [(on, 0, ratio) for on, ratio in split] + [(on, 1, per) for on, per in paid]
+    )
+    for on, kind, per in events:
+        if kind == 0:
+            held = held * per
+            units.append((on, held))
+            continue
+        amount = cents(held * per)
+        bought = (held * per / (series.before(on) - per)).quantize(
+            UNIT, rounding=ROUND_HALF_EVEN
+        )
+        held += bought
+        units.append((on, held))
+        with decimal.localcontext(CONTEXT):
+            prices.append((on, amount / bought))
+    return Reinvested(units, prices)
+
+
+@dataclass
+class Carried:
+    """A price ADR 0044 §1 carries to ESTIMATED_ON, worked out from `duk` here."""
+
+    symbol: str
+    quantity: Decimal
+    price: Decimal
+    price_date: date
+    source: str
+    #: The price the holding is worth on the day, had it been loaded.
+    actual: Decimal
+
+
+def withheld_references(
+    raw: dict[str, Series], through: date
+) -> tuple[dict[str, Value], dict[str, Carried]]:
+    """Portfolio E's value each day, the carried prices on ESTIMATED_ON in place.
+
+    E1's SPY: its last close before the stretch, lowered by the dividend that
+    went ex inside it, per unit entitled. E2's VFIAX: the price its December
+    reinvestment paid, a purchase at the fund's price, newer than any close
+    before the stretch, and with no distribution after it to lower it.
+
+    E2's units are followed as `apply_actions` records them, split by split
+    and reinvestment by reinvestment, rather than read off the adjusted
+    series, and each holding is valued to the cent, as a snapshot is. Off
+    the adjusted series, or unrounded, thirty NVDA shares drift from the
+    ledger by thousandths of a basis point, and the estimate is checked
+    closer than that.
+    """
+    on = ESTIMATED_ON
+    e1, e2 = WITHHELD["E1"][0], WITHHELD["E2"][0]
+    paid = {s: dividends(s, through) for s in ("SPY", "AGG", "VFIAX")}
+
+    spy = raw["SPY"]
+    last = spy.days[bisect.bisect_right(spy.days, WITHHELD_FROM - DAY) - 1]
+    with decimal.localcontext(CONTEXT):
+        lowered = sum(
+            (cents(e1["SPY"] * per) / e1["SPY"] for ex, per in paid["SPY"] if last < ex <= on),
+            D(0),
+        )
+    fund = reinvested(e2["VFIAX"], raw["VFIAX"], paid["VFIAX"])
+    nvda = reinvested(
+        e2["NVDA"], raw["NVDA"], dividends("NVDA", through), splits("NVDA", through)
+    )
+    bought_on, price = [(ex, p) for ex, p in fund.prices if ex <= on][-1]
+    assert bought_on > WITHHELD_FROM, "VFIAX's reinvestment should fall in the stretch"
+    with decimal.localcontext(CONTEXT):
+        carried = {
+            "E1": Carried("SPY", e1["SPY"], spy.closes[last] - lowered, last, "price",
+                          spy.at(on)),
+            "E2": Carried("VFIAX", fund.held(on), price, bought_on, "reinvestment",
+                          raw["VFIAX"].at(on)),
+        }  # fmt: skip
+
+    def account_value(name: str, value: Value) -> Value:
+        def estimated(day: date) -> Decimal:
+            if day != on:
+                return value(day)
+            c = carried[name]
+            with decimal.localcontext(CONTEXT):
+                return value(day) + c.quantity * (c.price - c.actual)
+
+        return estimated
+
+    def e1_value(day: date) -> Decimal:
+        return sum((held_with_cash(n, raw[s], paid[s])(day) for s, n in e1.items()), D(0))
+
+    def e2_value(day: date) -> Decimal:
+        # A snapshot holds each holding's value to the cent (ADR 0005).
+        with decimal.localcontext(CONTEXT):
+            return cents(fund.held(day) * raw["VFIAX"].at(day)) + cents(
+                nvda.held(day) * raw["NVDA"].at(day)
+            )
+
+    values: dict[str, Value] = {
+        "E1": account_value("E1", e1_value),
+        "E2": account_value("E2", e2_value),
+    }
+    values["portfolio"] = lambda day: values["E1"](day) + values["E2"](day)
+    return values, carried
+
+
 def ratio(value: Value) -> Callable[[date, date], Decimal]:
     """The return from the end of *after* to the end of *through*, with no flow."""
 
@@ -554,10 +752,10 @@ class Line:
 
 
 def period_rows(
-    cli: Cli, port: Path, through: date, account: str | None
+    cli: Cli, port: Path, through: date, account: str | None, *extra: object
 ) -> list[dict[str, Any]]:
     scope = ["--account", account] if account else []
-    data = cli.pert(port, "periods", "--to", through, *scope)["data"]
+    data = cli.pert(port, "periods", "--to", through, *scope, *extra)["data"]
     rows: list[dict[str, Any]] = data["summary"] + data["fiscal_years"]
     return rows
 
@@ -596,6 +794,86 @@ def compare(
                 )
 
 
+def rehearse_estimates(
+    cli: Cli, work: Path, through: date, raw: dict[str, Series]
+) -> tuple[list[Line], list[str], list[str]]:
+    """Portfolio E against its twin and its reference: (lines, failures, findings)."""
+    twin, withheld = work / "withheld-twin.port", work / "withheld.port"
+    build_withheld(cli, twin, through, raw, withhold=False)
+    build_withheld(cli, withheld, through, raw, withhold=True)
+    values, carried = withheld_references(raw, through)
+
+    lines: list[Line] = []
+    failures: list[str] = []
+    refused = estimated = unchanged = 0
+    peak = D(0)
+    for level, account in (("portfolio", None), ("E1", "E1"), ("E2", "E2")):
+        between = ratio(values[level])
+        priced = period_rows(cli, twin, through, account)
+        plain = period_rows(cli, withheld, through, account)
+        flagged = period_rows(cli, withheld, through, account, "--estimate", LIMIT)
+        for twin_row, plain_row, row in zip(priced, plain, flagged, strict=True):
+            name = f"{level} {row['label']}"
+            if twin_row["returns"] is None:
+                # Outside the record, priced or not.
+                if plain_row["returns"] is not None or row["returns"] is not None:
+                    failures.append(f"{name}: measured here, refused in the twin")
+                continue
+            after = date.fromisoformat(twin_row["start"]) - DAY
+            last = date.fromisoformat(twin_row["end"])
+            if not after <= ESTIMATED_ON <= last:
+                unchanged += 1
+                if plain_row["returns"] != twin_row["returns"]:
+                    failures.append(f"{name}: changed by prices it does not reach")
+                if (row["returns"], row["estimate"]) != (plain_row["returns"], None):
+                    failures.append(f"{name}: changed by --estimate, with nothing to estimate")
+            else:
+                refused += plain_row["refusal"] is not None
+                if (plain_row["refusal"] or {}).get("code") != "PT-E-GIPS-VALUATION-GAP":
+                    failures.append(f"{name}: not refused without --estimate")
+                estimate = row["estimate"]
+                days = [day["date"] for day in estimate["days"]] if estimate else []
+                if days != [ESTIMATED_ON.isoformat()]:
+                    failures.append(f"{name}: estimated on {days or 'no day'}")
+                    continue
+                estimated += 1
+                (day,) = estimate["days"]
+                peak = max(peak, D(day["share"]))
+                expected = [
+                    carried[a] for a in (("E1", "E2") if account is None else (account,))
+                ]
+                seen = [
+                    (h["symbol"], D(h["quantity"]), D(h["price"]), h["price_date"], h["source"])
+                    for h in day["holdings"]
+                ]
+                wanted = [
+                    (c.symbol, c.quantity, c.price, c.price_date.isoformat(), c.source)
+                    for c in expected
+                ]
+                if seen != wanted:
+                    failures.append(f"{name}: carried {seen}, the rules give {wanted}")
+            for entry in row["returns"][:1]:
+                lines.append(
+                    Line(
+                        f"Withheld, with --estimate: {level}",
+                        row["label"],
+                        row["start"],
+                        row["end"],
+                        entry["basis"],
+                        D(entry["cumulative"]["value"]),
+                        between(after, last),
+                    )
+                )
+    findings = [
+        f"{unchanged} periods that do not reach the withheld days are the twin's, with and "
+        "without `--estimate`.",
+        f"{refused} periods that do are refused without it, and {estimated} are estimated "
+        f"with it, on {ESTIMATED_ON.isoformat()} alone. The largest share carried was "
+        f"{peak * 100:.2f}% of a day's value, against a limit of {LIMIT * 100:.0f}%.",
+    ]
+    return lines, failures, findings
+
+
 def bp(value: Decimal | None) -> str:
     return "—" if value is None else f"{value * 10000:+.4f}"
 
@@ -604,13 +882,19 @@ def pct(value: Decimal | None) -> str:
     return "—" if value is None else f"{value * 100:.4f}%"
 
 
-def report(lines: Sequence[Line], through: date, actions: int) -> tuple[str, bool]:
+def report(
+    lines: Sequence[Line],
+    through: date,
+    actions: int,
+    failures: Sequence[str] = (),
+    findings: Sequence[str] = (),
+) -> tuple[str, bool]:
     measured = [line for line in lines if line.difference is not None]
     worst = max(
         (abs(line.difference) for line in measured if line.difference is not None), default=D(0)
     )
     refused = [line for line in lines if line.refused]
-    passed = worst <= TOLERANCE and not refused
+    passed = worst <= TOLERANCE and not refused and not failures
     out = [
         "# Reconciliation rehearsal",
         "",
@@ -622,6 +906,8 @@ def report(lines: Sequence[Line], through: date, actions: int) -> tuple[str, boo
         f"levels, from {actions} corporate actions recorded through `pt ca sync`.",
         f"- Largest difference: {bp(worst)} bp. Tolerance: {bp(TOLERANCE)} bp.",
         f"- Refused periods: {len(refused)}.",
+        *(f"- {finding}" for finding in findings),
+        *(f"- FAILED: {failure}" for failure in failures),
         f"- **{'Pass' if passed else 'FAIL'}.**",
         "",
     ]
@@ -692,7 +978,10 @@ def main() -> int:
         "Flows portfolio: D", period_rows(cli, flows, through, "D"), BASES, chained
     )
 
-    text, passed = report(lines, through, actions)
+    estimated, failures, findings = rehearse_estimates(cli, args.work, through, raw)
+    lines += estimated
+
+    text, passed = report(lines, through, actions, failures, findings)
     print(text)
     if args.write:
         args.write.write_text(text, encoding="utf-8", newline="\n")
