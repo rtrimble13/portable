@@ -1,0 +1,257 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rtrimble13/portable/schemas/lot-candidates-1.0.json",
+  "title": "pt lot candidates",
+  "description": "Every open long lot in a taxable account, each sold alone, all of it, on the envelope's `as_of` (ADR 0047). Read-only, and nothing is proposed.\n\nThe disclaimer is required and non-empty, and so is `wash_sales.not_detected`, as in tax-2.0: a tax figure must not travel without what it does not cover. The rows are alternatives, not parts of one sale, so `is_additive` is always false and there are no totals. `rows` is the table; `candidates` holds each row's full detail in the same order. A figure that cannot be stated is null with a reason in `unstated`, never a zero: the schema holds a null proceeds or gain to a null tax and a non-empty `unstated`, and a long-term lot to zero days to long-term and no waiting figure.",
+  "allOf": [{ "$ref": "envelope-1.0.json" }],
+  "type": "object",
+  "required": ["disclaimer"],
+  "properties": {
+    "command": { "const": "lot candidates" },
+    "disclaimer": { "type": "string", "minLength": 1 },
+    "data": {
+      "type": "object",
+      "required": [
+        "rows", "columns", "staleness_tolerance_days", "sort", "losses_only",
+        "is_additive", "candidates", "not_listed", "wash_sales"
+      ],
+      "properties": {
+        "staleness_tolerance_days": { "type": "integer", "minimum": 0 },
+        "sort": { "enum": ["acquired", "tax-per-dollar", "days-to-long-term", "gain"] },
+        "losses_only": { "type": "boolean" },
+        "is_additive": { "const": false },
+        "candidates": { "type": "array", "items": { "$ref": "#/$defs/candidate" } },
+        "not_listed": {
+          "type": "object",
+          "required": ["averaged", "short_lots", "sheltered_lots"],
+          "additionalProperties": false,
+          "properties": {
+            "averaged": {
+              "description": "ADR 0047 §6: sold under average cost, so no lot can be designated.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["account", "symbol", "lots", "quantity", "reason"],
+                "additionalProperties": false,
+                "properties": {
+                  "account": { "type": "string" },
+                  "symbol": { "type": "string" },
+                  "lots": { "type": "integer", "minimum": 1 },
+                  "quantity": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+                  "reason": { "type": "string", "minLength": 1 }
+                }
+              }
+            },
+            "short_lots": { "type": "integer", "minimum": 0 },
+            "sheltered_lots": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "wash_sales": {
+          "type": "object",
+          "required": ["detected", "not_detected"],
+          "additionalProperties": false,
+          "properties": {
+            "detected": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+            "not_detected": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "decimal": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+    "nullableDecimal": {
+      "anyOf": [{ "$ref": "envelope-1.0.json#/$defs/decimal" }, { "type": "null" }]
+    },
+    "candidate": {
+      "type": "object",
+      "required": [
+        "lot_id", "lot_key", "designation", "account", "symbol", "instrument_type",
+        "open_date", "quantity", "basis", "basis_from", "is_approximate_basis",
+        "holding_period_start", "holding_period", "days_held", "long_term_from",
+        "days_to_long_term", "price", "proceeds", "gain", "wash", "allowed_gain", "tax",
+        "tax_per_dollar", "waiting_saves", "unstated", "notes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "lot_id": { "type": "integer" },
+        "lot_key": { "type": "string", "minLength": 1 },
+        "designation": {
+          "description": "What `pt sell --lots` takes to make this sale (ADR 0036).",
+          "type": "string",
+          "pattern": "^@[^:;]+:[0-9.]+$"
+        },
+        "account": { "type": "string" },
+        "symbol": { "type": "string" },
+        "instrument_type": { "type": "string" },
+        "open_date": { "$ref": "#/$defs/date" },
+        "quantity": { "$ref": "#/$defs/decimal" },
+        "basis": { "$ref": "#/$defs/decimal" },
+        "basis_from": {
+          "enum": ["derived", "reconstructed", "estimated", "unavailable", "custodian_asserted"]
+        },
+        "is_approximate_basis": { "type": "boolean" },
+        "holding_period_start": { "$ref": "#/$defs/date" },
+        "holding_period": { "enum": ["short", "long"] },
+        "days_held": { "type": "integer" },
+        "long_term_from": {
+          "description": "The day after the anniversary of the holding-period start: the first day a sale is long-term (ADR 0047 §3).",
+          "$ref": "#/$defs/date"
+        },
+        "days_to_long_term": { "type": "integer", "minimum": 0 },
+        "price": {
+          "description": "The newest price on or before the date, with its source and age, or null when there is none. A stale one is shown and not used (PORT-GIPS-A09).",
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": [
+                "price", "price_date", "source", "age_days", "status", "valuation_level",
+                "is_estimate"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "price": { "$ref": "#/$defs/decimal" },
+                "price_date": { "$ref": "#/$defs/date" },
+                "source": { "type": "string" },
+                "age_days": { "type": "integer", "minimum": 0 },
+                "status": { "enum": ["current", "stale"] },
+                "valuation_level": { "type": "integer", "minimum": 1, "maximum": 5 },
+                "is_estimate": { "type": "boolean" }
+              }
+            }
+          ]
+        },
+        "proceeds": { "$ref": "#/$defs/nullableDecimal" },
+        "gain": { "$ref": "#/$defs/nullableDecimal" },
+        "wash": {
+          "description": "ADR 0047 §5, for a loss: the replacements already made that `pt sell` would pair it with. Null for a gain, or when the gain is unknown.",
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": [
+                "replacements", "washed_quantity", "deferred", "permanently_disallowed",
+                "manual", "window_clears", "buying_washes_through"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "replacements": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["lot_key", "account", "acquired", "quantity", "disallowed", "status"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "lot_key": { "type": "string" },
+                      "account": { "type": "string" },
+                      "acquired": { "$ref": "#/$defs/date" },
+                      "quantity": { "$ref": "#/$defs/decimal" },
+                      "disallowed": { "$ref": "#/$defs/decimal" },
+                      "status": { "enum": ["deferred", "permanent", "manual"] }
+                    }
+                  }
+                },
+                "washed_quantity": { "$ref": "#/$defs/decimal" },
+                "deferred": { "$ref": "#/$defs/decimal" },
+                "permanently_disallowed": {
+                  "description": "Lost for good to a replacement in a sheltered account (Rev. Rul. 2008-5), shown apart from a deferral.",
+                  "$ref": "#/$defs/decimal"
+                },
+                "manual": {
+                  "description": "Disallowed by replacements since disposed of: reported for manual handling, not applied.",
+                  "$ref": "#/$defs/decimal"
+                },
+                "window_clears": { "anyOf": [{ "$ref": "#/$defs/date" }, { "type": "null" }] },
+                "buying_washes_through": { "$ref": "#/$defs/date" }
+              }
+            }
+          ]
+        },
+        "allowed_gain": { "$ref": "#/$defs/nullableDecimal" },
+        "tax": {
+          "description": "The estimate `pt tax` would make for this sale (ADR 0011), or null.",
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["is_estimate", "federal_rate", "state_rate", "niit_rate", "estimated_tax"],
+              "additionalProperties": false,
+              "properties": {
+                "is_estimate": { "const": true },
+                "federal_rate": { "$ref": "#/$defs/decimal" },
+                "state_rate": { "$ref": "#/$defs/decimal" },
+                "niit_rate": { "$ref": "#/$defs/decimal" },
+                "estimated_tax": { "$ref": "#/$defs/decimal" }
+              }
+            }
+          ]
+        },
+        "tax_per_dollar": { "$ref": "#/$defs/nullableDecimal" },
+        "waiting_saves": {
+          "description": "For a short-term lot: the estimate today less the estimate on its first long-term day, at today's price and before any wash. Positive means waiting saves tax.",
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "unstated": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["reason", "message", "code"],
+            "additionalProperties": false,
+            "properties": {
+              "reason": {
+                "enum": [
+                  "price_missing", "price_stale", "no_market_price", "basis_unavailable",
+                  "no_rate_schedule"
+                ]
+              },
+              "message": { "type": "string", "minLength": 1 },
+              "code": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "proceeds": { "type": "null" } } },
+          "then": { "properties": { "gain": { "type": "null" } } }
+        },
+        {
+          "if": { "properties": { "gain": { "type": "null" } } },
+          "then": {
+            "properties": {
+              "wash": { "type": "null" },
+              "allowed_gain": { "type": "null" },
+              "tax": { "type": "null" },
+              "tax_per_dollar": { "type": "null" },
+              "waiting_saves": { "type": "null" },
+              "unstated": { "minItems": 1 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "tax": { "type": "null" } } },
+          "then": {
+            "properties": {
+              "tax_per_dollar": { "type": "null" },
+              "waiting_saves": { "type": "null" },
+              "unstated": { "minItems": 1 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "holding_period": { "const": "long" } } },
+          "then": {
+            "properties": {
+              "days_to_long_term": { "const": 0 },
+              "waiting_saves": { "type": "null" }
+            }
+          },
+          "else": { "properties": { "days_to_long_term": { "minimum": 1 } } }
+        }
+      ]
+    }
+  }
+}

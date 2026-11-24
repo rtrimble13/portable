@@ -1,6 +1,6 @@
 # ADR 0047 — Lot-level sale candidates: each open lot priced, taxed and checked for a wash as if sold alone today, and nothing proposed
 
-- **Status:** Accepted (owner, 2026-11-24), with the recommended answer to each of its four questions. See Owner's answers
+- **Status:** Accepted (owner, 2026-11-24), with the recommended answer to each of its four questions. See Owner's answers. **Implemented**: `portable_core/services/sale_candidates.py`, `pt lot candidates`, `schemas/lot-candidates-1.0.json`. See As built
 - **Date:** 2026-11-24; accepted 2026-11-24
 - **Milestone:** v0.2, issue 62 (P1)
 - **Governs:** `PORT-GIPS-A09` (the price a lot is valued at); `CLAUDE.md` "Holding period", "Wash sales cross accounts", "Nothing here is tax advice", invariants 6, 9 and 10
@@ -234,6 +234,46 @@ with the reason. See question 2.
    a row per averaged holding.
 3. **The change from waiting until long-term:** included, at today's price.
 4. **The command's name:** `pt lot candidates`.
+
+## As built
+
+- **The equality test makes each sale for real, on a copy of the file.** A
+  dry run of `pt sell` shows the basis relieved, the gross amount and the
+  holding period, but no gain, tax or wash. So the test does two things:
+  - it compares those three with `pt --dry-run sell --lots @key:qty`;
+  - it makes the same sale on a copy of the file and compares the proceeds,
+    gain, holding period, estimated tax, disallowed loss and allowed gain
+    with the row `pt tax` then reports.
+
+  A dry run is that write, rolled back (ADR 0026), so this tests what the
+  obligation names, with the figures the dry run does not show. The cases
+  are a gain and a loss, short- and long-term, a wash in a taxable account
+  and in an IRA, two lots washed by the same shares, an already matched
+  replacement, and a reconstructed basis.
+- **Every null carries its reason in `unstated`**, as `{reason, message,
+  code}`. The code is the error's own where one was raised:
+  `PT-E-TAX-NO-RATE-SCHEDULE`.
+  - One reason is not named in §2: **`no_market_price`**. ADR 0028 values an
+    instrument nothing quotes at zero, at level 5. That zero is a valuation
+    convention, not a price a sale would raise, so it gives null proceeds.
+- **What waiting changes is taken before any wash sale** (§4), on both
+  days. Whether a sale on the later day is washed depends on purchases not
+  yet made. The footnote says so.
+- **"Whose sales have used average cost" is read across every account**
+  (§6). `LotEngine.check_method_consistency` refuses spec-ID for an
+  instrument averaged anywhere, so no lot of it can be designated in any
+  account.
+- **The option and bond statements are per row**, in `notes`, as well as
+  in the footnotes.
+- **The sort orders.** Unknown figures sort last, and ties go by
+  acquisition, then account, symbol and lot key.
+  - `tax-per-dollar` puts the most tax saved per dollar first.
+  - `gain` puts the largest loss first.
+  - `days-to-long-term` counts up from zero, so lots already long-term
+    come first.
+- **A footnote explains a `Long from` date earlier than the acquisition**:
+  a spinoff's shares inherit their parent's holding period, and a wash
+  sale's replacement absorbs the days of the shares sold.
 
 ## Consequences
 

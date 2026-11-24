@@ -16,6 +16,44 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`pt lot candidates`** (issue 62, ADR 0047): every open long lot in a
+  taxable account, each as if sold alone, all of it, on `--as-of`. It is
+  read-only and proposes nothing.
+  - **The sale path's own arithmetic, never stored.** Proceeds at the newest
+    price `ValuationEngine.price_status` allows under the configured
+    `staleness_tolerance_days`, valued by `Instrument.value_of`. The
+    disposition from `LotEngine` under specific identification, and the
+    estimate from `TaxEngine.estimate`. A test makes every kind of row's
+    sale for real, on a copy of the file, and holds the proceeds, gain,
+    holding period, estimated tax and disallowed loss to what `pt tax` then
+    reports.
+  - **The holding period** if sold that day, the first day it is long-term
+    (`long_term_from`, new in `domain/dates.py`, held to `is_long_term`), and
+    the days to it. For a short-term lot, what waiting until then changes, at
+    today's price and at the rate in force on each day.
+  - **The wash-sale check for a loss.** The replacements already bought, in
+    any account, are exactly those the matcher would pair the sale with: the
+    choice is now one public function, `wash_sales.plan_matches`, which both
+    call. Shares that already washed an earlier loss wash nothing more. A
+    replacement in a sheltered account is shown as losing the loss for good,
+    apart from a deferral. Each loss row gives the date the window clears,
+    and the date through which buying again would wash it.
+  - **Null with a reason, never a zero.** That covers no price, a stale one,
+    an instrument with no market price, a basis that cannot be derived
+    (ADR 0017), and an account with no rate schedule
+    (`PT-E-TAX-NO-RATE-SCHEDULE`). A reconstructed or custodian basis is
+    computed and marked approximate.
+  - **Not listed, but counted.** Short lots, lots in sheltered accounts, and
+    holdings sold under average cost, which are named with the reason.
+  - **No totals.** The rows are alternatives: two loss lots can each be
+    washed by the same recent shares. `is_additive` is `false`.
+  - **`--losses`**, and **`--sort`** by `acquired` (the default),
+    `tax-per-dollar`, `days-to-long-term` or `gain`. Each row carries its
+    `--lots @key:qty` designation.
+  - **The output.** JSON is `lot-candidates-1.0`, with the tax disclaimer and
+    `wash_sales.{detected, not_detected}` required, as in `tax-2.0`. The
+    schema holds an unknown gain to an unknown tax, and both to a stated
+    reason. Each bond row carries what is not computed for a bond.
 - **`pert mwr`** (issue 4, ADR 0046): the money-weighted return, beside the
   time-weighted return over the same days.
   - **One solve from the walk's flows.** At portfolio level the flows are

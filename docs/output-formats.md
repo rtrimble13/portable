@@ -79,6 +79,20 @@ footnote at the end of a formatted block can be lost by accident.
 Removing the statement of what wash-sale detection does not cover therefore
 breaks CI rather than a filing.
 
+`pt lot candidates` requires both too (`lot-candidates-1.0`, ADR 0047).
+Each row is one lot sold alone, so the rows are alternatives, and
+`is_additive` is fixed `false` for a consumer that would sum them.
+`data.rows` is the table. `data.candidates` holds each row's full detail in
+the same order:
+- the price with its date, source, age and status;
+- the wash check, with each replacement and whether it defers the loss,
+  loses it for good, or is left for manual handling;
+- the estimate and its rates;
+- `unstated`, the reason for every null.
+
+The schema enforces that a null gain has a null tax and a stated reason, and
+that a long-term lot has no days to long-term.
+
 `pert twr` requires a non-empty disclaimer in its schema too (`twr-2.0`,
 ADR 0040). Each of its four returns names its method, basis and period. Its
 `is_annualized` is fixed `false`, and `is_supplemental` is `true` for
