@@ -470,8 +470,10 @@ This is the right answer economically as well as formally: the MWR is the owner'
 **`PORT-GIPS-C04` — Convergence and failure · CORE (`portable`-specific)**
 
 **Source** — none. GIPS is silent on solver behaviour.
-**What `portable` must do** — This is a gap in the standard that `CLAUDE.md`'s "fail loudly on ambiguity" invariant fills. Newton with a bisection fallback, a documented bracket, an iteration cap, and — on non-convergence or multiple sign changes in the flow series — **refuse and explain**, exit non-zero. Never return a plausible root from a pathological flow pattern. Record the solver, iteration count, and residual on the result.
-**Test** — `test_xirr_refuses_pathological_flows`: a flow series with multiple IRRs exits with a specific error code and names the flows responsible.
+**What `portable` must do** — This is a gap in the standard that `CLAUDE.md`'s "fail loudly on ambiguity" invariant fills. Newton with a bisection fallback, a documented bracket, an iteration cap, and **refuse and explain**, exit non-zero, on non-convergence or when the rate found cannot be shown to be the only one. Never return a plausible root from a pathological flow pattern. Record the solver, iteration count, and residual on the result.
+
+*The only one* is decided by a proof, not by counting sign changes (ADR 0046 §3). Compound the flows forward at the rate found. If the balance is never negative before the end, and the first amount is money in, no other rate solves. Otherwise the return is refused, naming the flow after which the balance turns negative. **Amended 2026-11-24.** This requirement first refused on "multiple sign changes in the flow series". A sign change bounds the number of rates but does not count them. Every withdrawal followed by a later deposit adds two, so that rule refused nearly every real portfolio, and almost always wrongly.
+**Test** — `test_xirr_refuses_pathological_flows`: a flow series with two rates (−100, +230, −132 a year apart: 10% and 20%) exits with a specific error code and names the withdrawal responsible. Interleaved deposits and withdrawals whose rate is the only one are measured, not refused.
 
 ---
 

@@ -1,7 +1,7 @@
 # ADR 0046 — Money-weighted return: one solve from the walk's flows, shown beside the time-weighted return, and refused unless its rate is provably the only one
 
-- **Status:** Proposed
-- **Date:** 2026-11-24
+- **Status:** Accepted (owner, 2026-11-24), with the recommended answer to each of its five questions. See Owner's answers. `PORT-GIPS-C04` is amended to §3's test
+- **Date:** 2026-11-24; accepted 2026-11-24
 - **Milestone:** v0.2, issue 4 (P1)
 - **Governs:** `PORT-GIPS-C01`–`C05`, `B07`; `CLAUDE.md` "TWR vs. MWR", "Do not annualize sub-one-year returns", invariants 6 and 9
 - **Depends on:** [ADR 0007](0007-cash-flow-classification.md) (one level-aware classifier), [ADR 0015](0015-in-kind-transfers-and-opening-positions.md) (in-kind transfers at their recorded value), [ADR 0040](0040-time-weighted-return.md) (§3 flow timing, §8 bases), [ADR 0044](0044-estimated-returns-over-unpriced-days.md) (§3, an MWR on an estimated value), [ADR 0045](0045-multi-period-returns.md) (§1 the walk, §4 track records, §5 the year count)
@@ -277,6 +277,15 @@ series and refuses the two-rate one.
    the question once per window, and C02 asks only for the
    since-inception figure. A column would put a period MWR on every row,
    and C02 asks that those be kept from reading as *the* MWR.
+
+## Owner's answers (2026-11-24)
+
+1. **§§1–6:** accepted.
+2. **The uniqueness test:** (c), the balance at the solved rate, which
+   replaces `PORT-GIPS-C04`'s refusal on more than one sign change.
+3. **The year count:** by anniversary, as ADR 0045 §5 annualises the TWR.
+4. **The bases:** all four, by ADR 0040 §8's add-back.
+5. **`pert periods`:** no MWR column yet.
 
 ## Consequences
 

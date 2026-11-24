@@ -690,6 +690,16 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **`PORT-GIPS-C04` no longer refuses an MWR for more than one sign change
+  in its flows** (ADR 0046 §3). It refuses one whose rate cannot be shown to
+  be the only one: compounded at the rate found, the balance goes negative
+  before the end.
+  - **Why.** A sign change bounds the number of rates but does not count
+    them. Every withdrawal followed by a later deposit adds two, so the old
+    rule refused nearly every real portfolio.
+  - **The test** now names the two-rate series it refuses, and requires
+    interleaved flows with a single rate to be measured.
+
 - **`pert` measures a return only with prices at most five days old**, whatever
   `staleness_tolerance_days` a snapshot was built under (ADR 0044 §1).
   - **Before**, raising the tolerance made `pt value` build complete
