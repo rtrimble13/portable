@@ -139,6 +139,13 @@ Then:
 2. **Reconcile `pert twr` to the custodian's reported performance**, on the
    real portfolio (issue 58, P0). Positions, cash and realized gains tie to the
    custodian; returns do not yet, and everything below is built on them.
+   *Rehearsed* on samples of real securities priced from fafnir
+   ([docs/reconciliation-rehearsal.md](reconciliation-rehearsal.md)):
+   - 152 period returns matched references computed outside `portable` to
+     0.0004 bp, through splits, monthly income, a mutual fund, flows and a fee;
+   - a deliberately broken flow timing fails the rehearsal.
+
+   The real run still needs the owner's file and statements.
 3. **The sample must produce a return** (issue 59) — *done*. The generator
    prices every instrument at each month end, at every external flow and the
    day before it, and either side of each corporate action, writes those

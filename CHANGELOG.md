@@ -16,6 +16,22 @@ Two rules specific to this repository:
 
 ### Added
 
+- **A rehearsal of issue 58's reconciliation, on samples priced from fafnir**
+  (`scripts/rehearse_reconciliation.py`, `docs/reconciliation-rehearsal.md`).
+  - **What it builds.** Portfolios of real securities are built through `pt`.
+    Prices come through `portable`'s fafnir provider, and splits and dividends
+    through `pt ca sync`.
+  - **What it compares.** Every `pert periods` row is set beside a reference
+    computed from `duk` directly: fafnir's dividend-adjusted series, raw
+    prices and dividends, and a day-by-day computation for flows and a fee.
+  - **The result.** Through 2025-12-31, 152 period returns matched to 0.0004
+    bp. The inputs included NVDA's two splits, AGG's monthly income, a mutual
+    fund, dividends in cash and reinvested, a deposit, a sale, a withdrawal
+    and a custody fee. Counting inflows at the end of their day instead of
+    the start fails it.
+  - **Not in CI.** It needs `duk` and the warehouse, and writes no vendor
+    price to the repository.
+
 - **`pert periods`** (issue 5, ADR 0045): the time-weighted return over every
   period from one walk of the history.
   - **The rows.** Month, quarter and year to date; 1, 3, 5 and 10 years;
