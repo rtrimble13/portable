@@ -430,6 +430,7 @@ test that fails without your change.
   | 0044 | A return over unpriced days is estimated only on request, marked, and never linked into the track record |
   | 0045 | Multi-period returns: one walk, rows that stand alone, and a record that breaks where nothing was held |
   | 0046 | Money-weighted return: one solve from the walk's flows, beside the TWR, refused unless its rate is provably the only one |
+  | 0047 | Lot-level sale candidates: each open lot priced, taxed and checked for a wash as if sold alone today, and nothing proposed (proposed) |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager
