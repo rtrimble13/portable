@@ -322,6 +322,36 @@ series and refuses the three-rate one.
 
   About one series in forty is refused, so both outcomes are exercised
   (`tests/property/test_mwr_single_rate.py`).
+- **The bracket is computed from the flows, not fixed** (§2 as built). §2
+  scaled a fixed bracket to the window: a growth over it between e^−40 and
+  e^40. The property test found a deposits-only series it refused: a large
+  deposit two days before the end, then two falls of 40%. That money's rate
+  is annualised from two days, and no fixed range holds every such rate.
+  - **The bracket's top** is `(ln(S / first) + 1) / (t1 − t0)`, where *S*
+    is the gross of every amount after the first. Above it the first
+    amount, money in, outweighs them all however they are discounted.
+  - **The bracket's bottom** is `−(ln(S′ / |last|) + 1) / (tn − tn−1)`,
+    where *S′* is the gross of every amount before the last. Below it the
+    last amount, the value taken out, outweighs them all.
+  - **So a rate always lies between them**, for any series that begins with
+    money in and ends with money out, and a series that does neither is
+    refused before any solve.
+- **Newton is guarded against crawling.** Far down such a bracket the
+  present value is nearly exponential, and Newton's step there stays one
+  over the window's length wide. So a step is taken only if it is no more
+  than half the one before (Numerical Recipes' rtsafe), and the bracket is
+  halved otherwise.
+  - **Convergence is measured against the terms discounted at the rate**,
+    and the balance floor against what made the balance, so both hold at
+    any scale.
+  - **A sweep of 4,000 random series**, 1,000 of them deposits only, needed
+    at most 28 steps. Every deposits-only series was measured, and no
+    series refused for want of convergence.
+- **Rehearsed on fafnir's prices** (`docs/reconciliation-rehearsal.md`).
+  Every level's since-inception rate matches an IRR solved outside
+  `portable` to 0.0000 bp: four static levels with no flow after funding,
+  and portfolio D's four bases, with a deposit, a sale and withdrawal, and
+  a custody fee. Counting inflows from the end of their day fails all eight.
 - **"Since inception" is read off the beginning value.** A window starts
   where a track record does when the level held nothing at the end of the
   day before (ADR 0045 §4), so its beginning value is zero. The walk's

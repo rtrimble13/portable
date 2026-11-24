@@ -43,6 +43,17 @@ Its reference applies ADR 0040's flow timing independently: an inflow counts
 from the start of its day and an outflow from its end. The fee is added back
 at the bases that do not deduct it.
 
+**The money-weighted return (ADR 0046)** of every level is set beside a
+reference solved by plain bisection, with years counted by anniversary in
+the script's own code, so nothing of `portable`'s solver or year count is
+shared.
+- A, B and C have no flow after their funding at inception, so their
+  reference is their growth annualized.
+- D's is solved from its ledger, as ADR 0040 §3 and §8 time it. The deposit
+  counts from the start of its day and the withdrawal from its end. At the
+  bases that add the custody fee back, the fee is an outflow at the end of
+  its day.
+
 **Portfolio E rehearses the estimate tier (ADR 0044).** Its accounts are:
 - E1, which holds 49 SPY and 370 AGG and takes dividends in cash;
 - E2, which holds 215 VFIAX and 30 NVDA and reinvests.
@@ -108,6 +119,36 @@ the start, a single-line change to `returns.dietz`, fails the rehearsal:
 - ten periods are refused, because the funding day's return becomes
   undefined, as ADR 0040 §3 predicts;
 - A, B and C are untouched, having no flows.
+
+### The money-weighted return (2026-11-24)
+
+**It passed.** Every level's since-inception `pert mwr` matched its
+reference to 0.0000 bp, D's at all four bases.
+
+| Level | Money-weighted, annualized | Time-weighted, cumulative over ten years |
+|:---|---:|---:|
+| Static portfolio | 42.7818% | 3424.9391% |
+| A | 14.7113% | 294.6604% |
+| B | 54.5511% | 7684.6617% |
+| C | 13.7661% | 263.3148% |
+| D, net-of-fees | 16.9295% | 297.2830% |
+| D, gross-of-fees | 16.9341% | 297.4863% |
+
+- **A, B and C** are their growth annualized, since nothing moved after
+  their funding. The portfolio's rate is not an average of theirs: B's
+  growth dominates the combined value, as `PORT-GIPS-C05` expects.
+- **D's money-weighted rate is above its time-weighted.** A's time-weighted
+  return, the same holding with no flows, is 14.7% a year. D's 16.9% is the
+  2020 deposit, invested at the close of 2020-03-23 near the low, earning
+  more than the money that was already in.
+- **Each rate was proven the only one** by ADR 0046 §3's test.
+
+**The comparison bites.** Counting inflows from the end of their day in the
+money-weighted solve alone fails every money-weighted line.
+- D's rate moves 0.65 bp at every basis.
+- The static levels move 0.40 to 1.84 bp, because their inception deposit,
+  a day late, shortens the period by a day.
+- The time-weighted lines are untouched.
 
 ### The estimate tier, on portfolio E (2026-11-24)
 
