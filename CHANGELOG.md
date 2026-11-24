@@ -16,6 +16,29 @@ Two rules specific to this repository:
 
 ### Added
 
+- **`pert mwr`** (issue 4, ADR 0046): the money-weighted return, beside the
+  time-weighted return over the same days.
+  - **One solve from the walk's flows.** At portfolio level the flows are
+    every account's together, with transfers between them netted out
+    (`PORT-GIPS-C05`). Inflows count from the start of their day and
+    outflows from its end, years are counted by anniversary, and each of
+    the four bases undoes its fees as outflows.
+  - **Never alone** (`PORT-GIPS-C01`). A period the time-weighted return
+    refuses is refused, with its error.
+  - **Annualized only from a year** (`PORT-GIPS-B07`, `C03`). A period that
+    does not start a track record is labelled a period MWR.
+  - **Only a rate that is provably the only one** (`PORT-GIPS-C04` as
+    amended). It is solved for ln(1 + R) by Newton guarded by bisection,
+    with the bracket, the steps and the residual recorded. A rate is
+    returned only if, compounded at it, the balance never goes negative
+    before the end. Otherwise it is refused, naming the withdrawal
+    (`PT-E-MWR-NOT-UNIQUE`). Interleaved deposits and withdrawals, which the
+    old sign-change rule would have refused, are measured.
+  - **Under `--estimate`** it is marked only when its beginning or ending
+    value was carried.
+  - **The output.** JSON is `mwr-1.0`. The schema ties the annualized and
+    estimated marks to the period and requires the time-weighted return.
+
 - **`pert twr --estimate MAX_SHARE` and `pert periods --estimate MAX_SHARE`**
   (issue 60, ADR 0044): a return over days that cannot be priced, as an
   estimate, marked so.

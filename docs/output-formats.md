@@ -150,6 +150,29 @@ net-of-fees by default. Each row's detail stays in JSON, and footnotes give
 what a reader needs: why each null or partial row is so, any break, and any
 holding valued at zero.
 
+`pert mwr` (`mwr-1.0`, ADR 0046) carries the money-weighted return, with the
+time-weighted return over the same days beside it.
+
+- **Never alone.** `data.twr` is required. A period the time-weighted return
+  refuses is refused, with the same error (`PORT-GIPS-C01`).
+- **Annualized from a year, by anniversary.** `period.is_annualized` fixes
+  every money-weighted value's `is_annualized`. Under a year the figure is
+  cumulative and `twr.annualized` holds only nulls (`PORT-GIPS-B07`, `C03`).
+  The schema enforces both.
+- **Since inception, or a period.** `period.is_since_inception` is true when
+  the period starts where a track record does. Anything else is a period MWR,
+  and says so.
+- **The solve and the proof.** Each basis records its `solve`: the steps,
+  the bracket and the residual. It also records `only_rate`: compounded at
+  the rate, the lowest balance before the end and its day. A rate that
+  cannot be shown to be the only one is refused with `PT-E-MWR-NOT-UNIQUE`,
+  and a period with no rate in the bracket with `PT-E-MWR-NO-CONVERGENCE`
+  (`PORT-GIPS-C04`).
+- **Estimates.** `is_estimated` marks the money-weighted return when its
+  beginning or ending value was carried, and nothing else does. The
+  time-weighted return is marked on its own, and `twr.estimate` is
+  `twr-2.0`'s estimate object.
+
 ### Errors are JSON too
 
 Under `--format json` a failure writes a well-formed envelope to **stdout** and

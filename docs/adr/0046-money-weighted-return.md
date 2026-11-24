@@ -1,6 +1,6 @@
 # ADR 0046 — Money-weighted return: one solve from the walk's flows, shown beside the time-weighted return, and refused unless its rate is provably the only one
 
-- **Status:** Accepted (owner, 2026-11-24), with the recommended answer to each of its five questions. See Owner's answers. `PORT-GIPS-C04` is amended to §3's test
+- **Status:** Accepted (owner, 2026-11-24), with the recommended answer to each of its five questions. See Owner's answers. `PORT-GIPS-C04` is amended to §3's test. **Implemented**: `portable_core/services/money_weighted.py`, `pert mwr`, `schemas/mwr-1.0.json`. See As built, which corrects two of the ADR's own examples
 - **Date:** 2026-11-24; accepted 2026-11-24
 - **Milestone:** v0.2, issue 4 (P1)
 - **Governs:** `PORT-GIPS-C01`–`C05`, `B07`; `CLAUDE.md` "TWR vs. MWR", "Do not annualize sub-one-year returns", invariants 6 and 9
