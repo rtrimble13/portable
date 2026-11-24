@@ -180,7 +180,11 @@ Then:
    daily external cash flows, Newton with a bisection fallback, and an explicit
    refusal on pathological flow patterns rather than a plausible root.
    Portfolio-level MWR is solved from **aggregated** flows, never
-   asset-weighted from per-account solves. `PORT-GIPS-C01`–`C05`.
+   asset-weighted from per-account solves. `PORT-GIPS-C01`–`C05`. *Proposed*
+   in [ADR 0046](adr/0046-money-weighted-return.md). It replaces
+   `PORT-GIPS-C04`'s refusal on more than one sign change with a proof that
+   the rate found is the only one, since the sign-change rule would refuse
+   nearly every real portfolio.
 8. **Policy allocation and drift** (issue 61) — an asset class on every
    instrument, an effective-dated target, and target against actual with
    bands. Proposes no trades.

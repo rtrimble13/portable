@@ -429,6 +429,7 @@ test that fails without your change.
   | 0043 | The pure-Python CI job skips the integration tests while nothing computes natively |
   | 0044 | A return over unpriced days is estimated only on request, marked, and never linked into the track record |
   | 0045 | Multi-period returns: one walk, rows that stand alone, and a record that breaks where nothing was held |
+  | 0046 | Money-weighted return: one solve from the walk's flows, beside the TWR, refused unless its rate is provably the only one (proposed) |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager
