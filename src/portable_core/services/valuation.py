@@ -165,9 +165,11 @@ class ValuationEngine:
                 f"{self.staleness_tolerance_days}-day tolerance",
                 code=E_PRICE_STALE,
                 remedy=(
-                    "Refresh prices, raise --staleness-tolerance if the gap is "
-                    "genuine (a holiday, a halted security), or price it by hand. "
-                    "portable will not carry a stale price forward silently."
+                    "Refresh prices, or price it by hand. A genuine gap (a halted "
+                    "security) can be allowed by raising staleness_tolerance_days in "
+                    "configuration, but `pert` still measures a return only with "
+                    "prices at most five days old (ADR 0044). portable will not carry "
+                    "a stale price forward silently."
                 ),
                 symbol=symbol,
                 price_date=price.price_date.isoformat(),

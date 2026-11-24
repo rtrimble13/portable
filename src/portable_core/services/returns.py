@@ -56,6 +56,7 @@ from portable_core.errors.kinds import (
     E_FEE_EMBEDDED_IN_CASH,
     E_GIPS_NO_FLOW_POLICY,
     E_GIPS_VALUATION_GAP,
+    E_PRICE_STALE,
     E_RETURN_BLOCKED,
     E_RETURN_BREAK,
     E_RETURN_NOTHING_HELD,
@@ -95,6 +96,13 @@ RETURN_CONTEXT: Final[decimal.Context] = decimal.Context(
 _ONE: Final = Decimal(1)
 _ZERO: Final = Decimal(0)
 _DAY: Final = timedelta(days=1)
+
+#: ADR 0044 §1. The oldest a snapshot's price may be for `pert` to measure the
+#: day with it, whatever `staleness_tolerance_days` the snapshot was built
+#: under: a weekend and a holiday or two. An older price is a carried price,
+#: not PORT-GIPS-A09's best approximation, and only an estimate values a day
+#: with one. Fixed here so that one file gives one answer on every machine.
+PERT_STALENESS_DAYS: Final = 5
 
 #: What each basis undoes (PORT-GIPS-D01, ADR 0040 §8). Transaction costs and
 #: embedded fund fees are deducted at every basis and undone by none.
@@ -230,6 +238,15 @@ class _Day:
     #: Every snapshot the day needs is stored and still holds (ADR 0024). A
     #: day that is not may read as holding nothing when it did not.
     reliable: bool = True
+    #: Every snapshot the day needs is stored and complete.
+    complete: bool = True
+    #: The age of the oldest price the day's snapshots recorded.
+    oldest_price_days: int = 0
+
+    @property
+    def carried_only(self) -> bool:
+        """Unusable only because a recorded price is older than `pert` measures with."""
+        return self.complete and self.oldest_price_days > PERT_STALENESS_DAYS
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,6 +319,8 @@ class Walk:
     fee_refusals: dict[int, GipsRefusalError]
     days: tuple[_Day, ...]
     pieces: tuple[_Piece, ...]
+    #: The configured `staleness_tolerance_days`, named in a refusal it explains.
+    configured_staleness: int
 
 
 def time_weighted_return(
@@ -321,6 +340,11 @@ def time_weighted_return(
     A walk over the period alone, and its one window (ADR 0045 §1). The
     checks that need no walk are made first, so a refusal that needs none
     costs none.
+
+    *staleness_days* is the configured `staleness_tolerance_days`. `pert`
+    measures only with prices at most :data:`PERT_STALENESS_DAYS` old,
+    whatever it says, and names it in a refusal caused by the difference
+    (ADR 0044 §1).
     """
     accounts = [account] if account is not None else repos.accounts.all()
     _, first_day, _ = _open(repos, _begun(repos, accounts, end), start, end)
@@ -343,6 +367,8 @@ def walk(
     *first* is the earliest day any window of the walk will start on, and
     inception when omitted. A start before inception moves to inception, as
     a window's does. Every window must lie inside the walk (:func:`window`).
+    *staleness_days* is the configured tolerance, as for
+    :func:`time_weighted_return`.
     """
     level = FlowLevel.ACCOUNT if account is not None else FlowLevel.PORTFOLIO
     accounts = [account] if account is not None else repos.accounts.all()
@@ -377,12 +403,14 @@ def walk(
         stored=stored,
         problems=problems,
         blocked=price_acceptance.blocked_from(
-            price_acceptance.check_recorded(repos, staleness_days=staleness_days)
+            # ADR 0044 §1: the tie check in `pert` reads the same fixed age.
+            price_acceptance.check_recorded(repos, staleness_days=PERT_STALENESS_DAYS)
         ),
         rows=rows,
         fee_refusals=fee_refusals,
         days=days,
-        pieces=_pieces(repos, days),
+        pieces=_pieces(repos, days, staleness_days),
+        configured_staleness=staleness_days,
     )
 
 
@@ -676,23 +704,28 @@ def _days(
         )
         with decimal.localcontext(RETURN_CONTEXT):
             value = sum((snapshot.ending_market_value for snapshot in present), _ZERO)
+        # A day missing a snapshot is unusable. A window holding it is refused
+        # for the snapshot before it reads any day.
+        complete = len(present) == len(held) and all(s.is_complete for s in present)
+        oldest = max((p.staleness_days for s in present for p in s.prices), default=0)
         series.append(
             _Day(
                 on=day,
                 value=value,
-                # A day missing a snapshot is unusable. A window holding it is
-                # refused for the snapshot before it reads any day.
-                usable=len(present) == len(held)
-                and all(snapshot.is_complete for snapshot in present),
+                usable=complete and oldest <= PERT_STALENESS_DAYS,
                 flows=flows,
                 undone=fees_on.get(day, dict.fromkeys(BASES, _ZERO)),
                 reliable=len(present) == len(held) and day not in stale,
+                complete=complete,
+                oldest_price_days=oldest,
             )
         )
     return tuple(series), refused
 
 
-def _pieces(repos: Repositories, days: Sequence[_Day]) -> tuple[_Piece, ...]:
+def _pieces(
+    repos: Repositories, days: Sequence[_Day], configured_staleness: int
+) -> tuple[_Piece, ...]:
     """Cut the series at every usable day and compute each piece. ADR 0040 §3 to §6.
 
     A piece that cannot be computed keeps its refusal rather than raising it:
@@ -714,6 +747,9 @@ def _pieces(repos: Repositories, days: Sequence[_Day]) -> tuple[_Piece, ...]:
         try:
             subperiod = _subperiod(repos, begin, day, between)
         except (PortableError, AssertionError) as refusal:
+            carried = [d for d in between if not d.usable and d.carried_only]
+            if carried and isinstance(refusal, GipsRefusalError):
+                refusal = _carried_in_gap(refusal, carried, configured_staleness)
             piece = _Piece(begin.on, day.on, None, refusal, uncertain)
         else:
             piece = _Piece(begin.on, day.on, subperiod, None, uncertain)
@@ -745,10 +781,15 @@ def _linked(walked: Walk, anchor: date, end: date) -> _Linked:
     """
     first_day = walked.days[(anchor - walked.anchor).days]
     last_day = walked.days[(end - walked.anchor).days]
-    if not first_day.usable:
-        raise _gap(first_day.on, first_day.on, "the day before the period cannot be valued")
-    if not last_day.usable:
-        raise _gap(last_day.on, last_day.on, "the period's last day cannot be valued")
+    for day, which in (
+        (first_day, "the day before the period"),
+        (last_day, "the period's last day"),
+    ):
+        if day.usable:
+            continue
+        if day.carried_only:
+            raise _carried(day, which, walked.configured_staleness)
+        raise _gap(day.on, day.on, f"{which} cannot be valued")
 
     pieces = [p for p in walked.pieces if anchor <= p.after and p.through <= end]
     held = [index for index, piece in enumerate(pieces) if not piece.held_nothing]
@@ -878,6 +919,47 @@ def _subperiod(
         ending_value=end.value,
         flows=tuple(flows),
         returns=tuple(returns),
+    )
+
+
+def _carried(day: _Day, which: str, configured: int) -> DataUnavailableError:
+    """A day `pert` cannot measure only because a price is older than five days.
+
+    ADR 0044 §1. `pt holdings` calls the same snapshot complete, under the
+    configured tolerance, so the refusal says why `pert` does not.
+    """
+    return DataUnavailableError(
+        f"{which}, {day.on.isoformat()}, is valued with a price {day.oldest_price_days} "
+        f"days old. `pert` measures a day only with prices at most "
+        f"{PERT_STALENESS_DAYS} days old, whatever staleness_tolerance_days "
+        f"({configured} here) allowed `pt value`",
+        code=E_PRICE_STALE,
+        remedy=(
+            "A price carried that long is not the best approximation of fair value "
+            "(PORT-GIPS-A09). Load a newer one with `pt price load`, or record a "
+            "judged estimate with `pt price set --estimate`, then `pt value` again."
+        ),
+        day=day.on.isoformat(),
+        price_age_days=day.oldest_price_days,
+        pert_staleness_days=PERT_STALENESS_DAYS,
+        staleness_tolerance_days=configured,
+    )
+
+
+def _carried_in_gap(
+    refusal: GipsRefusalError, carried: Sequence[_Day], configured: int
+) -> GipsRefusalError:
+    """A gap refusal, saying which of its days only `pert`'s five days made unusable."""
+    days = ", ".join(day.on.isoformat() for day in carried)
+    return GipsRefusalError(
+        f"{refusal.message}. Of its days, {days} "
+        f"{'is' if len(carried) == 1 else 'are'} unusable only because a price is more "
+        f"than {PERT_STALENESS_DAYS} days old, which staleness_tolerance_days "
+        f"({configured} here) allowed `pt value` but `pert` does not",
+        requirement=str(refusal.context.get("requirement", "PORT-GIPS-A03")),
+        code=refusal.code,
+        remedy=refusal.remedy,
+        **{k: v for k, v in refusal.context.items() if k != "requirement"},
     )
 
 

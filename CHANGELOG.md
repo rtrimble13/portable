@@ -652,6 +652,18 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **`pert` measures a return only with prices at most five days old**, whatever
+  `staleness_tolerance_days` a snapshot was built under (ADR 0044 §1).
+  - **Before**, raising the tolerance made `pt value` build complete
+    snapshots on months-old prices, and `pert` measured returns on them,
+    unmarked. One `.port` file also gave different returns on machines
+    configured differently.
+  - **Now** such a day is refused with `PT-E-PRICE-STALE`, naming the
+    price's age, the five days and the configured tolerance.
+  - **The statement-line check** ADR 0031 makes in `pert` uses five days too.
+  - **Unchanged for most files.** A file valued at the default tolerance,
+    five, cannot hold such a price, so nothing changes for it. `pt value`
+    and `pt holdings` keep reading the configuration.
 - **JSON and CSV refuse an annualized return under a year, as `table` and
   `markdown` always did** (`PORT-GIPS-B07`). They render a `ReturnValue`
   without going through `render_return`, so they skipped its guard. Nothing
@@ -988,6 +1000,9 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **`PT-E-PRICE-STALE` and `docs/market-data.md` named a `--staleness-tolerance`
+  flag that does not exist.** Both now name `staleness_tolerance_days` in
+  configuration, and say that `pert` measures with five days whatever it is.
 - **`pert twr --format csv` wrote Python dict reprs in its return cells.**
   `{'value': '0.0151...', 'method': 'twr', ...}` is not even JSON, and a
   spreadsheet could do nothing with it. A return in CSV is now its value at
