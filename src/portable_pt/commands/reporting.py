@@ -31,6 +31,7 @@ from portable_core.services.reconciliation import (
 )
 from portable_core.services.replay import effective_ledger, state_on
 from portable_core.services.tax import TaxEngine, TaxSummary
+from portable_core.services.valuation import PriceStatus, ValuationEngine
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, money_arg, price_line_row, resolve_date
 
@@ -56,6 +57,11 @@ def holdings(
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
         accounts = [repos.accounts.resolve(account)] if account else repos.accounts.all()
+        # The staleness rule `pt value` applies (PORT-GIPS-A09): a price older
+        # than the tolerance values nothing, and is not carried forward.
+        tolerance = int(ctx.config.get("staleness_tolerance_days", 5))
+        engine = ValuationEngine(staleness_tolerance_days=tolerance)
+        stale: list[dict[str, object]] = []
 
         def read() -> tuple[list[dict[str, object]], list[str], Decimal]:
             # Positions, lots and cash as they stood at the end of --as-of,
@@ -78,6 +84,7 @@ def holdings(
                             price = repos.prices.newest_on_or_before(
                                 instrument.instrument_id, ctx.as_of
                             )
+                            status = engine.price_status(price, ctx.as_of)
                             lots = repos.lots.by_leg(leg.leg_id)
                             # ADR 0038. A short leg is valued negatively, and
                             # its lots hold what the short sale received, which
@@ -90,7 +97,7 @@ def holdings(
                                 quantize_money(
                                     instrument.value_of(leg.signed_quantity, price.price)
                                 )
-                                if price
+                                if price is not None and status is PriceStatus.CURRENT
                                 else None
                             )
                             if price is None:
@@ -99,6 +106,21 @@ def holdings(
                                     f"{ctx.as_of.isoformat()}; market value shown as null, "
                                     "not as zero."
                                 )
+                            elif status is PriceStatus.STALE:
+                                age = (ctx.as_of - price.price_date).days
+                                warnings.append(
+                                    f"{instrument.symbol}: the newest price is {age} days "
+                                    f"old ({price.price_date.isoformat()}), beyond the "
+                                    f"{tolerance}-day staleness tolerance; market value "
+                                    "shown as null, not carried forward."
+                                )
+                                entry = {
+                                    "symbol": instrument.symbol,
+                                    "price_date": price.price_date.isoformat(),
+                                    "days_old": age,
+                                }
+                                if entry not in stale:
+                                    stale.append(entry)
                             else:
                                 total += value or ZERO
                             rows.append(
@@ -170,10 +192,19 @@ def holdings(
                 footnotes=(
                     "Cash is included: it is always in the return unless an account "
                     "is explicitly designated operating cash (PORT-GIPS-A07).",
-                    "A missing price renders as null, never as zero.",
+                    "A missing price renders as null, never as zero. So does one "
+                    f"older than the {tolerance}-day staleness tolerance: it is not "
+                    "carried forward.",
                 ),
             ),
-            data={"total_market_value": quantize_money(total), "grouped_by": by},
+            data={
+                "total_market_value": quantize_money(total),
+                "grouped_by": by,
+                # Held, and left out of the total: priced only longer ago than
+                # the tolerance. A missing price is named in the warnings.
+                "stale_instruments": sorted(stale, key=lambda e: str(e["symbol"])),
+                "staleness_tolerance_days": tolerance,
+            },
             warnings=tuple(warnings),
             as_of=ctx.as_of,
             portfolio=ctx.portfolio_name(),
@@ -203,6 +234,9 @@ def _holdings_columns(by: str) -> tuple[Column, ...]:
             Column("role", "Role"),
             Column("quantity", "Qty", ColumnKind.QUANTITY),
             Column("price", "Price", ColumnKind.PRICE),
+            # How old the price is: one beyond the staleness tolerance values
+            # nothing, and its market value is null (PORT-GIPS-A09).
+            Column("price_date", "Priced", ColumnKind.DATE),
             *money,
         )
     headers = {
@@ -306,6 +340,9 @@ class _PnlFigures:
     unrealized: Decimal
     estimated_tax: Decimal
     unpriced: list[str]
+    #: Held, with a price older than the staleness tolerance, so excluded from
+    #: unrealized as an unpriced holding is: (symbol, price date, days old).
+    stale: list[tuple[str, date, int]]
     #: Dispositions excluded from every total for want of a derivable basis
     #: (ADR 0017 §2b).
     unreportable: int
@@ -330,6 +367,11 @@ def pnl(
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
         account_id = repos.accounts.resolve(account).account_id if account else None
+        # The staleness rule `pt value` applies (PORT-GIPS-A09): a price older
+        # than the tolerance is not a value, and carrying it forward is a
+        # plausible, wrong unrealized figure.
+        tolerance = int(ctx.config.get("staleness_tolerance_days", 5))
+        engine = ValuationEngine(staleness_tolerance_days=tolerance)
 
         def read() -> _PnlFigures:
             # Realized through --as-of and unrealized on it, from the state at
@@ -384,6 +426,7 @@ def pnl(
 
                 unrealized = ZERO
                 unpriced: list[str] = []
+                stale: list[tuple[str, date, int]] = []
                 accounts = (
                     [repos.accounts.resolve(account)] if account else repos.accounts.all()
                 )
@@ -398,8 +441,13 @@ def pnl(
                             price = repos.prices.newest_on_or_before(
                                 instrument.instrument_id, ctx.as_of
                             )
-                            if price is None:
+                            status = engine.price_status(price, ctx.as_of)
+                            if price is None or status is PriceStatus.MISSING:
                                 unpriced.append(instrument.symbol)
+                                continue
+                            if status is PriceStatus.STALE:
+                                age = (ctx.as_of - price.price_date).days
+                                stale.append((instrument.symbol, price.price_date, age))
                                 continue
                             lots = repos.lots.by_leg(leg.leg_id)
                             basis = sum((lot.adjusted_cost_basis for lot in lots), ZERO)
@@ -415,6 +463,7 @@ def pnl(
                 unrealized=unrealized,
                 estimated_tax=estimated_tax,
                 unpriced=unpriced,
+                stale=stale,
                 unreportable=len(unreportable_pnl),
                 approximate_basis=approximate_basis,
             )
@@ -458,7 +507,14 @@ def pnl(
                     if net_of_tax
                     else None
                 ),
+                # Held, and excluded from unrealized: no price at all, or only
+                # one older than the staleness tolerance. Neither is a zero.
                 "unpriced_instruments": sorted(set(figures.unpriced)),
+                "stale_instruments": [
+                    {"symbol": symbol, "price_date": on.isoformat(), "days_old": age}
+                    for symbol, on, age in sorted(set(figures.stale))
+                ],
+                "staleness_tolerance_days": tolerance,
                 # ADR 0017 §3, carried as envelope fields for the same reason
                 # `pt tax` carries them: a consumer must not be able to take the
                 # totals without the qualification attached.
@@ -474,6 +530,12 @@ def pnl(
                     )
                     if figures.unpriced
                     else ()
+                ),
+                *(
+                    f"{symbol}: the newest price is {age} days old ({on.isoformat()}), "
+                    f"beyond the {tolerance}-day staleness tolerance; unrealized P&L "
+                    "excludes it rather than carrying a stale price forward."
+                    for symbol, on, age in sorted(set(figures.stale))
                 ),
                 *(
                     (

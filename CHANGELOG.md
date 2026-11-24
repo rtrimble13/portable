@@ -1079,6 +1079,28 @@ Two rules specific to this repository:
 
 ### Fixed
 
+- **`pt pnl` valued unrealized P&L at a price however old.** It took the newest
+  cached price on or before `--as-of` with no age check. A holding priced once,
+  months earlier, added its gain at that price to the unrealized total, a
+  plausible figure that nothing current supports, with no warning.
+  - **Now** a price older than `staleness_tolerance_days` is treated as no
+    price, the rule `pt value` applies (`PORT-GIPS-A09`). The holding is left
+    out of `unrealized` and named in a warning with the price's date and age.
+  - **In JSON**, it is listed under `stale_instruments` (symbol, price date,
+    days old) beside `unpriced_instruments`, with the
+    `staleness_tolerance_days` applied.
+  - **The rule is stated once**, as `ValuationEngine.price_status`, which
+    `price_holding` enforces and `pt pnl` now reads.
+- **`pt holdings` valued a holding at a price however old, too.** It showed
+  each row's price but no date. A stale price's market value went into the
+  total and the weights.
+  - **Now** such a row shows the price and, in a new **Priced** column, its
+    date, with a null market value, unrealized gain and weight. It is left
+    out of the total, as a missing price always was, and named in a warning.
+  - **In JSON**, `stale_instruments` and `staleness_tolerance_days` sit beside
+    `total_market_value`, and each row carries `price_date`. `holdings-1.0`
+    allows both, so the schema is unchanged.
+
 - **`PT-E-PRICE-STALE` and `docs/market-data.md` named a `--staleness-tolerance`
   flag that does not exist.** Both now name `staleness_tolerance_days` in
   configuration, and say that `pert` measures with five days whatever it is.
