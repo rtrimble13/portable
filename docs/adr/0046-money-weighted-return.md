@@ -256,8 +256,8 @@ series and refuses the three-rate one.
 - **The same file and command give the same bytes** (invariant 6), and the
   solve is recorded.
 - **A property test** generates flow series from a positive account path.
-  For each, the rate found zeroes the present value and passes §3, and
-  no series returns a rate that fails §3.
+  Each gets a rate that zeroes the present value and passes §3, or a
+  refusal, and none gets a rate that fails §3 (as built, below).
 - **The rehearsal.** Portfolio D's reference adds an MWR solved from its own
   ledger, by bisection alone, and is compared with `pert mwr`
   (`docs/reconciliation-rehearsal.md`).
@@ -310,6 +310,23 @@ series and refuses the three-rate one.
     the two-rate series is §2's example.
   - **The decision is unchanged**, and so are the owner's answers.
   - **`PORT-GIPS-C04`'s test names both series.**
+- **The property test was mis-stated too.** The obligation said every series
+  from a positive account path passes §3. It does not. Big early gains
+  withdrawn before later losses can leave the balance at the overall rate
+  negative, and refusing that is §3 working. As built, the property is:
+  - every generated series gets a rate that zeroes the present value with
+    no negative balance, or a refusal, and never a rate that fails §3;
+  - a series of deposits alone is always measured;
+  - a measured rate is the only change of sign of the present value across
+    the bracket, on a grid.
+
+  About one series in forty is refused, so both outcomes are exercised
+  (`tests/property/test_mwr_single_rate.py`).
+- **"Since inception" is read off the beginning value.** A window starts
+  where a track record does when the level held nothing at the end of the
+  day before (ADR 0045 §4), so its beginning value is zero. The walk's
+  records cannot say this: a walk that starts at the window sees a record
+  begin there.
 
 ## Consequences
 

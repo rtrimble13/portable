@@ -143,9 +143,10 @@ def window(
         flow_total = sum((flow.amount for flow in flows), _ZERO)
     return MoneyWeightedReturn(
         twr=twr,
-        since_inception=any(
-            record.inception == twr.start for record in returns.track_records(walked)
-        ),
+        # A track record begins where the day before held nothing (ADR 0045
+        # §4). Read off the walk's records instead, a walk that starts at the
+        # window would see one begin there.
+        since_inception=beginning == 0,
         is_annualized=at_least_a_year(anchor, last),
         whole_years=length.whole,
         part_days=length.days,
@@ -360,7 +361,7 @@ def _not_unique(
     return ValidationError(
         f"the money-weighted rate {rate:.6f} for {scope} from {anchor.isoformat()} to "
         f"{last.isoformat()} cannot be shown to be the only one: compounded at it, the "
-        f"balance {why} on {moment.on.isoformat()}, at {balance:.2f}",
+        f"balance {why} at the end of {moment.on.isoformat()}, at {balance:.2f}",
         code=E_MWR_NOT_UNIQUE,
         remedy=(
             "A withdrawal took out more than the money had grown to at the rate, so "

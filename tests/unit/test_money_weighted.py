@@ -23,7 +23,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.gips]
 
 
 def _series(anchor: date, *amounts: tuple[date, str]) -> list[Moment]:
-    out = []
+    out: list[Moment] = []
     for on, amount in amounts:
         length = years(anchor, on)
         with decimal.localcontext(RETURN_CONTEXT):
