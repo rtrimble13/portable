@@ -32,6 +32,7 @@ acquisition. Each replacement share washes at most one sold share.
 from __future__ import annotations
 
 import enum
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import Decimal
@@ -63,10 +64,15 @@ __all__ = [
     "Candidate",
     "CandidateReason",
     "Notice",
+    "PlannedMatch",
     "WashSaleMatcher",
     "absorbed_start",
     "candidates",
     "custodian_overlaps",
+    "disallowed_part",
+    "identical_to",
+    "plan_matches",
+    "replaces",
     "split_key",
 ]
 
@@ -131,6 +137,108 @@ def absorbed_start(
     return min(replacement_start, sold_start)
 
 
+def identical_to(repos: Repositories, instrument_id: int) -> set[int]:
+    """The instrument, and those declared substantially identical to it (decision 8)."""
+    return {instrument_id, *repos.equivalences.equivalents_of(instrument_id)}
+
+
+def replaces(repos: Repositories, lot: Lot, sold: Lot) -> bool:
+    """Whether *lot* is matched automatically against a loss on *sold* (decisions 2, 7)."""
+    if lot.is_short or "~" in lot.lot_key:
+        return False
+    if lot.basis_source is not BasisSource.DERIVED:
+        return False
+    if lot.open_txn_id == sold.open_txn_id:
+        return False  # one purchase: the shares sold and the shares kept
+    opening = repos.transactions.get(lot.open_txn_id)
+    return opening is not None and opening.txn_type in REPLACEMENT_TYPES
+
+
+@dataclass(frozen=True, slots=True)
+class PlannedMatch:
+    """Replacement shares a loss would be matched with, before anything is written."""
+
+    lot: Lot
+    quantity: Decimal
+    #: Shares of *lot* disposed of before the sale: reported for manual
+    #: handling, never applied (answer 1). Otherwise open shares, split off to
+    #: carry the loss.
+    gone: bool
+
+
+def plan_matches(
+    repos: Repositories,
+    *,
+    sold: Lot,
+    instrument_id: int,
+    sale_date: date,
+    quantity: Decimal,
+    sold_here: Mapping[int, Decimal],
+) -> list[PlannedMatch]:
+    """What a loss of *quantity* shares of *sold*, on *sale_date*, would be matched with.
+
+    The one statement of decision 3's order for a sale looking back: lots
+    acquired in the 30 days up to the sale, of the instrument or one declared
+    identical, in order of acquisition. Each gives its open shares first,
+    then the shares it disposed of before the sale. Matched shares were split
+    into their own lots, which are never replacements, so only unmatched
+    shares are offered. *sold_here* is, by lot id, what this very sale
+    disposes of: those shares are the ones sold, never a replacement.
+
+    Writes nothing. :meth:`WashSaleMatcher.after_disposals` applies the plan,
+    and `pt lot candidates` reads it for a sale not yet made (ADR 0047 §5).
+    """
+    plan: list[PlannedMatch] = []
+    needed = quantity
+    for lot in repos.lots.acquired_between(
+        identical_to(repos, instrument_id), sale_date - WINDOW, sale_date
+    ):
+        if needed <= 0:
+            break
+        if not replaces(repos, lot, sold):
+            continue
+        open_shares = min(needed, lot.remaining_quantity)
+        if open_shares > 0:
+            plan.append(PlannedMatch(lot, open_shares, gone=False))
+            needed -= open_shares
+        if needed <= 0:
+            break
+        reported = sum(
+            (
+                w.quantity
+                for w in repos.wash_sales.for_replacement(lot.lot_key)
+                if w.status is WashSaleStatus.MANUAL
+            ),
+            Decimal(0),
+        )
+        gone = (
+            lot.original_quantity
+            - lot.remaining_quantity
+            - sold_here.get(lot.lot_id, Decimal(0))
+            - reported
+        )
+        shares = min(needed, gone)
+        if shares > 0:
+            plan.append(PlannedMatch(lot, shares, gone=True))
+            needed -= shares
+    return plan
+
+
+def disallowed_part(
+    loss: Decimal, sold_quantity: Decimal, matched: Decimal, quantity: Decimal
+) -> Decimal:
+    """The loss on *quantity* more sold shares, after *matched*, to the cent.
+
+    *loss* is the disposition's whole loss, as a positive amount. Cumulative,
+    so a disposition matched in parts disallows exactly its whole loss once
+    fully matched, with no cent lost or invented.
+    """
+    with money_context():
+        before = quantize_money(loss * matched / sold_quantity)
+        after = quantize_money(loss * (matched + quantity) / sold_quantity)
+        return after - before
+
+
 @dataclass(frozen=True, slots=True)
 class Notice:
     """Something a pairing did that the person entering the row should see."""
@@ -178,18 +286,27 @@ class WashSaleMatcher:
         losses = [loss for d in stored if (loss := self._loss(d)) is not None]
         # Within one sale, the earliest-acquired sold lot first (decision 3).
         losses.sort(key=lambda x: (x.sold.open_date, x.sold.open_txn_id, x.sold.lot_key))
+        sold_here: dict[int, Decimal] = {}
+        for d in stored:
+            sold_here[d.lot_id] = sold_here.get(d.lot_id, Decimal(0)) + d.quantity
         for loss in losses:
-            candidates = self.repos.lots.acquired_between(
-                self._identical(loss.disposition.instrument_id),
-                loss.disposition.disposition_date - WINDOW,
-                loss.disposition.disposition_date,
+            # Planned per loss, after the last one's splits: two losses of one
+            # sale never take the same replacement shares.
+            plan = plan_matches(
+                self.repos,
+                sold=loss.sold,
+                instrument_id=loss.disposition.instrument_id,
+                sale_date=loss.disposition.disposition_date,
+                quantity=loss.open_quantity,
+                sold_here=sold_here,
             )
-            for lot in candidates:
-                if loss.open_quantity <= 0:
-                    break
-                if not self._replaces(lot, loss):
-                    continue
-                self._match_existing(txn, loss, lot, stored)
+            current: dict[int, Lot] = {}
+            for match in plan:
+                lot = current.get(match.lot.lot_id, match.lot)
+                if match.gone:
+                    self._report_manual(txn, loss, lot, match.quantity)
+                else:
+                    current[lot.lot_id] = self._split(txn, loss, lot, match.quantity)
 
     def after_acquisition(self, txn: Transaction, lot: Lot) -> None:
         """A replacement was opened: look back for losses it disallows."""
@@ -198,7 +315,7 @@ class WashSaleMatcher:
         if lot.basis_source is not BasisSource.DERIVED:
             return
         found = self.repos.lots.dispositions_between(
-            self._identical(lot.instrument_id), lot.open_date - WINDOW, lot.open_date
+            identical_to(self.repos, lot.instrument_id), lot.open_date - WINDOW, lot.open_date
         )
         losses = [loss for d in found if (loss := self._loss(d)) is not None]
         losses = [
@@ -213,31 +330,6 @@ class WashSaleMatcher:
             current = self._split(txn, loss, current, quantity)
 
     # ── matching ─────────────────────────────────────────────────────────────
-
-    def _match_existing(
-        self, txn: Transaction, loss: _Loss, lot: Lot, stored: list[LotDisposition]
-    ) -> None:
-        """Match a loss against a lot bought before it: open shares, then gone ones."""
-        open_shares = min(loss.open_quantity, lot.remaining_quantity)
-        if open_shares > 0:
-            lot = self._split(txn, loss, lot, open_shares)
-        if loss.open_quantity <= 0:
-            return
-        # Shares of the lot disposed of before this sale. The ones this very
-        # sale disposed of are the shares being sold, never a replacement.
-        sold_here = sum((d.quantity for d in stored if d.lot_id == lot.lot_id), Decimal(0))
-        reported = sum(
-            (
-                w.quantity
-                for w in self.repos.wash_sales.for_replacement(lot.lot_key)
-                if w.status is WashSaleStatus.MANUAL
-            ),
-            Decimal(0),
-        )
-        gone = lot.original_quantity - lot.remaining_quantity - sold_here - reported
-        quantity = min(loss.open_quantity, gone)
-        if quantity > 0:
-            self._report_manual(txn, loss, lot, quantity)
 
     def _split(self, txn: Transaction, loss: _Loss, lot: Lot, quantity: Decimal) -> Lot:
         """Split *quantity* shares off *lot* to carry the loss they wash.
@@ -463,21 +555,6 @@ class WashSaleMatcher:
         matched = sum((w.quantity for w in pairings), Decimal(0))
         return _Loss(disposition=disposition, sold=sold, account=account, matched=matched)
 
-    def _replaces(self, lot: Lot, loss: _Loss) -> bool:
-        """Whether *lot* can be matched automatically against *loss*."""
-        if lot.is_short or "~" in lot.lot_key:
-            return False
-        if lot.basis_source is not BasisSource.DERIVED:
-            return False
-        if lot.open_txn_id == loss.sold.open_txn_id:
-            return False  # one purchase: the shares sold and the shares kept
-        opening = self.repos.transactions.get(lot.open_txn_id)
-        return opening is not None and opening.txn_type in REPLACEMENT_TYPES
-
-    def _identical(self, instrument_id: int) -> set[int]:
-        """The instrument, and those declared substantially identical to it."""
-        return {instrument_id, *self.repos.equivalences.equivalents_of(instrument_id)}
-
     def _ledger_order(self, loss: _Loss) -> tuple[object, ...]:
         sale = self.repos.transactions.get(loss.disposition.txn_id)
         assert sale is not None
@@ -492,17 +569,10 @@ class WashSaleMatcher:
 
     @staticmethod
     def _disallow(loss: _Loss, quantity: Decimal) -> Decimal:
-        """The loss on *quantity* more of the sold shares, to the cent.
-
-        Cumulative, so a disposition matched in parts disallows exactly its
-        whole loss once fully matched, with no cent lost or invented.
-        """
-        whole = -loss.disposition.realized_gain
-        sold = loss.disposition.quantity
-        with money_context():
-            before = quantize_money(whole * loss.matched / sold)
-            after = quantize_money(whole * (loss.matched + quantity) / sold)
-            return after - before
+        """The loss on *quantity* more of the sold shares, to the cent."""
+        return disallowed_part(
+            -loss.disposition.realized_gain, loss.disposition.quantity, loss.matched, quantity
+        )
 
     def _symbol(self, instrument_id: int) -> str:
         instrument = self.repos.instruments.get(instrument_id)
@@ -552,12 +622,12 @@ def candidates(repos: Repositories, *, year: int) -> list[Candidate]:
         loss = matcher._loss(disposition)
         if loss is None:
             continue
-        identical = matcher._identical(disposition.instrument_id)
+        identical = identical_to(repos, disposition.instrument_id)
         sale = disposition.disposition_date
         for lot in repos.lots.acquired_between(None, sale - WINDOW, sale + WINDOW):
             if lot.open_txn_id == loss.sold.open_txn_id or "~" in lot.lot_key:
                 continue
-            reason = _candidate_reason(repos, matcher, lot, loss, identical)
+            reason = _candidate_reason(repos, lot, loss, identical)
             if reason is not None:
                 found.append(
                     Candidate(
@@ -573,7 +643,6 @@ def candidates(repos: Repositories, *, year: int) -> list[Candidate]:
 
 def _candidate_reason(
     repos: Repositories,
-    matcher: WashSaleMatcher,
     lot: Lot,
     loss: _Loss,
     identical: set[int],
@@ -582,7 +651,7 @@ def _candidate_reason(
     if opening is None:
         return None
     if lot.instrument_id in identical:
-        if matcher._replaces(lot, loss):
+        if replaces(repos, lot, loss.sold):
             return None  # matched automatically: not a candidate
         if opening.txn_type is TransactionType.TRANSFER_IN or (
             lot.basis_source is not BasisSource.DERIVED

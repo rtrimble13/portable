@@ -11,7 +11,7 @@ Two things in this module are load-bearing and are routinely got wrong.
 from __future__ import annotations
 
 import calendar
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from portable_core.decimals import money_context
@@ -22,6 +22,7 @@ __all__ = [
     "days_between",
     "holding_period",
     "is_long_term",
+    "long_term_from",
     "month_end",
     "year_fraction",
 ]
@@ -61,6 +62,17 @@ def is_long_term(acquired: date, disposed: date) -> bool:
     """
     anniversary = _add_one_year(acquired)
     return disposed > anniversary
+
+
+def long_term_from(acquired: date) -> date:
+    """The first disposition date on which a lot acquired on *acquired* is long-term.
+
+    The day after the anniversary :func:`is_long_term` compares against, so
+    the two cannot disagree: a disposition on the anniversary itself is
+    short-term. A lot from 2024-02-29 turns long-term on 2025-03-01 (ADR 0047
+    §3).
+    """
+    return _add_one_year(acquired) + timedelta(days=1)
 
 
 def _add_one_year(day: date) -> date:

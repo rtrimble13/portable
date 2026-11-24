@@ -6,11 +6,12 @@ period, and therefore the rate. These tests pin all three.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
 
+from portable_core.domain.dates import is_long_term, long_term_from
 from portable_core.domain.enums import HoldingPeriod, LotStatus, ReliefMethod
 from portable_core.domain.models import Lot
 from portable_core.errors import ValidationError
@@ -257,6 +258,24 @@ def test_holding_period_boundary(
         disposed,
     )
     assert plan.consumptions[0].holding_period is expected
+
+
+@pytest.mark.parametrize(
+    ("acquired", "first_long"),
+    [
+        (date(2024, 3, 14), date(2025, 3, 15)),
+        (date(2023, 3, 1), date(2024, 3, 2)),
+        (date(2024, 2, 29), date(2025, 3, 1)),  # no anniversary: clamped, then a day
+        (date(2023, 12, 31), date(2025, 1, 1)),
+    ],
+)
+def test_long_term_from_is_the_first_day_is_long_term_holds(
+    acquired: date, first_long: date
+) -> None:
+    """ADR 0047 §3: the day the lot turns long-term, and not a day earlier."""
+    assert long_term_from(acquired) == first_long
+    assert is_long_term(acquired, first_long)
+    assert not is_long_term(acquired, first_long - timedelta(days=1))
 
 
 def test_a_short_sale_is_short_term_however_long_it_is_held() -> None:
