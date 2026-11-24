@@ -1,7 +1,7 @@
 # ADR 0047 — Lot-level sale candidates: each open lot priced, taxed and checked for a wash as if sold alone today, and nothing proposed
 
-- **Status:** Proposed
-- **Date:** 2026-11-24
+- **Status:** Accepted (owner, 2026-11-24), with the recommended answer to each of its four questions. See Owner's answers
+- **Date:** 2026-11-24; accepted 2026-11-24
 - **Milestone:** v0.2, issue 62 (P1)
 - **Governs:** `PORT-GIPS-A09` (the price a lot is valued at); `CLAUDE.md` "Holding period", "Wash sales cross accounts", "Nothing here is tax advice", invariants 6, 9 and 10
 - **Depends on:** [ADR 0011](0011-tax-estimation-boundary.md) (what the tax estimate is), [ADR 0017](0017-cutover-reconstruction-and-basis-provenance.md) (basis provenance), [ADR 0021](0021-derived-state-as-of-a-past-date.md) (state as of a date), [ADR 0026](0026-dry-run-rehearses-the-write.md) (dry runs), [ADR 0036](0036-a-lot-is-designated-by-its-lineage.md) (lots designated by key), [ADR 0037](0037-wash-sales.md) (wash sales), [ADR 0041](0041-bonds-at-face-with-accrued-interest.md) (bonds)
@@ -224,6 +224,16 @@ with the reason. See question 2.
    `pt lot list`. Alternatives are `pt tax candidates`, which is easily
    confused with `pt tax wash-candidates`, or columns added to `pt lot list`,
    which would make it the slow report.
+
+## Owner's answers (2026-11-24)
+
+1. **The price rule:** the configured `staleness_tolerance_days`, through
+   `ValuationEngine.price_status`.
+2. **Averaged holdings:** named and left out (§6). Whether any account uses
+   average cost is still to be said. It decides only whether a later ADR adds
+   a row per averaged holding.
+3. **The change from waiting until long-term:** included, at today's price.
+4. **The command's name:** `pt lot candidates`.
 
 ## Consequences
 

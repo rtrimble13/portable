@@ -196,7 +196,7 @@ Then:
 9. **Lot-level sale candidates** (issue 62) — per open lot: unrealized gain,
    days to long-term, estimated tax if sold, and whether a loss would be a
    wash sale. The first tax-aware decision support, ahead of the optimizer.
-   *Proposed* in [ADR 0047](adr/0047-lot-level-sale-candidates.md) as
+   Accepted in [ADR 0047](adr/0047-lot-level-sale-candidates.md) as
    `pt lot candidates`. Each row is one lot sold alone today, and every
    figure is held, by a dry-run sale, to what `pt sell` would record.
 10. **Risk figures** (issue 7), cut to what informs a decision: the three-year
