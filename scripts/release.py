@@ -232,9 +232,10 @@ def bump(target: str, *, dry_run: bool, on: date) -> None:
     if gate.returncode != 0:
         put_back(f"the version rules refuse {new}")
 
-    # `needs_fresh_install` is deselected on purpose: it reads what pip recorded,
-    # and the constant pip read has just changed. The release workflow installs
-    # before it runs it.
+    # `needs_fresh_install` is deselected on purpose: those tests read what pip
+    # recorded and the number a built extension was compiled with, and the
+    # constant both were made from has just changed. The release workflow
+    # installs before it runs them.
     print("--> Checking every version in the repository agrees")
     # Both, in this interpreter: the tests import portable, so a pytest with no
     # portable beside it (a system or pipx one) cannot run them.

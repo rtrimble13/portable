@@ -84,6 +84,20 @@ portfolio's, so when any line cannot be valued:
 
 The schema enforces all three.
 
+`pt allocation drift` (`allocation-drift-1.0`, ADR 0048) values as
+`pt holdings` does, so its `total_market_value` is the snapshot market value
+too. It never states a weight over a part of the portfolio, so a holding it
+cannot value refuses the command rather than nulling the weights. Two flags
+say how far to trust what it does state:
+- `is_complete` is `false` while anything is unclassified, or a class held
+  has no target. Each is named, in `unclassified` and `no_target`, and the
+  schema holds a complete report to both being empty.
+- `is_estimated` is `true` exactly when `--estimate` carried a price, and
+  `estimate` then lists each one with its date and age; otherwise it is
+  `null`.
+
+A `no_target` row has a null target, band and difference, never a zero.
+
 `pt tax` requires a non-empty disclaimer **in the schema**, and a
 `wash_sales.not_detected` list with at least one entry (`tax-2.0`, ADR 0037).
 Removing the statement of what wash-sale detection does not cover therefore

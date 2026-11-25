@@ -196,9 +196,11 @@ Then:
    nearly every real portfolio.
 8. **Policy allocation and drift** (issue 61) — an asset class on every
    instrument, an effective-dated target, and target against actual with
-   bands. Proposes no trades. Accepted in
-   [ADR 0048](adr/0048-policy-allocation-and-drift.md), with the recommended
-   answer to each of its five questions.
+   bands. Proposes no trades. *Done*: `pt allocation`, in
+   [ADR 0048](adr/0048-policy-allocation-and-drift.md). Drift values what
+   `pt mark` values, refuses over a holding it cannot value unless
+   `--estimate` carries its price, and names what is unclassified. The sample
+   carries a policy, and a test checks two of its weights by hand.
 9. **Lot-level sale candidates** (issue 62) — per open lot: unrealized gain,
    days to long-term, estimated tax if sold, and whether a loss would be a
    wash sale. The first tax-aware decision support, ahead of the optimizer.

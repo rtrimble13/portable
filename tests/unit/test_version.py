@@ -155,9 +155,15 @@ def test_the_extension_reads_the_constant_and_writes_no_number_of_its_own() -> N
     assert literals == [], literals
 
 
+@pytest.mark.needs_fresh_install
 def test_the_extension_reports_the_package_version() -> None:
     """Built or not, `build_info()` names this version: the reference reads
-    the constant, and the extension the definition CMake made from it."""
+    the constant, and the extension the definition CMake made from it.
+
+    A built extension carries the number it was compiled with, so like pip's
+    record it lags an edit of the constant until the next `make install`.
+    That is why `make bump`, which has just made that edit, deselects it.
+    """
     from portable_core import native
 
     assert native.build_info().module_version == portable_core.__version__

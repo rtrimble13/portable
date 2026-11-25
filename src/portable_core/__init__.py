@@ -15,7 +15,7 @@ from typing import Final
 #: and `pyproject.toml` reads it for the distribution metadata. A plain string
 #: literal, so a build can read it without importing the package. Set by
 #: `scripts/release.py` on a branch; merging that branch publishes it.
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 #: Bumped whenever the `--format json` envelope changes shape. Consumers pin
 #: against this, not against `__version__`.

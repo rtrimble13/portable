@@ -111,6 +111,22 @@ then **the ticker as it stood on the relevant date** — not the ticker today.
 Symbol history is kept, because a rename or a relist silently rewrites history
 otherwise.
 
+### Asset class
+
+The owner's own list, with `cash` built in. Each instrument is **classified
+from a date**, into one class or split across several by weights that sum to
+exactly 1: a balanced fund by the weights it states, a target-date fund
+classified again as its glide path moves. Declared, never inferred from a
+sector or a fund's type, and never edited: a classification entered wrongly
+is corrected on its own date. An instrument with none is **unclassified**,
+and every report that groups by class names it rather than guessing.
+
+The **allocation policy** is one target and an absolute band per class, for
+the whole portfolio, from a date, summing to 1. `pt allocation drift` holds
+the holdings of a day against the policy in force that day, at the market
+value a snapshot records (ADR 0048). It shows how far each class is from its
+target and proposes no trade.
+
 ---
 
 ## Position

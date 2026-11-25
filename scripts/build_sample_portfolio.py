@@ -54,6 +54,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from portable_core.clock import FixedClock  # noqa: E402
 from portable_core.config.settings import DEFAULTS  # noqa: E402
 from portable_core.decimals import quantize_money  # noqa: E402
+from portable_core.domain.allocation import CASH_CLASS  # noqa: E402
 from portable_core.domain.enums import (  # noqa: E402
     AccountType,
     DayCount,
@@ -80,7 +81,7 @@ from portable_core.domain.models import (  # noqa: E402
 from portable_core.persistence.connection import open_portfolio, transaction  # noqa: E402
 from portable_core.persistence.repositories import Repositories  # noqa: E402
 from portable_core.schema import migrations as M  # noqa: E402
-from portable_core.services import snapshots  # noqa: E402
+from portable_core.services import allocation, snapshots  # noqa: E402
 from portable_core.services.cash_flow import classify  # noqa: E402
 from portable_core.services.replay import ReplayEngine  # noqa: E402
 
@@ -581,7 +582,6 @@ def build(path: Path, *, force: bool = False, prices_csv: Path | None = None) ->
                 name="Apple Inc.",
                 exchange="NASDAQ",
                 sector="Technology",
-                asset_class="us_equity",
                 cusip="037833100",
             )
         )
@@ -592,7 +592,6 @@ def build(path: Path, *, force: bool = False, prices_csv: Path | None = None) ->
                 instrument_type=InstrumentType.ETF,
                 name="Vanguard Total Stock Market ETF",
                 exchange="NYSEARCA",
-                asset_class="us_equity",
             )
         )
         acme = repos.instruments.add(
@@ -603,7 +602,6 @@ def build(path: Path, *, force: bool = False, prices_csv: Path | None = None) ->
                 name="Acme Industrials",
                 exchange="NYSE",
                 sector="Industrials",
-                asset_class="us_equity",
             )
         )
         newco = repos.instruments.add(
@@ -614,7 +612,6 @@ def build(path: Path, *, force: bool = False, prices_csv: Path | None = None) ->
                 name="Newco Holdings (spun from ACME)",
                 exchange="NYSE",
                 sector="Industrials",
-                asset_class="us_equity",
                 source="derived:spinoff",
             )
         )
@@ -624,7 +621,6 @@ def build(path: Path, *, force: bool = False, prices_csv: Path | None = None) ->
                 symbol="T-4.25-2030",
                 instrument_type=InstrumentType.BOND,
                 name="US Treasury 4.25% 2030",
-                asset_class="us_treasury",
                 bond=BondDetail(
                     issuer="US Treasury",
                     coupon_rate=D("0.0425"),
@@ -652,6 +648,33 @@ def build(path: Path, *, force: bool = False, prices_csv: Path | None = None) ->
                     exercise_style=ExerciseStyle.AMERICAN,
                 ),
             )
+        )
+
+        # ── asset classes and the allocation policy (ADR 0048) ───────────────
+        # Declared through the service the commands use, never the free-text
+        # column, so `pt allocation drift` runs on the committed file.
+        allocation.add_class(repos, "us_equity", "US stocks, and options on them.")
+        allocation.add_class(repos, "us_treasury", "US Treasury bonds.")
+        for instrument_id, asset_class in (
+            (aapl, "us_equity"),
+            (vti, "us_equity"),
+            (acme, "us_equity"),
+            (newco, "us_equity"),
+            (covered_call, "us_equity"),
+            (treasury, "us_treasury"),
+        ):
+            held = repos.instruments.get(instrument_id)
+            assert held is not None
+            allocation.classify(repos, held, INCEPTION, [(asset_class, D(1))])
+        allocation.set_policy(
+            repos,
+            INCEPTION,
+            [
+                ("us_equity", D("0.55"), D("0.05")),
+                ("us_treasury", D("0.10"), D("0.05")),
+                (CASH_CLASS, D("0.35"), D("0.03")),
+            ],
+            note="A policy for the example, not advice.",
         )
 
         counts = {"transactions": 0}

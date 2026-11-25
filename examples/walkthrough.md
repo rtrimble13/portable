@@ -324,7 +324,12 @@ pt --port examples/sample.port info
 pt --port examples/sample.port holdings --as-of 2025-06-30
 pt --port examples/sample.port tax --year 2025
 pt --port examples/sample.port lot list --as-of 2025-06-30
+pt --port examples/sample.port allocation drift --as-of 2025-12-31
 ```
+
+The last one weighs the holdings against the sample's allocation policy, valued
+as `pt mark` values them, and says which classes have left their bands. It
+proposes no trade.
 
 `examples/sample.port` is generated, not hand-made — `make fixtures` rebuilds
 it. A hundred and eight transactions across three accounts and five years, including a
