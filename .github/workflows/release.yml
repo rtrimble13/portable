@@ -1,0 +1,146 @@
+name: release
+
+# Publishes the version on main when it has no GitHub release yet: every version
+# that reaches main is a release (ADR 0049; rtrimble13/fafnir, dorq and
+# alpha-tango release the same way). The pull request chose the number, and CI's
+# `version` job held it to the rules (scripts/check_version.py). This installs
+# the pushed commit as the owner does, checks that the source constant, the
+# distribution metadata, the native extension and every CLI say that number,
+# then creates the tag vX.Y.Z at that commit with the GitHub release. The notes
+# open with what the owner runs after `git pull` (a reinstall, `pt migrate`),
+# carry the version's CHANGELOG.md section, and end with the merged pull
+# requests. A push that leaves the version as released finds nothing to do, in
+# seconds. See docs/releasing.md.
+on:
+  push:
+    branches: [main]
+  # By hand, from the Actions tab: after a transient failure.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One release at a time, and never cancelled half-way.
+  group: release
+  cancel-in-progress: false
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  FORCE_COLOR: "0"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The tags: the previous release, for the notes, and whether this one
+          # is tagged already.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Find the release that is due
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::A release publishes from main; this run is on ${GITHUB_REF}." >&2
+            exit 1
+          fi
+          # release.py refuses a tag pushed by hand on another commit: the
+          # checks below run on this commit, not on that one.
+          plan="$(python scripts/release.py plan)"
+          version="$(sed -n 's/^version=//p' <<< "${plan}")"
+          tagged="$(sed -n 's/^tagged=//p' <<< "${plan}")"
+          if out="$(gh release view "v${version}" --repo "${GITHUB_REPOSITORY}" --json tagName 2>&1)"; then
+            echo "v${version} is published; nothing to release." | tee -a "${GITHUB_STEP_SUMMARY}"
+            echo "due=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          elif ! grep -qi 'release not found' <<< "${out}"; then
+            echo "::error::Could not ask GitHub whether v${version} is published: ${out}" >&2
+            exit 1
+          fi
+          echo "Releasing v${version} from $(git log -1 --format='%h (%s)' HEAD)." |
+            tee -a "${GITHUB_STEP_SUMMARY}"
+          {
+            echo "due=true"
+            echo "version=${version}"
+            echo "tagged=${tagged}"
+          } >> "${GITHUB_OUTPUT}"
+
+      # Installed, as `make install` installs it, with the native extension:
+      # this is what proves the pyproject.toml wiring reads the source constant,
+      # and CMake too, which the source-only tests cannot check.
+      - name: Install the commit as the owner does
+        if: steps.plan.outputs.due == 'true'
+        run: |
+          set -euo pipefail
+          python -m pip install -r requirements-dev.txt -c constraints.txt
+          python -m pip install -e . --no-build-isolation --no-deps
+
+      - name: The source, the metadata, the extension and every CLI say the version
+        if: steps.plan.outputs.due == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          SOURCE="$(python -c 'import portable_core; print(portable_core.__version__)')"
+          DIST="$(python -c 'import importlib.metadata as m; print(m.version("portable"))')"
+          NATIVE="$(python -c 'from portable_core import native; assert native.HAVE_NATIVE, "the extension did not build"; print(native.build_info().module_version)')"
+          echo "release   : v${VERSION}"
+          echo "source    : ${SOURCE}"
+          echo "metadata  : ${DIST}"
+          echo "extension : ${NATIVE}"
+          if [[ "${SOURCE}" != "${VERSION}" || "${DIST}" != "${VERSION}" || "${NATIVE}" != "${VERSION}" ]]; then
+            echo "::error::The source (${SOURCE}), the distribution metadata (${DIST}) and the" \
+                 "extension (${NATIVE}) must all say ${VERSION}. The version wiring is broken." >&2
+            exit 1
+          fi
+          for cli in pt pert po risky portable; do
+            printf '%-9s %s\n' "${cli}" "$("${cli}" --version)"
+            test "$("${cli}" --version)" = "${VERSION}"
+          done
+
+      # The same assertions a developer sees locally; here the install is
+      # fresh, so nothing is deselected.
+      - name: Version consistency tests
+        if: steps.plan.outputs.due == 'true'
+        run: python -m pytest -v tests/unit/test_version.py tests/unit/test_check_version.py tests/unit/test_release_script.py
+
+      - name: Write the release notes
+        if: steps.plan.outputs.due == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          python scripts/release.py notes "${VERSION}" --repository "${GITHUB_REPOSITORY}" | tee notes.md
+
+      # The release creates the tag vX.Y.Z at the commit checked, as fafnir's,
+      # dorq's and alpha-tango's do. A tag already there (pushed by hand) on this
+      # commit is used as it is.
+      - name: Create the tag and the GitHub release
+        if: steps.plan.outputs.due == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          TAGGED: ${{ steps.plan.outputs.tagged }}
+        run: |
+          set -euo pipefail
+          where=(--target "${GITHUB_SHA}")
+          [[ "${TAGGED}" == "true" ]] && where=(--verify-tag)
+          gh release create "v${VERSION}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "portable ${VERSION}" \
+            "${where[@]}" \
+            --notes-file notes.md \
+            --generate-notes

@@ -51,7 +51,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from portable_core import __version__  # noqa: E402
 from portable_core.clock import FixedClock  # noqa: E402
 from portable_core.config.settings import DEFAULTS  # noqa: E402
 from portable_core.decimals import quantize_money  # noqa: E402
@@ -95,6 +94,15 @@ ZERO = D("0.00")
 #: and corporate-action rows, and each migration's `applied_at`.
 STAMP = datetime(2026, 8, 27, tzinfo=UTC)
 CLOCK = FixedClock(STAMP)
+
+#: The version every row says wrote it: `meta.portable_version` and each
+#: migration's `applied_by`. Pinned for the reason the clock is. Every merge
+#: that ships is a release (ADR 0049), so stamping the running version would
+#: rewrite the committed file on every release, and two open pull requests
+#: would conflict on a binary they do not otherwise touch. A version that is
+#: not a release, so nobody reads it as one: the sample is the generator's,
+#: not a release's.
+STAMPED_VERSION = "0.0.0+sample"
 
 INCEPTION = date(2021, 1, 4)
 
@@ -468,7 +476,7 @@ def build(path: Path, *, force: bool = False, prices_csv: Path | None = None) ->
     # to zero them and other builds are not, and the old bytes those builds
     # leave behind were the whole difference between their files (ADR 0035).
     con.execute("PRAGMA secure_delete = ON")
-    M.initialise(con, clock=CLOCK)
+    M.initialise(con, clock=CLOCK, applied_by=f"portable {STAMPED_VERSION}")
     repos = Repositories(con, clock=CLOCK)
 
     with transaction(con):
@@ -485,7 +493,7 @@ def build(path: Path, *, force: bool = False, prices_csv: Path | None = None) ->
             "schema_version": str(M.CURRENT_SCHEMA_VERSION),
             "created_at": CLOCK.stamp(),
             "updated_at": CLOCK.stamp(),
-            "portable_version": __version__,
+            "portable_version": STAMPED_VERSION,
         }.items():
             repos.meta.set(key, value)
 

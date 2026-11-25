@@ -304,8 +304,18 @@ def _check_foreign_keys(con: sqlite3.Connection, migration: Migration) -> None:
     )
 
 
-def _apply(con: sqlite3.Connection, migration: Migration, clock: Clock = SYSTEM_CLOCK) -> None:
-    """Apply one migration and record it, stamped from *clock*. All or nothing."""
+def _apply(
+    con: sqlite3.Connection,
+    migration: Migration,
+    clock: Clock = SYSTEM_CLOCK,
+    applied_by: str | None = None,
+) -> None:
+    """Apply one migration and record it, stamped from *clock*. All or nothing.
+
+    *applied_by* is recorded as what applied it: this release, by default. A
+    generator that pins its clock pins this too (ADR 0049), or every release
+    would rewrite the file it generates.
+    """
     # Before the transaction, so a refusal costs nothing and reads as a refusal
     # rather than as a failed write.
     check_preconditions(con, migration)
@@ -317,7 +327,7 @@ def _apply(con: sqlite3.Connection, migration: Migration, clock: Clock = SYSTEM_
     triggers_before = _triggers(con) if migration.rebuilds else set()
     indexes_before = _indexes(con) if migration.rebuilds else set()
     try:
-        _run(con, migration, triggers_before, indexes_before, clock)
+        _run(con, migration, triggers_before, indexes_before, clock, applied_by)
     finally:
         if migration.rebuilds:
             # `foreign_keys` is connection state, not file state. Leaving it OFF
@@ -333,6 +343,7 @@ def _run(
     triggers_before: set[str],
     indexes_before: set[str],
     clock: Clock,
+    applied_by: str | None = None,
 ) -> None:
     con.execute("BEGIN IMMEDIATE")
     try:
@@ -378,7 +389,7 @@ def _run(
                 migration.name,
                 migration.checksum,
                 clock.stamp(),
-                f"portable {__version__}",
+                applied_by or f"portable {__version__}",
             ),
         )
     except PortfolioFileError:
@@ -398,14 +409,17 @@ def _run(
     con.execute("COMMIT")
 
 
-def initialise(con: sqlite3.Connection, *, clock: Clock = SYSTEM_CLOCK) -> int:
+def initialise(
+    con: sqlite3.Connection, *, clock: Clock = SYSTEM_CLOCK, applied_by: str | None = None
+) -> int:
     """Apply every migration to a fresh file. Returns the resulting version.
 
-    Each ``schema_migration.applied_at`` is read from *clock* (ADR 0035), so a
-    generator that pins it writes the same bytes on every run.
+    Each ``schema_migration.applied_at`` is read from *clock* (ADR 0035), and
+    each ``applied_by`` is *applied_by* when given (ADR 0049), so a generator
+    that pins both writes the same bytes on every run and every release.
     """
     for migration in available_migrations():
-        _apply(con, migration, clock)
+        _apply(con, migration, clock, applied_by)
     return schema_version(con)
 
 

@@ -11,10 +11,38 @@ Two rules specific to this repository:
 - **A change to a `PORT-GIPS-xxx` requirement gets an entry here either way**,
   and an ADR if it changes an implementation obligation
   (`docs/gips-standard.md` §13).
+- **Every version that reaches main is a release** (ADR 0049). A pull request
+  that changes what ships raises the version, and `make bump` turns
+  `[Unreleased]` into the release's dated section. CI refuses a raised version
+  without one, and the section becomes the text of the GitHub release.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-25
+
 ### Added
+
+- **Releases** (ADR 0049, the model of rtrimble13/fafnir, dorq and
+  alpha-tango). Every version that reaches `main` is a release.
+  - **A pull request that changes what ships raises the version.**
+    `make bump BUMP=patch|minor|major` (`scripts/release.py`) sets it, counted
+    from `main`'s, and turns `[Unreleased]` here into the release's section.
+  - **CI's `version` job holds the pull request to the rules**
+    (`scripts/check_version.py`, part of `check`):
+    - the version never goes down;
+    - a change to `src/`, `schemas/`, `cpp/` or `pyproject.toml` raises it;
+    - an added migration, or a new major output schema, is a minor release
+      at least;
+    - a raised version has its own dated, non-empty section here.
+  - **Merging publishes the release.** `.github/workflows/release.yml`
+    installs the merge commit and checks that the source, the metadata, the
+    native extension and all five CLIs report the number. Then it creates the
+    tag `vX.Y.Z` and the GitHub release. The notes say what to run after
+    `git pull` (`make install`, `pt migrate`), then carry the section from
+    here.
+  - **`make version`** reports this branch's version, `main`'s, and the last
+    release. **`make check`** now runs the gate against `origin/main`, as CI
+    does. See `docs/releasing.md`.
 
 - **`pt lot candidates`** (issue 62, ADR 0047): every open long lot in a
   taxable account, each as if sold alone, all of it, on `--as-of`. It is
@@ -699,6 +727,15 @@ Two rules specific to this repository:
 
 ### Schema
 
+- **`holdings-2.0`** supersedes `holdings-1.0` for `pt holdings --format json`.
+  - **`total_market_value` is null** when any line cannot be valued, and so
+    is every row's `weight`. The schema enforces both.
+  - **New required fields:** `valued_market_value`, `is_complete`, `unvalued`,
+    `excluded_operating_cash`, `grouped_by`, `stale_instruments` and
+    `staleness_tolerance_days`.
+  - **New row roles:** `accrued_interest` and `accrued_dividend` (and
+    `margin_loan` for an account holding operating cash).
+  - **The output names its schema** in `$schema`.
 - **`schema_version` 11 → 12**, migration `0012_bond_accrued_interest`
   (ADR 0041, accepted by the owner). It adds one nullable column,
   `transaction.accrued_interest`: the interest accrued to settlement that a
@@ -757,6 +794,19 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **One version, written once** (ADR 0049).
+  - **`__version__` in `src/portable_core/__init__.py`** is now the only
+    literal. Before, it was written in five places: `pyproject.toml`, three
+    packages and the C++ extension.
+  - **`pt`, `pert`, `po` and `risky` re-export it.** `pyproject.toml` reads it
+    through scikit-build-core's regex provider, and `cpp/CMakeLists.txt` reads
+    it for the extension.
+  - **`po --version` and `risky --version` answer** instead of printing their
+    help.
+- **`examples/sample.port` is stamped `0.0.0+sample`**, in
+  `meta.portable_version` and in each migration's `applied_by`, instead of
+  the version that built it. A release no longer rewrites the committed file
+  (ADR 0049 §5). `migrations.initialise` takes `applied_by` for it.
 - **`PORT-GIPS-C04` no longer refuses an MWR for more than one sign change
   in its flows** (ADR 0046 §3). It refuses one whose rate cannot be shown to
   be the only one: compounded at the rate found, the balance goes negative
@@ -1116,6 +1166,38 @@ Two rules specific to this repository:
   `duk` with `th`, `ca` and `tc` (fafnir's release after 3.0.5).
 
 ### Fixed
+
+- **`pt holdings` gave weights over part of the portfolio, and a total short of
+  its market value.** It now values as a snapshot does, so its total is what
+  `pt mark` gives for the same accounts.
+  - **Weights over the priced part only.** A holding with a missing or stale
+    price was left out of the total, so every other weight rose, and the
+    column still summed to 100%. The sum of the rest was shown as
+    `total_market_value`, and as a group's value under `--by`.
+    - **Now** a line that cannot be valued leaves the total, every weight,
+      and the value of any group holding it null, with `is_complete: false`.
+    - **What could be valued** is `valued_market_value`, under its own name,
+      and `unvalued` names each line and its error code.
+  - **Accrued income left out** (`PORT-GIPS-A06`). A bond was valued at its
+    clean price with none of its accrued interest, and declared dividends were
+    missing. On the sample at 2025-12-31 the total was 819,411.48, against
+    `pt mark`'s 819,681.51: the Treasury's 270.03 of accrued interest.
+    - **Now** each is a line of its own, `accrued_interest` or
+      `accrued_dividend`, beside what it accrues on, and grouped with it.
+    - **The bond's own line stays clean**, so its unrealized gain is against
+      a basis that holds no accrued interest (ADR 0041).
+    - **A coupon the ledger does not record**, or interest that cannot be
+      accrued, leaves the line null and the report incomplete, as it leaves
+      the snapshot incomplete.
+  - **Operating cash was counted.** It is shown, and now left out of the
+    total and every weight, as the snapshot leaves it out (`PORT-GIPS-A07`),
+    and is listed in `excluded_operating_cash`.
+  - **An instrument nothing quotes** was shown unpriced. It is now held at
+    zero, at level 5, as the snapshot holds it (ADR 0028).
+  - **One statement of value.** The valuation is now `services/holdings.py`,
+    and calls the snapshot's own functions: `price_holding`, and
+    `snapshots.accrued_income`, which a behaviour-neutral refactor took out of
+    `snapshots.build` so that both share it.
 
 - **`pt pnl` valued unrealized P&L at a price however old.** It took the newest
   cached price on or before `--as-of` with no age check. A holding priced once,
@@ -2050,7 +2132,9 @@ Two rules specific to this repository:
   custodian moved into a worked example that declares four of the nine
   capabilities and notes, per trap, which ones generalise.
 
-## [0.1.0] — unreleased
+## [0.1.0] — never published
+
+Never tagged or released. 0.2.0, the first release (ADR 0049), contains it.
 
 Initial release: `portable_core`, the `.port` format, and `pt`.
 

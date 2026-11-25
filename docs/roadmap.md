@@ -6,6 +6,10 @@ will have, a GitHub issue; the labels are `area:core`, `area:pt`, `area:pert`,
 
 ---
 
+Milestones name stages of this roadmap. They are not version numbers. Every
+merge that changes what ships is a release (ADR 0049), so `portable` 0.2.0
+shipped long before milestone v0.2 was done, and the two will not line up.
+
 ## v0.1 — core + `pt` · **built**
 
 `portable_core`, the `.port` format, and a production-usable `pt`.
@@ -192,7 +196,9 @@ Then:
    nearly every real portfolio.
 8. **Policy allocation and drift** (issue 61) — an asset class on every
    instrument, an effective-dated target, and target against actual with
-   bands. Proposes no trades.
+   bands. Proposes no trades. Accepted in
+   [ADR 0048](adr/0048-policy-allocation-and-drift.md), with the recommended
+   answer to each of its five questions.
 9. **Lot-level sale candidates** (issue 62) — per open lot: unrealized gain,
    days to long-term, estimated tax if sold, and whether a loss would be a
    wash sale. The first tax-aware decision support, ahead of the optimizer.

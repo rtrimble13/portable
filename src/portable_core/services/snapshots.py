@@ -16,16 +16,18 @@ what it checks.
 
 from __future__ import annotations
 
+import enum
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
-from portable_core.decimals import from_text, quantize_money
+from portable_core.decimals import from_text, money_context, quantize_money
 from portable_core.domain.enums import TransactionType, ValuationBasis
 from portable_core.domain.models import (
     Account,
+    Instrument,
     Price,
     SnapshotPrice,
     Transaction,
@@ -34,11 +36,22 @@ from portable_core.domain.models import (
 from portable_core.errors import DataUnavailableError
 from portable_core.persistence.repositories import RemovedSnapshots, Repositories
 from portable_core.services.replay import effective_ledger, over_dates
-from portable_core.services.valuation import NO_MARKET_PRICE, Holding, ValuationEngine
+from portable_core.services.valuation import (
+    NO_MARKET_PRICE,
+    Holding,
+    ValuationEngine,
+    is_accruing,
+    receivable,
+)
 
 __all__ = [
+    "Accrual",
+    "AccrualKind",
+    "AccruedIncome",
     "PriceLookup",
     "SnapshotProblem",
+    "Unaccrued",
+    "accrued_income",
     "build",
     "coupons_by_account",
     "declared_by_account",
@@ -62,6 +75,98 @@ _REVALUE = "value it again with `pt value --date {on}`, or a range that covers i
 #: against today's setting would report a changed configuration as a changed
 #: snapshot, so verification accepts whatever was recorded.
 _ANY_STALENESS = 36_500
+
+
+class AccrualKind(enum.StrEnum):
+    """Which term of a snapshot's accrued income a part is counted in."""
+
+    #: A bond's interest since its last coupon, and a coupon entitled and not
+    #: yet paid (ADR 0041 §3). Required (``PORT-GIPS-A06``).
+    INTEREST = "accrued_interest"
+    #: Any other distribution entitled on its ex-date and not yet paid
+    #: (ADR 0040 §13.2). Recommended, and adopted.
+    DIVIDEND = "accrued_dividend"
+
+
+@dataclass(frozen=True, slots=True)
+class Accrual:
+    """One part of an account's accrued income on a date."""
+
+    instrument_id: int | None
+    kind: AccrualKind
+    amount: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class Unaccrued:
+    """A bond whose accrued interest cannot be stated on a date, and why."""
+
+    instrument: Instrument
+    code: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class AccruedIncome:
+    """An account's accrued income on a date, part by part."""
+
+    parts: tuple[Accrual, ...]
+    #: Bonds whose interest cannot be accrued on the date, or whose last
+    #: coupon is not in the ledger. Either leaves the value unknown, as a
+    #: missing price does.
+    unavailable: tuple[Unaccrued, ...]
+
+    def total(self, kind: AccrualKind) -> Decimal:
+        with money_context():
+            return quantize_money(sum((p.amount for p in self.parts if p.kind is kind), ZERO))
+
+
+def accrued_income(
+    held_now: Sequence[Holding],
+    on: date,
+    *,
+    engine: ValuationEngine,
+    declared: Sequence[Transaction] = (),
+    coupons: Mapping[int, frozenset[date]] | None = None,
+) -> AccruedIncome:
+    """Every part of an account's accrued income at the end of *on*.
+
+    The one statement of what a snapshot accrues: :func:`build` sums it into
+    the snapshot's two terms, and `pt holdings` shows it part by part, so the
+    two cannot disagree (``PORT-GIPS-A06``). *held_now* are the account's
+    holdings that day; *declared* and *coupons* are as :func:`build` takes
+    them.
+    """
+    parts: list[Accrual] = []
+    unavailable: list[Unaccrued] = []
+    for holding in held_now:
+        if holding.instrument.bond is None:
+            continue
+        # ADR 0041 §3: accrued to the valuation date, and every coupon the
+        # account was owed is in the ledger.
+        try:
+            amount = engine.accrued_interest(holding, on)
+            engine.require_coupons_recorded(
+                holding,
+                on,
+                (coupons or {}).get(holding.instrument.instrument_id, frozenset()),
+            )
+        except DataUnavailableError as gap:
+            unavailable.append(Unaccrued(holding.instrument, gap.code, gap.message))
+            continue
+        parts.append(Accrual(holding.instrument.instrument_id, AccrualKind.INTEREST, amount))
+    # A coupon entitled and not yet paid is accrued interest; any other
+    # distribution, accrued dividends (ADR 0040 §13.2, ADR 0041 §3).
+    for txn in declared:
+        if not is_accruing(txn, on):
+            continue
+        kind = (
+            AccrualKind.INTEREST
+            if txn.txn_type is TransactionType.COUPON
+            else AccrualKind.DIVIDEND
+        )
+        parts.append(Accrual(txn.instrument_id, kind, receivable(txn)))
+    return AccruedIncome(parts=tuple(parts), unavailable=tuple(unavailable))
 
 
 def build(
@@ -98,22 +203,12 @@ def build(
     """
     engine = ValuationEngine(staleness_tolerance_days=staleness_tolerance_days)
     priced: list[SnapshotPrice] = []
-    missing: list[str] = []
-    interest = ZERO
-    for holding in _holdings(repos, account.account_id):
-        if holding.instrument.bond is not None:
-            # ADR 0041 §3: accrued to the valuation date, and every coupon the
-            # account was owed is in the ledger. Either failing leaves the
-            # snapshot incomplete, as a missing price does.
-            try:
-                interest += engine.accrued_interest(holding, on)
-                engine.require_coupons_recorded(
-                    holding,
-                    on,
-                    (coupons or {}).get(holding.instrument.instrument_id, frozenset()),
-                )
-            except DataUnavailableError:
-                missing.append(holding.instrument.symbol)
+    held_now = _holdings(repos, account.account_id)
+    income = accrued_income(held_now, on, engine=engine, declared=declared, coupons=coupons)
+    # Interest that cannot be accrued leaves the snapshot incomplete, as a
+    # missing price does.
+    missing = [gap.instrument.symbol for gap in income.unavailable]
+    for holding in held_now:
         if not holding.instrument.has_market_price:
             # ADR 0028: nothing quotes it, so no price is looked for.
             priced.append(engine.without_market_price(holding, on))
@@ -126,10 +221,6 @@ def build(
             )
         except DataUnavailableError:
             missing.append(holding.instrument.symbol)
-    # A coupon entitled and not yet paid is accrued interest; any other
-    # distribution, accrued dividends (ADR 0040 §13.2, ADR 0041 §3).
-    paying = [txn for txn in declared if txn.txn_type is TransactionType.COUPON]
-    distributing = [txn for txn in declared if txn.txn_type is not TransactionType.COUPON]
 
     cash, margin = repos.valuations.cash(account.account_id, currency=account.currency)
     return engine.build_snapshot(
@@ -140,8 +231,8 @@ def build(
         margin_loan=margin,
         beginning_market_value=beginning,
         transactions=transactions,
-        accrued_interest=quantize_money(interest + engine.accrued_dividends(paying, on)),
-        accrued_dividends=engine.accrued_dividends(distributing, on),
+        accrued_interest=income.total(AccrualKind.INTEREST),
+        accrued_dividends=income.total(AccrualKind.DIVIDEND),
         policy=repos.policies.in_force(on),
         incomplete_symbols=tuple(missing),
     )

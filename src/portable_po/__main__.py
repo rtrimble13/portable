@@ -8,7 +8,7 @@ from __future__ import annotations
 import sys
 from typing import Final
 
-from portable_po import MILESTONE
+from portable_po import MILESTONE, __version__
 
 _PLANNED: Final[tuple[str, ...]] = (
     "Integrate rtrimble13/po (portopt) as the optimization engine -- wrap, do not reimplement",
@@ -49,9 +49,16 @@ po -- Portfolio optimization
 
 
 def main() -> int:
-    """Print help to stderr and exit 1. Structured output would be a lie."""
+    """Print help to stderr and exit 1. Structured output would be a lie.
+
+    `po --version` is the one question it can answer: which release is
+    installed (ADR 0049). The release workflow asks every CLI.
+    """
     # T201 is suppressed here deliberately: this is the one place a CLI
     # writes without a formatter, because there is no result to format.
+    if sys.argv[1:] == ["--version"]:
+        print(__version__)  # noqa: T201
+        return 0
     print(_HELP, file=sys.stderr)  # noqa: T201
     return 1
 

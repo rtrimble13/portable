@@ -4,7 +4,10 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "portable"
-version = "0.1.0"
+# Read from the one place it is written, src/portable_core/__init__.py, so the
+# distribution metadata and `pt --version` cannot disagree (ADR 0049). See
+# [tool.scikit-build.metadata.version] below.
+dynamic = ["version"]
 description = "A family of standalone command-line tools for investment portfolio analysis"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -61,6 +64,13 @@ wheel.packages = [
 ]
 sdist.include = ["cpp/**", "src/**", "schemas/**", "docs/**"]
 build-dir = "build/{wheel_tag}"
+
+# The version is a source constant, not derived from a git tag: the owner
+# upgrades with `git pull` into an editable install, and a version computed
+# when pip runs would describe whenever pip last ran (ADR 0049).
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "src/portable_core/__init__.py"
 
 [tool.scikit-build.cmake.define]
 PORTABLE_BUILD_NATIVE = "ON"
@@ -149,6 +159,7 @@ markers = [
   "golden: golden-file output comparisons",
   "native: requires the compiled portable_native extension",
   "slow: excluded from make test-fast",
+  "needs_fresh_install: only meaningful when pip has run since the version changed",
 ]
 filterwarnings = ["error"]
 

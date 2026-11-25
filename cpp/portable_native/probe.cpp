@@ -20,7 +20,9 @@ BuildInfo build_info() {
 #else
     compiler << "unknown";
 #endif
-    return BuildInfo{compiler.str(), std::to_string(__cplusplus), "0.1.0"};
+    // PORTABLE_VERSION is the package's version, defined by CMake from
+    // src/portable_core/__init__.py (ADR 0049).
+    return BuildInfo{compiler.str(), std::to_string(__cplusplus), PORTABLE_VERSION};
 }
 
 std::uint64_t checksum(const std::vector<std::int64_t>& values) {

@@ -10,8 +10,19 @@
 # must satisfy.
 
 cmake_minimum_required(VERSION 3.20)
+
+# The version is written once, in src/portable_core/__init__.py (ADR 0049).
+# Read from there, so the extension cannot report a number the package does
+# not: `pip install` and a standalone `make cpp` both configure from this.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../src/portable_core/__init__.py"
+     PORTABLE_VERSION_LINE REGEX "^__version__ = \"[0-9]+\\.[0-9]+\\.[0-9]+\"$")
+if(NOT PORTABLE_VERSION_LINE MATCHES "\"([0-9]+\\.[0-9]+\\.[0-9]+)\"")
+    message(FATAL_ERROR "portable: no __version__ = \"X.Y.Z\" in src/portable_core/__init__.py")
+endif()
+set(PORTABLE_VERSION "${CMAKE_MATCH_1}")
+
 project(portable_native
-    VERSION 0.1.0
+    VERSION ${PORTABLE_VERSION}
     DESCRIPTION "portable native extension scaffolding"
     LANGUAGES CXX
 )

@@ -4,7 +4,8 @@ pybind11_add_module(portable_native MODULE
 )
 
 target_include_directories(portable_native PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_definitions(portable_native PRIVATE VERSION_INFO=${PROJECT_VERSION})
+# The package's version, read by the top-level CMakeLists.txt (ADR 0049).
+target_compile_definitions(portable_native PRIVATE "PORTABLE_VERSION=\"${PROJECT_VERSION}\"")
 
 # /Zc:__cplusplus is required, not cosmetic: without it MSVC reports
 # __cplusplus as 199711L regardless of /std:c++17, for backward compatibility.
@@ -25,6 +26,7 @@ install(TARGETS portable_native LIBRARY DESTINATION .)
 # bindings expose rather than a copy of it.
 add_library(portable_probe STATIC probe.cpp)
 target_include_directories(portable_probe PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(portable_probe PUBLIC "PORTABLE_VERSION=\"${PROJECT_VERSION}\"")
 # The Catch2 suite links this rather than the module, so it needs the same
 # flag -- otherwise the test binary and the extension disagree about what
 # __cplusplus is, which is how this was missed.
