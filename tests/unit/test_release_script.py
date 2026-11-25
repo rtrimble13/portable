@@ -128,6 +128,16 @@ def test_the_notes_open_with_what_to_run_after_the_pull() -> None:
     assert "`holdings-2.0`" in full
 
 
+def test_the_first_release_says_to_migrate_files_an_earlier_checkout_wrote() -> None:
+    changelog = release.with_section(CHANGELOG, "0.2.0", None, ON)
+    first = release.notes(
+        "0.2.0", _changes(previous=None, reinstall=["this is the first release"]),
+        changelog, "rtrimble13/portable",
+    )  # fmt: skip
+    assert "make install    # this is the first release" in first
+    assert "pt --port FILE migrate    # each .port file an earlier checkout wrote" in first
+
+
 def test_a_changelog_too_long_for_a_release_is_linked_not_carried() -> None:
     long = CHANGELOG.replace("- A fix.", "- A fix.\n" + "x" * (release.NOTES_LIMIT + 1))
     changelog = release.with_section(long, "0.3.0", None, ON)

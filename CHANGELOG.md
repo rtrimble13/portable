@@ -18,6 +18,8 @@ Two rules specific to this repository:
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-25
+
 ### Added
 
 - **Releases** (ADR 0049, the model of rtrimble13/fafnir, dorq and

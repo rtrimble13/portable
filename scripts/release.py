@@ -236,8 +236,14 @@ def bump(target: str, *, dry_run: bool, on: date) -> None:
     # and the constant pip read has just changed. The release workflow installs
     # before it runs it.
     print("--> Checking every version in the repository agrees")
-    if importlib.util.find_spec("pytest") is None:
-        print("    SKIPPED: pytest is not importable here; `make install` first.")
+    # Both, in this interpreter: the tests import portable, so a pytest with no
+    # portable beside it (a system or pipx one) cannot run them.
+    if (
+        importlib.util.find_spec("pytest") is None
+        or importlib.util.find_spec("portable_core") is None
+    ):
+        print("    SKIPPED: this interpreter cannot import both pytest and portable.")
+        print("    Run it as `make bump`, or `make install` first.")
         print("    The release workflow still checks this before it tags.")
     else:
         tests = subprocess.run(
@@ -333,6 +339,10 @@ def notes(version: str, changes: Changes, changelog: str, repository: str) -> st
         lines.append(f"make install    # {', '.join(changes.reinstall)}")
     if changes.migrations:
         lines.append("pt --port FILE migrate    # every .port file; it takes a backup first")
+    elif changes.previous is None:
+        # The first release: a file an earlier checkout wrote may be at any
+        # schema since, and pt refuses it until it is migrated.
+        lines.append("pt --port FILE migrate    # each .port file an earlier checkout wrote")
     lines += [f"pt --version    # {version}", "```", ""]
     if changes.migrations:
         names = ", ".join(f"`{m}`" for m in changes.migrations)
