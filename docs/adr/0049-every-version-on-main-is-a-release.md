@@ -1,7 +1,9 @@
 # ADR 0049 — Every version on main is a release: one number in source, raised by the pull request, published by the merge
 
 - **Status:** Accepted (owner, 2026-11-25: "implement versioning and release automation that is identical to the model used in `rtrimble13/dorq`, `rtrimble13/fafnir` and `rtrimble13/alpha-tango`"). **Implemented**: `src/portable_core/__init__.py`, `scripts/check_version.py`, `scripts/release.py`, `.github/workflows/release.yml`, the `version` job in `.github/workflows/ci.yml`, `make version` / `make bump`, `tests/unit/test_version.py`, `tests/unit/test_check_version.py`, `tests/unit/test_release_script.py`
-- **Date:** 2026-11-25
+- **Date:** 2026-11-25. Confirmed by the owner the same day: the first release
+  is 0.2.0, the milestone names stay, and CI's `check` is to be a required
+  status check on `main` (docs/releasing.md, "Recommended repository settings")
 - **Governs:** `CLAUDE.md` invariant 6 (determinism) for the sample's stamp; "Schema changes require a migration … and a note in `CHANGELOG.md`"
 - **Depends on:** [ADR 0035](0035-every-stored-stamp-is-read-from-an-injected-clock.md) (the sample's stamps are pinned), [ADR 0008](0008-cpp-integration-and-fallback.md) (the extension and its Python reference)
 - **Related:** [docs/releasing.md](../releasing.md); rtrimble13/fafnir's ADR 0011 and ADR 0022, rtrimble13/dorq's ADR 0008, and rtrimble13/alpha-tango's `docs/versioning-and-releases.md`, the model this adopts

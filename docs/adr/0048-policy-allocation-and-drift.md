@@ -1,7 +1,7 @@
 # ADR 0048 — Policy allocation and drift: declared classes, an effective-dated target, and drift at the market value a snapshot records
 
-- **Status:** Proposed (2026-11-24). Five questions for the owner, each with a recommended answer
-- **Date:** 2026-11-24
+- **Status:** Accepted (owner, 2026-11-25), with the recommended answer to each of its five questions. See Owner's answers
+- **Date:** 2026-11-24; accepted 2026-11-25
 - **Milestone:** v0.2, issue 61 (P1)
 - **Governs:** `PORT-GIPS-A06` (accrued income is part of value), `PORT-GIPS-A07` (cash is in the total), `PORT-GIPS-A09` (the price a holding is valued at); `CLAUDE.md` invariants 3, 6, 9 and 10
 - **Depends on:** [ADR 0010](0010-derived-state-and-replay.md) (config rows are effective-dated, not edited), [ADR 0013](0013-cash-sweep-is-cash.md) (a sweep is cash), [ADR 0021](0021-derived-state-as-of-a-past-date.md) (state as of a date), [ADR 0024](0024-valuation-snapshots-are-valued-state.md) (what a snapshot values), [ADR 0025](0025-config-rows-dated-into-history.md) (corrections on a row's own date), [ADR 0028](0028-instrument-with-no-market-price.md) (zero at level 5), [ADR 0041](0041-bonds-at-face-with-accrued-interest.md) (accrued interest), [ADR 0044](0044-estimated-returns-over-unpriced-days.md) (carried prices, on request)
@@ -237,14 +237,39 @@ And from this ADR:
    is to start empty and leave the column as a description. That gives two
    different answers to "what class is this?".
 
+## Owner's answers (2026-11-25)
+
+1. **Where targets live:** one target for the portfolio. Each account is shown
+   by its contribution to each class's portfolio weight, and has no target of
+   its own.
+2. **Bands:** an absolute band per class, in percentage points.
+3. **Funds that hold more than one class:** split by stated weights that sum
+   to exactly 1, and the classification is dated. Whether any such fund is
+   held was not said. Splits cost nothing unused.
+4. **An unpriced holding:** refused by default (`PT-E-ALLOCATION-UNPRICED`,
+   exit 5), naming each holding and its newest price. `--estimate MAX_SHARE`
+   values it at a carried price (ADR 0044), only within that share of the
+   total, and marks the report estimated.
+5. **The existing free-text `asset_class`:**
+   - **The classification is seeded from it.** Each distinct value becomes a
+     class, and each instrument with one is classified into it at weight 1
+     from the portfolio's inception.
+   - **One meaning of "asset class".** `pt instrument update --asset-class` is
+     then refused, with a pointer to `pt allocation classify`.
+     `pt holdings --by asset-class` reads the classification.
+   - **Holdings follow drift.** With that, holdings follows §4 for a declared
+     dividend: its `accrued_dividend` line groups under `cash`, not under the
+     paying security, so the two reports agree.
+
 ## Consequences
 
 - **Schema 13**: three new tables and a migration, tested in both directions
   (ADR 0019).
 - **New commands** under `pt allocation`, and a new schema,
   `allocation-drift-1.0`.
-- **`pt holdings --by asset-class`** reads the declared classification, if
-  question 5 is answered as recommended.
+- **`pt holdings --by asset-class`** reads the declared classification
+  (answer 5). An `accrued_dividend` line groups under `cash`, as §4 places it
+  in drift, and an `accrued_interest` line under its bond's class.
 - **The two traps in `pt holdings`** recorded in the Context (weights over a
   partial total, accrued income left out) were fixed in their own change,
   `holdings-2.0`, before this ADR was decided. `pt holdings` now values

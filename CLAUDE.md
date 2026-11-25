@@ -446,7 +446,7 @@ its `CHANGELOG.md` section, or the version gate in `make check` fails.
   | 0045 | Multi-period returns: one walk, rows that stand alone, and a record that breaks where nothing was held |
   | 0046 | Money-weighted return: one solve from the walk's flows, beside the TWR, refused unless its rate is provably the only one |
   | 0047 | Lot-level sale candidates: each open lot priced, taxed and checked for a wash as if sold alone today, and nothing proposed |
-  | 0048 | Policy allocation and drift: declared classes, an effective-dated target, and drift at the market value a snapshot records (proposed) |
+  | 0048 | Policy allocation and drift: declared classes, an effective-dated target, and drift at the market value a snapshot records |
   | 0049 | Every version on main is a release: one number in source, raised by the pull request, published by the merge |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module

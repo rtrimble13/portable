@@ -157,6 +157,18 @@ The rest is judgement, made in review. A fix that changes a figure the owner
 may have recorded is at least a minor, and its `CHANGELOG.md` entry says which
 figures moved.
 
+## Recommended repository settings
+
+These are set in GitHub, not in files:
+
+- **Branch protection on `main`:** require a pull request, and the status
+  check `check` (CI's one green light, which includes the `version` gate), so
+  a change to what ships cannot merge without its version. Disallow force
+  pushes, so a published tag's commit stays on `main`.
+- **Actions, workflow permissions:** "Read repository contents" is enough. The
+  release job asks for `contents: write` itself, as fafnir's, dorq's and
+  alpha-tango's do.
+
 ## Fixing a bad release
 
 Releases are not edited.
