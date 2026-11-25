@@ -333,10 +333,24 @@ make cpp                      # configure, build, and run Catch2
 make schemas                  # regenerate + validate JSON Schemas
 make docs                     # regenerate docs/schema.md from DDL comments
 make fixtures                 # rebuild examples/sample.port and sample_prices.csv
-make check                    # everything CI runs
+make version                  # this branch's version, main's, the last release
+make bump BUMP=minor          # set the version this branch releases (ADR 0049)
+make check                    # everything CI runs, the version gate included
 ```
 
-Also available: `make install`, `make format`, `make coverage`, `make clean`.
+Also available: `make install`, `make format`, `make coverage`, `make clean`,
+`make version-check`.
+
+**Every version that reaches main is a release** (ADR 0049). The version is
+written once, `__version__` in `src/portable_core/__init__.py`. A pull request
+that changes what ships raises it with `make bump`, which also turns
+`CHANGELOG.md`'s `[Unreleased]` into the release's dated section. What ships
+is `src/`, `schemas/`, `cpp/`, `pyproject.toml` and `scripts/xlsx_to_csv.py`.
+Merging publishes `vX.Y.Z`. CI's `version` job is the gate:
+- a migration, or a new major output schema, is a minor release at least;
+- a fix that moves a reported number should be one too.
+
+See `docs/releasing.md`. Never tag by hand.
 
 `examples/sample.port` is **generated, not hand-crafted** — a hand-made fixture
 drifts from what the code produces and quietly stops testing anything. Rebuild it
@@ -354,7 +368,8 @@ a Windows break: do not introduce POSIX-only assumptions — paths, shell invoca
 or line endings — and expect the owner's `make check` to be the only Windows run.
 
 **Before declaring any task done:** `make check` is green, and any new invariant has a
-test that fails without your change.
+test that fails without your change. A change to what ships carries its version and
+its `CHANGELOG.md` section, or the version gate in `make check` fails.
 
 ---
 
@@ -432,6 +447,7 @@ test that fails without your change.
   | 0046 | Money-weighted return: one solve from the walk's flows, beside the TWR, refused unless its rate is provably the only one |
   | 0047 | Lot-level sale candidates: each open lot priced, taxed and checked for a wash as if sold alone today, and nothing proposed |
   | 0048 | Policy allocation and drift: declared classes, an effective-dated target, and drift at the market value a snapshot records (proposed) |
+  | 0049 | Every version on main is a release: one number in source, raised by the pull request, published by the merge |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager
@@ -460,6 +476,8 @@ test that fails without your change.
   computed outside `portable`, and the estimate tier on prices withheld
   from them: what was built, what it found, and what it cannot test
 - `docs/roadmap.md` — what is coming and in which milestone
+- `docs/releasing.md` — how a version is chosen and published (every merge that
+  ships is a release), and what to run after a `git pull`
 - Prior art: [fafnir](https://github.com/rtrimble13/fafnir) (market data warehouse,
   Postgres + `duk`) · [po/portopt](https://github.com/rtrimble13/po) (C++17 optimizer
   with pybind11 bindings)

@@ -147,6 +147,32 @@ none of them is a good idea until a profile says so.
 
 ---
 
+## Versioning and releasing
+
+**Every version that reaches main is a release**
+([ADR 0049](docs/adr/0049-every-version-on-main-is-a-release.md), the model
+rtrimble13/fafnir, dorq and alpha-tango use). A pull request that changes what
+ships raises the version, with the change. What ships is `src/`, `schemas/`,
+`cpp/`, `pyproject.toml` and `scripts/xlsx_to_csv.py`.
+
+```bash
+make version                  # the version here, on main, and the last release
+make bump BUMP=minor          # or patch, major, X.Y.Z: from the version on main
+```
+
+`make bump` sets `__version__` in `src/portable_core/__init__.py`, the one place
+it is written. It also turns `CHANGELOG.md`'s `[Unreleased]` into the release's
+dated section. Commit both. CI's `version` job holds the pull request to the
+rules:
+- a change that ships raises the version;
+- a migration, or a new major output schema, is a minor release at least;
+- a raised version has a non-empty `CHANGELOG.md` section.
+
+Merging publishes the release: `.github/workflows/release.yml` checks the merge
+commit says the number, then creates the tag `vX.Y.Z` and the GitHub release.
+[docs/releasing.md](docs/releasing.md) says how to choose the number, and what
+to run after a pull.
+
 ## Commits and pull requests
 
 - **[Conventional Commits](https://www.conventionalcommits.org/)**, small and
@@ -154,7 +180,8 @@ none of them is a good idea until a profile says so.
 - **When a document becomes wrong, fix it in the same commit** that made it
   wrong. A stale `CLAUDE.md` is worse than none, and the same rule binds
   `docs/gips-standard.md`.
-- **`make check` green** before you open the PR.
+- **`make check` green** before you open the PR. It includes the version gate,
+  so a pull request that changes what ships needs its `make bump` first.
 
 ---
 

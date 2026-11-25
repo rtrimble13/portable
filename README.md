@@ -48,6 +48,11 @@ source .venv/bin/activate     # or .venv\Scripts\Activate.ps1
 pt --version
 ```
 
+**Every merge to `main` that changes what ships is a release**, tagged `vX.Y.Z`
+on [GitHub](https://github.com/rtrimble13/portable/releases). Each release's
+notes open with what to run after `git pull`: a reinstall, or `pt migrate` for
+each `.port` file. See [docs/releasing.md](docs/releasing.md).
+
 **The compiled extension is optional.** `PORTABLE_BUILD_NATIVE=OFF pip install .`
 produces a complete, correct, pure-Python install — not a degraded one. Every
 C++ path in `portable` keeps a pure-Python reference implementation, and a

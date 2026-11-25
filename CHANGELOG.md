@@ -11,10 +11,36 @@ Two rules specific to this repository:
 - **A change to a `PORT-GIPS-xxx` requirement gets an entry here either way**,
   and an ADR if it changes an implementation obligation
   (`docs/gips-standard.md` §13).
+- **Every version that reaches main is a release** (ADR 0049). A pull request
+  that changes what ships raises the version, and `make bump` turns
+  `[Unreleased]` into the release's dated section. CI refuses a raised version
+  without one, and the section becomes the text of the GitHub release.
 
 ## [Unreleased]
 
 ### Added
+
+- **Releases** (ADR 0049, the model of rtrimble13/fafnir, dorq and
+  alpha-tango). Every version that reaches `main` is a release.
+  - **A pull request that changes what ships raises the version.**
+    `make bump BUMP=patch|minor|major` (`scripts/release.py`) sets it, counted
+    from `main`'s, and turns `[Unreleased]` here into the release's section.
+  - **CI's `version` job holds the pull request to the rules**
+    (`scripts/check_version.py`, part of `check`):
+    - the version never goes down;
+    - a change to `src/`, `schemas/`, `cpp/` or `pyproject.toml` raises it;
+    - an added migration, or a new major output schema, is a minor release
+      at least;
+    - a raised version has its own dated, non-empty section here.
+  - **Merging publishes the release.** `.github/workflows/release.yml`
+    installs the merge commit and checks that the source, the metadata, the
+    native extension and all five CLIs report the number. Then it creates the
+    tag `vX.Y.Z` and the GitHub release. The notes say what to run after
+    `git pull` (`make install`, `pt migrate`), then carry the section from
+    here.
+  - **`make version`** reports this branch's version, `main`'s, and the last
+    release. **`make check`** now runs the gate against `origin/main`, as CI
+    does. See `docs/releasing.md`.
 
 - **`pt lot candidates`** (issue 62, ADR 0047): every open long lot in a
   taxable account, each as if sold alone, all of it, on `--as-of`. It is
@@ -766,6 +792,19 @@ Two rules specific to this repository:
 
 ### Changed
 
+- **One version, written once** (ADR 0049).
+  - **`__version__` in `src/portable_core/__init__.py`** is now the only
+    literal. Before, it was written in five places: `pyproject.toml`, three
+    packages and the C++ extension.
+  - **`pt`, `pert`, `po` and `risky` re-export it.** `pyproject.toml` reads it
+    through scikit-build-core's regex provider, and `cpp/CMakeLists.txt` reads
+    it for the extension.
+  - **`po --version` and `risky --version` answer** instead of printing their
+    help.
+- **`examples/sample.port` is stamped `0.0.0+sample`**, in
+  `meta.portable_version` and in each migration's `applied_by`, instead of
+  the version that built it. A release no longer rewrites the committed file
+  (ADR 0049 §5). `migrations.initialise` takes `applied_by` for it.
 - **`PORT-GIPS-C04` no longer refuses an MWR for more than one sign change
   in its flows** (ADR 0046 §3). It refuses one whose rate cannot be shown to
   be the only one: compounded at the rate found, the balance goes negative
@@ -2091,7 +2130,9 @@ Two rules specific to this repository:
   custodian moved into a worked example that declares four of the nine
   capabilities and notes, per trap, which ones generalise.
 
-## [0.1.0] — unreleased
+## [0.1.0] — never published
+
+Never tagged or released. 0.2.0, the first release (ADR 0049), contains it.
 
 Initial release: `portable_core`, the `.port` format, and `pt`.
 

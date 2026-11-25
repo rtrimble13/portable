@@ -6,6 +6,10 @@ will have, a GitHub issue; the labels are `area:core`, `area:pt`, `area:pert`,
 
 ---
 
+Milestones name stages of this roadmap. They are not version numbers. Every
+merge that changes what ships is a release (ADR 0049), so `portable` 0.2.0
+shipped long before milestone v0.2 was done, and the two will not line up.
+
 ## v0.1 — core + `pt` · **built**
 
 `portable_core`, the `.port` format, and a production-usable `pt`.
