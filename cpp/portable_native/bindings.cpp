@@ -12,7 +12,7 @@ PYBIND11_MODULE(portable_native, m) {
         "has a pure-Python twin in portable_core.native._reference, and a "
         "differential test asserts they agree. See ADR 0008.";
 
-    m.attr("__version__") = "0.1.0";
+    m.attr("__version__") = PORTABLE_VERSION;  // from CMake (ADR 0049)
 
     py::class_<portable::BuildInfo>(m, "BuildInfo")
         .def_readonly("compiler", &portable::BuildInfo::compiler)

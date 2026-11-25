@@ -16,7 +16,8 @@ from __future__ import annotations
 
 from typing import Final
 
-__version__: Final[str] = "0.1.0"
+from portable_core import __version__
+
 MILESTONE: Final[str] = "v0.3"
 
 __all__ = ["MILESTONE", "__version__"]

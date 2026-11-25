@@ -14,6 +14,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Final, NamedTuple
 
+from portable_core import __version__
+
 _FNV_OFFSET_BASIS: Final[int] = 14695981039346656037
 _FNV_PRIME: Final[int] = 1099511628211
 _MASK64: Final[int] = 0xFFFFFFFFFFFFFFFF
@@ -29,7 +31,7 @@ class BuildInfo(NamedTuple):
 
 def build_info() -> BuildInfo:
     """Describe the pure-Python implementation in the extension's own shape."""
-    return BuildInfo(compiler="pure-python", cxx_standard="n/a", module_version="0.1.0")
+    return BuildInfo(compiler="pure-python", cxx_standard="n/a", module_version=__version__)
 
 
 def checksum(values: Sequence[int]) -> int:

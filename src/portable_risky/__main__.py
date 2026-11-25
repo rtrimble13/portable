@@ -8,7 +8,7 @@ from __future__ import annotations
 import sys
 from typing import Final
 
-from portable_risky import MILESTONE
+from portable_risky import MILESTONE, __version__
 
 _PLANNED: Final[tuple[str, ...]] = (
     "Exposure analytics",
@@ -51,9 +51,16 @@ risky -- Risk and scenario analysis
 
 
 def main() -> int:
-    """Print help to stderr and exit 1. Structured output would be a lie."""
+    """Print help to stderr and exit 1. Structured output would be a lie.
+
+    `risky --version` is the one question it can answer: which release is
+    installed (ADR 0049). The release workflow asks every CLI.
+    """
     # T201 is suppressed here deliberately: this is the one place a CLI
     # writes without a formatter, because there is no result to format.
+    if sys.argv[1:] == ["--version"]:
+        print(__version__)  # noqa: T201
+        return 0
     print(_HELP, file=sys.stderr)  # noqa: T201
     return 1
 

@@ -27,6 +27,8 @@ TEST_CASE("checksum handles the full signed range without UB", "[probe]") {
 
 TEST_CASE("build_info reports a C++17-or-later standard", "[probe]") {
     const auto info = portable::build_info();
-    REQUIRE(info.module_version == "0.1.0");
+    // The package's version, as CMake read it (ADR 0049); the Python suite
+    // holds it to portable_core.__version__.
+    REQUIRE(info.module_version == PORTABLE_VERSION);
     REQUIRE(std::stol(info.cxx_standard) >= 201703L);
 }
