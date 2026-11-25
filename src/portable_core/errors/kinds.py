@@ -129,6 +129,16 @@ E_OPTION_ROW_INVALID: Final = "PT-E-OPTION-ROW-INVALID"
 E_ROC_ENTITLEMENT: Final = "PT-E-ROC-ENTITLEMENT"
 E_TAX_METHOD_CONFLICT: Final = "PT-E-TAX-METHOD-CONFLICT"
 E_TAX_NO_RATE_SCHEDULE: Final = "PT-E-TAX-NO-RATE-SCHEDULE"
+#: ADR 0048. No allocation policy is in force on the date: drift is judged
+#: against a stated target or not at all, never against a zero.
+E_ALLOCATION_NO_POLICY: Final = "PT-E-ALLOCATION-NO-POLICY"
+#: ADR 0048, answer 4. A holding cannot be valued, so every weight is unknown.
+E_ALLOCATION_UNPRICED: Final = "PT-E-ALLOCATION-UNPRICED"
+#: ADR 0048. A classification's weights, or a policy's targets, that do not sum
+#: to exactly 1, or a weight or band outside 0 to 1.
+E_ALLOCATION_WEIGHTS: Final = "PT-E-ALLOCATION-WEIGHTS"
+#: ADR 0048. A class named that the portfolio does not have.
+E_ALLOCATION_UNKNOWN_CLASS: Final = "PT-E-ALLOCATION-UNKNOWN-CLASS"
 
 E_CASH_INSUFFICIENT: Final = "PT-E-CASH-INSUFFICIENT"
 E_CASH_NOT_CONSERVED: Final = "PT-E-CASH-NOT-CONSERVED"
@@ -250,6 +260,10 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_ROC_ENTITLEMENT,
     E_TAX_METHOD_CONFLICT,
     E_TAX_NO_RATE_SCHEDULE,
+    E_ALLOCATION_NO_POLICY,
+    E_ALLOCATION_UNPRICED,
+    E_ALLOCATION_WEIGHTS,
+    E_ALLOCATION_UNKNOWN_CLASS,
     E_CASH_INSUFFICIENT,
     E_CASH_NOT_CONSERVED,
     E_FRACTIONAL_SHARE,
