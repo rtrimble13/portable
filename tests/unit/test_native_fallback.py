@@ -11,6 +11,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+import portable_core
 from portable_core import native
 from portable_core.native import _reference
 
@@ -82,7 +83,8 @@ def test_native_build_info_is_a_real_cpp_build() -> None:
     import portable_native
 
     info = portable_native.build_info()
-    assert info.module_version == "0.1.0"
+    # The package's version, which CMake reads from the constant (ADR 0049).
+    assert info.module_version == portable_core.__version__
     assert int(info.cxx_standard) >= 201703
     assert native.implementation() == "native"
 
