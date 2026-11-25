@@ -13,7 +13,7 @@ else
 endif
 
 .DEFAULT_GOAL := help
-.PHONY: help venv install lint types test test-fast cpp schemas docs check clean fixtures coverage
+.PHONY: help venv install lint types test test-fast cpp schemas docs check clean fixtures coverage version version-check bump release
 
 help:  ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -75,7 +75,25 @@ docs:  ## Regenerate docs/schema.md from the DDL comments
 fixtures:  ## Rebuild examples/sample.port and sample_prices.csv from the generator
 	$(BIN)/python scripts/build_sample_portfolio.py --out examples/sample.port --force
 
-check: lint types test  ## Everything CI runs (test includes the schema validation)
+# One version, in one place (ADR 0049). `make version` reports; `make bump` sets
+# the version a pull request releases, and merging it publishes the release.
+# All three are scripts/release.py and scripts/check_version.py -- see
+# docs/releasing.md.
+version:  ## This branch's version, main's, and the last release
+	$(BIN)/python scripts/release.py
+
+version-check:  ## The version gate CI runs on a pull request, against origin/main
+	$(BIN)/python scripts/check_version.py --base origin/main
+
+bump:  ## Set this branch's version: make bump BUMP=patch|minor|major|X.Y.Z [DRY_RUN=1]
+	$(if $(BUMP),,$(error Usage: make bump BUMP=patch|minor|major|X.Y.Z [DRY_RUN=1]))
+	$(BIN)/python scripts/release.py $(BUMP) $(if $(DRY_RUN),--dry-run,)
+
+release:  ## There is no release step: merging the pull request is the release
+	@echo "A release is the merge of a pull request that raises the version (ADR 0049)."
+	@echo "On your branch: make bump BUMP=patch|minor|major, commit, and merge."
+
+check: lint types test version-check  ## Everything CI runs (test includes the schema validation)
 	@echo "check: green"
 
 clean:  ## Remove build and test artifacts

@@ -176,11 +176,35 @@ jobs:
       - name: Catch2
         run: ctest --test-dir build/cpp --output-on-failure --build-config Release
 
+  # ── The version: every version that reaches main is a release ─────────────
+  # ADR 0049. Merging a pull request publishes v<__version__> when it has no
+  # release yet (.github/workflows/release.yml), so the pull request is where
+  # the number is chosen, and this is the gate: a change to what ships raises
+  # it, an added migration or a new major output schema raises it by a minor
+  # at least, and a raised version brings its CHANGELOG.md section. Pull
+  # requests only: a push has no base to compare with. The script is
+  # stdlib-only and reads the base commit from the event itself, so nothing
+  # from the pull request is interpolated into a shell command here.
+  version:
+    name: version
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The diff is base...head, which needs the merge base: full history.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: The version rises with what ships
+        run: python scripts/check_version.py
+
   # ── One green light for branch protection to key off ──────────────────────
   check:
     name: check
     if: always()
-    needs: [static, test, no-native, cpp]
+    needs: [static, test, no-native, cpp, version]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any required job did not succeed
@@ -189,8 +213,11 @@ jobs:
           echo "test=${{ needs.test.result }}"
           echo "no-native=${{ needs.no-native.result }}"
           echo "cpp=${{ needs.cpp.result }}"
+          echo "version=${{ needs.version.result }}"
           [ "${{ needs.static.result }}" = "success" ] || exit 1
           [ "${{ needs.test.result }}" = "success" ] || exit 1
           [ "${{ needs.no-native.result }}" = "success" ] || exit 1
           [ "${{ needs.cpp.result }}" = "success" ] || exit 1
+          # Skipped on a push, which has no base to hold the version against.
+          [ "${{ needs.version.result }}" = "success" ] || [ "${{ needs.version.result }}" = "skipped" ] || exit 1
           echo "check: green"
