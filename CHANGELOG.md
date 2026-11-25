@@ -18,6 +18,26 @@ Two rules specific to this repository:
 
 ## [Unreleased]
 
+### Schema
+
+- **`schema_version` 12 → 13**, migration `0013_policy_allocation` (ADR 0048,
+  accepted by the owner). Additive: five new tables and no rebuild.
+  - **The tables.** `asset_class` holds the owner's classes, with `cash` built
+    in, undeletable and never renamed. `classification` and
+    `classification_part` say which class or classes an instrument belongs to
+    from a date, by weights that sum to 1. `allocation_policy` and
+    `allocation_target` hold the portfolio's target and band for each class.
+  - **Effective-dated and never edited.** Triggers refuse an update or delete,
+    and a row entered wrongly is corrected on its own date (ADR 0025).
+  - **Seeded from the free-text `instrument.asset_class`.** Each distinct value
+    becomes a class, and each instrument that has one is classified into it at
+    weight 1 from the portfolio's inception. An instrument with none is left
+    unclassified, not guessed. The column is kept.
+  - **Stamped from the runner's clock.** A migration may now write
+    `:applied_at`, bound to the runner's clock (ADR 0035), so the rows it
+    seeds and its own record carry one stamp.
+  - `pt migrate` applies it, and `pt export` carries the new tables.
+
 ## [0.2.0] - 2026-11-25
 
 ### Added
