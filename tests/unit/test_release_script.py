@@ -111,7 +111,13 @@ def _changes(**overrides: object) -> object:
 def test_the_notes_open_with_what_to_run_after_the_pull() -> None:
     changelog = release.with_section(CHANGELOG, "0.3.0", None, ON)
     plain = release.notes("0.3.0", _changes(), changelog, "rtrimble13/portable")
-    assert plain.startswith("## Upgrading\n\n```bash\ngit pull\npt --version    # 0.3.0\n```")
+    # Every release changes the number pip recorded and the extension was
+    # compiled with, so every release reinstalls, even one of Python alone.
+    assert plain.startswith(
+        "## Upgrading\n\n```bash\ngit pull\n"
+        "make install    # every release: pip and the native extension record the version\n"
+        "pt --version    # 0.3.0\n```"
+    )
     assert "## What changed\n\n### Fixed\n\n- A fix." in plain
     assert "blob/v0.3.0/CHANGELOG.md" in plain
 
@@ -122,7 +128,8 @@ def test_the_notes_open_with_what_to_run_after_the_pull() -> None:
         changelog,
         "rtrimble13/portable",
     )  # fmt: skip
-    assert "make install    # pyproject.toml" in full
+    assert "make install    # every release, and pyproject.toml changed" in full
+    assert full.count("make install") == 1
     assert "pt --port FILE migrate" in full
     assert "Schema migrations since v0.2.0: `0013_policy_allocation`." in full
     assert "`holdings-2.0`" in full
@@ -131,7 +138,7 @@ def test_the_notes_open_with_what_to_run_after_the_pull() -> None:
 def test_the_first_release_says_to_migrate_files_an_earlier_checkout_wrote() -> None:
     changelog = release.with_section(CHANGELOG, "0.2.0", None, ON)
     first = release.notes(
-        "0.2.0", _changes(previous=None, reinstall=["this is the first release"]),
+        "0.2.0", _changes(previous=None),
         changelog, "rtrimble13/portable",
     )  # fmt: skip
     assert "make install    # this is the first release" in first

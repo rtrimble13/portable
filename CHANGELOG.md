@@ -18,6 +18,14 @@ Two rules specific to this repository:
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every release's notes now say `make install`.** They said it only when
+  dependencies or `cpp/` changed. But every release changes the version, and
+  both pip's record and the built native extension keep the old number until
+  pip runs again. `make check` holds both to the source, so following the
+  0.3.0 notes as written left two version tests failing.
+
 ## [0.3.0] - 2026-11-25
 
 ### Added

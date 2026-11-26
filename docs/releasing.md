@@ -80,17 +80,23 @@ pick up a moved one. Fix forward with the next version.
 
 ```bash
 git pull
+make install
 pt --version
 ```
 
-That is the whole upgrade for a release that changes only Python. A release's
-notes say when it needs more:
+That is the whole upgrade for most releases. `make install` is in every
+release's notes, even one that changes only Python (`scripts/bootstrap.ps1`
+does the same on Windows). An editable install reads the Python from the
+checkout, but two records of the version do not:
+- **pip's record**, which `pip show portable` reads;
+- **the native extension**, compiled with the number it was built with.
 
-- **Dependencies or the native extension changed** (`pyproject.toml`, the
-  requirements, or `cpp/`): run `make install` as well (or
-  `scripts/bootstrap.ps1` on Windows). An editable install picks up Python
-  from the checkout. A changed requirement, or C++ to compile, needs pip to
-  run.
+Both keep the old number until pip runs again. Every release changes the
+number, and `make check` holds both records to the source, so without the
+reinstall two version tests fail. The notes also name any dependency or
+`cpp/` change, which needs pip to run anyway.
+
+A release's notes say when it needs more:
 - **A schema migration was added**: run `pt --port FILE migrate` for every
   `.port` file you keep. It takes a backup first. Until a file is migrated,
   `pt` refuses it (`PT-E-SCHEMA-TOO-OLD`, `docs/port-format.md`).
