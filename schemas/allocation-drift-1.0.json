@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rtrimble13/portable/schemas/allocation-drift-1.0.json",
+  "title": "pt allocation drift",
+  "description": "Drift against the allocation policy in force on the envelope's `as_of` (ADR 0048). Read-only, and nothing is proposed.\n\n`rows` is the table, one row per class: every class the policy names, and every class held. A class held that the policy names no target for has a null target, band and difference, the status `no_target`, and is listed in `no_target`. The value is what `pt mark` gives, accrued income included and operating cash left out (`excluded_operating_cash`), so `total_market_value` is the snapshot market value. Every weight is a share of that total.\n\nAn unclassified holding is in the total and in no class: it is named in `unclassified`, never folded into a class. `is_complete` is true only when nothing is unclassified and every class held has a target. A holding that cannot be valued refuses the command (PT-E-ALLOCATION-UNPRICED) unless `--estimate` carried its price: then `estimate` lists every carried price and `is_estimated` is true; otherwise `estimate` is null.\n\n`accounts` gives each account's own mix and its contribution to each class's portfolio weight; over accounts, the contributions sum to the portfolio weight. Every decimal is a string at full precision.",
+  "allOf": [{ "$ref": "envelope-1.0.json" }],
+  "type": "object",
+  "properties": {
+    "command": { "const": "allocation drift" },
+    "disclaimer": { "type": "null" },
+    "data": {
+      "type": "object",
+      "required": [
+        "rows", "columns", "policy", "total_market_value", "is_complete", "is_estimated",
+        "outside_band", "no_target", "unclassified", "accounts", "classified",
+        "excluded_operating_cash", "estimate", "staleness_tolerance_days"
+      ],
+      "properties": {
+        "rows": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/row" } },
+        "policy": {
+          "type": "object",
+          "required": ["policy_id", "effective_from"],
+          "additionalProperties": false,
+          "properties": {
+            "policy_id": { "type": "integer" },
+            "effective_from": { "$ref": "#/$defs/date" }
+          }
+        },
+        "total_market_value": { "$ref": "#/$defs/decimal" },
+        "is_complete": { "type": "boolean" },
+        "is_estimated": { "type": "boolean" },
+        "outside_band": { "type": "array", "items": { "type": "string" } },
+        "no_target": { "type": "array", "items": { "type": "string" } },
+        "unclassified": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["account", "symbol", "value", "weight"],
+            "additionalProperties": false,
+            "properties": {
+              "account": { "type": "string" },
+              "symbol": { "type": "string" },
+              "value": { "$ref": "#/$defs/decimal" },
+              "weight": { "$ref": "#/$defs/decimal" }
+            }
+          }
+        },
+        "accounts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["account", "total", "unclassified", "classes"],
+            "additionalProperties": false,
+            "properties": {
+              "account": { "type": "string" },
+              "total": { "$ref": "#/$defs/decimal" },
+              "unclassified": { "$ref": "#/$defs/decimal" },
+              "classes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["asset_class", "value", "weight", "contribution"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "asset_class": { "type": "string" },
+                    "value": { "$ref": "#/$defs/decimal" },
+                    "weight": {
+                      "description": "The class's share of this account. Null for an account whose total is zero.",
+                      "$ref": "#/$defs/nullableDecimal"
+                    },
+                    "contribution": {
+                      "description": "This account's part of the class's portfolio weight.",
+                      "$ref": "#/$defs/decimal"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "classified": {
+          "description": "The classification read for each instrument held: the date it is in force from.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["symbol", "effective_from"],
+            "additionalProperties": false,
+            "properties": {
+              "symbol": { "type": "string" },
+              "effective_from": { "$ref": "#/$defs/date" }
+            }
+          }
+        },
+        "excluded_operating_cash": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["account", "amount"],
+            "additionalProperties": false,
+            "properties": {
+              "account": { "type": "string" },
+              "amount": { "$ref": "#/$defs/decimal" }
+            }
+          }
+        },
+        "estimate": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["max_share", "carried"],
+              "additionalProperties": false,
+              "properties": {
+                "max_share": { "$ref": "#/$defs/decimal" },
+                "carried": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "account", "symbol", "quantity", "price", "price_date", "age_days",
+                      "value"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "account": { "type": "string" },
+                      "symbol": { "type": "string" },
+                      "quantity": { "$ref": "#/$defs/decimal" },
+                      "price": { "$ref": "#/$defs/decimal" },
+                      "price_date": { "$ref": "#/$defs/date" },
+                      "age_days": { "type": "integer", "minimum": 0 },
+                      "value": { "$ref": "#/$defs/decimal" }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "staleness_tolerance_days": { "type": "integer", "minimum": 0 }
+      },
+      "allOf": [
+        {
+          "description": "An estimate is stated exactly when a price was carried.",
+          "if": { "properties": { "is_estimated": { "const": true } } },
+          "then": { "properties": { "estimate": { "type": "object" } } },
+          "else": { "properties": { "estimate": { "type": "null" } } }
+        },
+        {
+          "description": "Complete means nothing unclassified and every class held has a target.",
+          "if": { "properties": { "is_complete": { "const": true } } },
+          "then": {
+            "properties": {
+              "unclassified": { "maxItems": 0 },
+              "no_target": { "maxItems": 0 }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "decimal": { "$ref": "envelope-1.0.json#/$defs/decimal" },
+    "nullableDecimal": {
+      "anyOf": [{ "$ref": "envelope-1.0.json#/$defs/decimal" }, { "type": "null" }]
+    },
+    "row": {
+      "type": "object",
+      "required": [
+        "asset_class", "target", "band", "value", "weight", "difference", "status"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "asset_class": { "type": "string", "minLength": 1 },
+        "target": { "$ref": "#/$defs/nullableDecimal" },
+        "band": { "$ref": "#/$defs/nullableDecimal" },
+        "value": { "$ref": "#/$defs/decimal" },
+        "weight": { "$ref": "#/$defs/decimal" },
+        "difference": { "$ref": "#/$defs/nullableDecimal" },
+        "status": { "enum": ["inside", "above", "below", "no_target"] }
+      },
+      "if": { "properties": { "status": { "const": "no_target" } } },
+      "then": {
+        "properties": {
+          "target": { "type": "null" },
+          "band": { "type": "null" },
+          "difference": { "type": "null" }
+        }
+      },
+      "else": {
+        "properties": {
+          "target": { "$ref": "#/$defs/decimal" },
+          "band": { "$ref": "#/$defs/decimal" },
+          "difference": { "$ref": "#/$defs/decimal" }
+        }
+      }
+    }
+  }
+}

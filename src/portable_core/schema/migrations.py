@@ -51,7 +51,7 @@ REBUILD_MARKER: Final = "-- portable:rebuild"
 #: The schema version this build of `portable` writes and understands. Bumped
 #: by every migration, in the same commit as the migration and its CHANGELOG
 #: entry.
-CURRENT_SCHEMA_VERSION: Final[int] = 12
+CURRENT_SCHEMA_VERSION: Final[int] = 13
 
 #: Checksums of shipped migration texts that were later amended under ADR 0022,
 #: by version, each with the reason. A file that applied one of these is
@@ -345,10 +345,18 @@ def _run(
     clock: Clock,
     applied_by: str | None = None,
 ) -> None:
+    # One stamp for the migration: the rows it writes and its own record.
+    stamp = clock.stamp()
     con.execute("BEGIN IMMEDIATE")
     try:
         for statement in split_statements(migration.sql):
-            con.execute(statement)
+            # A migration that writes rows stamps them `:applied_at`, read from
+            # the runner's clock like every stored stamp (ADR 0035), so a
+            # generator that pins the clock still writes the same bytes.
+            if ":applied_at" in statement:
+                con.execute(statement, {"applied_at": stamp})
+            else:
+                con.execute(statement)
         if migration.rebuilds:
             _check_foreign_keys(con, migration)
             lost = triggers_before - _triggers(con)
@@ -388,7 +396,7 @@ def _run(
                 migration.version,
                 migration.name,
                 migration.checksum,
-                clock.stamp(),
+                stamp,
                 applied_by or f"portable {__version__}",
             ),
         )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Annotated
 
 import typer
@@ -12,9 +13,10 @@ from portable_core.domain.models import BondDetail, Instrument, OptionDetail
 from portable_core.errors import DataUnavailableError, ValidationError
 from portable_core.errors.kinds import E_PRICE_MISSING
 from portable_core.formatters import Column, ColumnKind, CommandResult, Table
+from portable_core.persistence.repositories import Repositories
 from portable_core.providers import as_security_master
-from portable_core.services import price_history, restatement, security_master
-from portable_core.services.reference_data import update_instrument
+from portable_core.services import allocation, price_history, restatement, security_master
+from portable_core.services.reference_data import refuse_free_text_class, update_instrument
 from portable_pt import state
 from portable_pt.commands._shared import dispatch, resolve_date
 
@@ -36,7 +38,10 @@ def add(
     cusip: Annotated[str | None, typer.Option("--cusip")] = None,
     isin: Annotated[str | None, typer.Option("--isin")] = None,
     sector: Annotated[str | None, typer.Option("--sector")] = None,
-    asset_class: Annotated[str | None, typer.Option("--asset-class")] = None,
+    asset_class: Annotated[
+        str | None,
+        typer.Option("--asset-class", help="Refused: use `pt allocation classify` (ADR 0048)."),
+    ] = None,
     # option detail
     underlier: Annotated[str | None, typer.Option("--underlier")] = None,
     right: Annotated[str | None, typer.Option("--right", help="call | put")] = None,
@@ -98,6 +103,8 @@ def add(
     def action() -> CommandResult:
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
+        if asset_class is not None:
+            refuse_free_text_class(symbol.upper())
         kind = InstrumentType(instrument_type)
 
         option = None
@@ -158,7 +165,6 @@ def add(
             cusip=cusip,
             isin=isin,
             sector=sector,
-            asset_class=asset_class,
             has_market_price=not no_market_price,
             option=option,
             bond=bond,
@@ -240,6 +246,19 @@ def _quote_basis(value: str) -> str:
     return value
 
 
+def _classification(
+    repos: Repositories, instrument: Instrument, on: date
+) -> dict[str, object] | None:
+    """The classification in force on *on* (ADR 0048), or None: unclassified."""
+    found = allocation.classification_on(repos, instrument, on)
+    if found is None:
+        return None
+    return {
+        "effective_from": found.effective_from.isoformat(),
+        "shares": [{"asset_class": s.asset_class, "weight": s.weight} for s in found.shares],
+    }
+
+
 @app.command()
 def show(symbol: Annotated[str, typer.Argument()]) -> None:
     """Show one instrument, including its option or bond detail."""
@@ -259,7 +278,7 @@ def show(symbol: Annotated[str, typer.Argument()]) -> None:
             "cusip": instrument.cusip,
             "isin": instrument.isin,
             "sector": instrument.sector,
-            "asset_class": instrument.asset_class,
+            "classification": _classification(repos, instrument, ctx.as_of),
             "contract_size": instrument.contract_size,
             "source": instrument.source,
             "has_market_price": instrument.has_market_price,
@@ -620,14 +639,18 @@ def update(
     figi: Annotated[str | None, typer.Option("--figi")] = None,
     sector: Annotated[str | None, typer.Option("--sector")] = None,
     industry: Annotated[str | None, typer.Option("--industry")] = None,
-    asset_class: Annotated[str | None, typer.Option("--asset-class")] = None,
+    asset_class: Annotated[
+        str | None,
+        typer.Option("--asset-class", help="Refused: use `pt allocation classify` (ADR 0048)."),
+    ] = None,
     country: Annotated[str | None, typer.Option("--country")] = None,
 ) -> None:
     """Correct an instrument's description or identifiers. An empty value clears one.
 
     The fields `pt instrument sync` compares with the security master, and the
-    classification `pt holdings --by` groups on. No ledger row and no figure
-    changes. An identifier already held by another instrument is refused: a
+    sector `pt holdings --by sector` groups on. No ledger row and no figure
+    changes. The asset class is declared with `pt allocation classify`, dated,
+    and not here (ADR 0048). An identifier already held by another instrument is refused: a
     statement or an import naming it could resolve to either. The symbol is
     corrected with `pt instrument correct-symbol`, and the type is not changed
     at all, because it decides how the instrument is valued.
@@ -637,6 +660,8 @@ def update(
         ctx = state.with_portfolio()
         repos = ctx.require_portfolio()
         instrument = repos.instruments.resolve(symbol, on=ctx.as_of)
+        if asset_class is not None:
+            refuse_free_text_class(instrument.symbol)
         given = {
             "name": name,
             "exchange": exchange,
@@ -645,7 +670,6 @@ def update(
             "figi": figi,
             "sector": sector,
             "industry": industry,
-            "asset_class": asset_class,
             "country": country,
         }
         with ctx.write():

@@ -177,6 +177,11 @@ Use these words precisely; the code does.
   account level. See the trap below and `PORT-GIPS-B02`.
 - **Return basis** — gross-of-fees, net-of-external-costs-only, or net-of-fees. Which fees
   are deducted differs by basis and is not a matter of taste (`PORT-GIPS-D01`).
+- **Asset class** — declared by the owner, with `cash` built in. An instrument is
+  classified from a date, into one class or split by weights summing to exactly 1, and
+  never by inference. The **allocation policy** is one portfolio-level target and absolute
+  band per class, effective-dated. `instrument.asset_class` is the free text before schema
+  13: migration 13 seeded the classification from it, and nothing writes it now (ADR 0048).
 
 ---
 

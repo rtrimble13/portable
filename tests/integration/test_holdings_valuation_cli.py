@@ -13,7 +13,8 @@ Account B is funded with 500,000 on 2024-01-02 by the base template. Here it:
   ex-date of 2024-07-05 and a pay-date of 2024-07-20;
 - buys 10,000 face of T-4.25-2030 at 101.24 on 2024-06-20, paying 42.73 of
   accrued interest to settle on the 21st;
-- holds 100 CVR, a right nothing quotes.
+- holds 100 CVR, a right nothing quotes, and classifies nothing else: the
+  bond is `fixed_income` and XYZ `equity` (ADR 0048).
 
 On 2024-07-10, 56 days into the 184-day coupon period from 15 May, the bond
 has accrued 10,000 x 0.0425 / 2 x 56 / 184 = 64.67, and the dividend is owed.
@@ -44,9 +45,12 @@ def _build(run_pt: CliRunner, portfolio: Path) -> str:
         run_pt("--port", port, *args)
 
     pt("instrument", "add", BOND, "--type", "bond", "--issuer", "US Treasury", "--coupon",
-       "0.0425", "--coupon-frequency", "2", "--maturity", "2030-05-15", "--face", "1000",
-       "--asset-class", "fixed_income")  # fmt: skip
-    pt("instrument", "add", "XYZ", "--type", "equity", "--asset-class", "equity")
+       "0.0425", "--coupon-frequency", "2", "--maturity", "2030-05-15",
+       "--face", "1000")  # fmt: skip
+    pt("instrument", "add", "XYZ", "--type", "equity")
+    for name, held in (("fixed_income", BOND), ("equity", "XYZ")):
+        pt("allocation", "class", "add", name, "--description", name)
+        pt("--as-of", "2024-01-02", "allocation", "classify", held, name)
     pt("instrument", "add", "CVR", "--type", "equity", "--no-market-price")
     pt("account", "add", "--name", "OP", "--type", "taxable", "--opened", "2024-01-02",
        "--relief-method", "fifo", "--cash-treatment", "operating")  # fmt: skip
@@ -122,13 +126,20 @@ def test_accrued_interest_and_a_declared_dividend_are_lines_of_their_own(
     ) < D("1e-26")
 
 
-def test_grouped_by_asset_class_income_goes_with_what_it_accrues_on(
+def test_grouped_by_asset_class_interest_goes_with_the_bond_and_a_dividend_to_cash(
     run_pt: CliRunner, held: str
 ) -> None:
+    """As `pt allocation drift` groups it (ADR 0048 §4): a bond's accrued
+    interest is part of the bond, and a declared dividend is money owed."""
     data = _holdings(run_pt, held, "--by", "asset-class")["data"]
     groups = {row["symbol"]: D(row["market_value"]) for row in data["rows"]}
     assert groups["fixed_income"] == D("10150.00") + D("64.67")
-    assert groups["equity"] == D("5500.00") + D("25.00")
+    assert groups["equity"] == D("5500.00")
+    # B's cash, the dividend owed, and OP's operating cash, which is shown and
+    # in no weight (PORT-GIPS-A07).
+    assert groups["cash"] == D("483833.27") + D("25.00") + D("1000.00")
+    # CVR is classified as nothing, so it is grouped as nothing, never guessed.
+    assert groups["(unclassified)"] == D("0.00")
     assert abs(
         sum((D(r["weight"]) for r in data["rows"] if r["weight"] is not None), D(0)) - 1
     ) < D("1e-26")

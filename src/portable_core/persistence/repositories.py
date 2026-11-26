@@ -25,6 +25,13 @@ from typing import Any, ClassVar, cast
 
 from portable_core.clock import SYSTEM_CLOCK, Clock
 from portable_core.decimals import to_text
+from portable_core.domain.allocation import (
+    AllocationPolicy,
+    AssetClass,
+    Classification,
+    ClassShare,
+    Target,
+)
 from portable_core.domain.enums import TransactionType
 from portable_core.domain.models import (
     Account,
@@ -2245,6 +2252,193 @@ class PolicyRepository(_Repository):
         ]
 
 
+class AllocationRepository(_Repository):
+    """Asset classes, classifications and allocation policies. ADR 0048.
+
+    Rows are written once and never edited; a correction is a new row on the
+    same date that names the one it replaces (ADR 0025 decision 5), and every
+    read takes the row nothing corrects. Weights are stored as canonical
+    decimal text and summed by the caller in ``Decimal``.
+    """
+
+    # ── classes ──────────────────────────────────────────────────────────────
+
+    def add_class(self, name: str, description: str) -> int:
+        cursor = self.con.execute(
+            "INSERT INTO asset_class (name, description, is_builtin, created_at) "
+            "VALUES (?, ?, 0, ?)",
+            (name, description, self.clock.stamp()),
+        )
+        return int(cursor.lastrowid or 0)
+
+    def classes(self) -> list[AssetClass]:
+        """Every class, `cash` first, then by name."""
+        return [
+            AssetClass(
+                class_id=int(r["class_id"]),
+                name=str(r["name"]),
+                description=str(r["description"]),
+                is_builtin=bool(r["is_builtin"]),
+            )
+            for r in self.con.execute(
+                "SELECT * FROM asset_class ORDER BY is_builtin DESC, name"
+            )
+        ]
+
+    def class_ids(self) -> dict[str, int]:
+        return {
+            str(r["name"]): int(r["class_id"])
+            for r in self.con.execute("SELECT class_id, name FROM asset_class")
+        }
+
+    # ── classifications ──────────────────────────────────────────────────────
+
+    _CURRENT_CLASSIFICATION: ClassVar[str] = (
+        "NOT EXISTS (SELECT 1 FROM classification x "
+        "WHERE x.corrects_classification_id = c.classification_id)"
+    )
+
+    def add_classification(self, classification: Classification) -> int:
+        ids = self.class_ids()
+        cursor = self.con.execute(
+            "INSERT INTO classification (instrument_id, effective_from, note, created_at, "
+            "corrects_classification_id) VALUES (?, ?, ?, ?, ?)",
+            (
+                classification.instrument_id,
+                classification.effective_from.isoformat(),
+                classification.note,
+                self.clock.stamp(),
+                classification.corrects_classification_id,
+            ),
+        )
+        row_id = int(cursor.lastrowid or 0)
+        for share in classification.shares:
+            self.con.execute(
+                "INSERT INTO classification_part (classification_id, class_id, weight) "
+                "VALUES (?, ?, ?)",
+                (row_id, ids[share.asset_class], to_text(share.weight)),
+            )
+        return row_id
+
+    def _shares(self, classification_id: int) -> tuple[ClassShare, ...]:
+        return tuple(
+            ClassShare(asset_class=str(r["name"]), weight=mappers.to_decimal(r["weight"]))
+            for r in self.con.execute(
+                "SELECT a.name, p.weight FROM classification_part p "
+                "JOIN asset_class a USING (class_id) WHERE p.classification_id = ? "
+                "ORDER BY a.name",
+                (classification_id,),
+            )
+        )
+
+    def _classification(self, row: sqlite3.Row) -> Classification:
+        return Classification(
+            classification_id=int(row["classification_id"]),
+            instrument_id=int(row["instrument_id"]),
+            effective_from=mappers.to_date(row["effective_from"]),
+            shares=self._shares(int(row["classification_id"])),
+            note=row["note"],
+            corrects_classification_id=row["corrects_classification_id"],
+        )
+
+    def classification_in_force(self, instrument_id: int, on: date) -> Classification | None:
+        """The classification of *instrument_id* in force on *on*, or None."""
+        row = self.con.execute(
+            "SELECT * FROM classification c WHERE instrument_id = ? AND effective_from <= ? "  # noqa: S608 -- a class constant; values are bound
+            f"AND {self._CURRENT_CLASSIFICATION} ORDER BY effective_from DESC LIMIT 1",
+            (instrument_id, on.isoformat()),
+        ).fetchone()
+        return None if row is None else self._classification(row)
+
+    def classifications(
+        self, *, instrument_id: int | None = None, include_corrected: bool = False
+    ) -> list[Classification]:
+        """By instrument, then date: the ones read, unless told otherwise."""
+        where = [] if include_corrected else [self._CURRENT_CLASSIFICATION]
+        bound: list[object] = []
+        if instrument_id is not None:
+            where.append("instrument_id = ?")
+            bound.append(instrument_id)
+        clause = f" WHERE {' AND '.join(where)}" if where else ""
+        return [
+            self._classification(r)
+            for r in self.con.execute(
+                f"SELECT * FROM classification c{clause} "  # noqa: S608 -- class constants; values are bound
+                "ORDER BY instrument_id, effective_from, classification_id",
+                bound,
+            )
+        ]
+
+    # ── policies ─────────────────────────────────────────────────────────────
+
+    _CURRENT_POLICY: ClassVar[str] = (
+        "NOT EXISTS (SELECT 1 FROM allocation_policy x "
+        "WHERE x.corrects_policy_id = p.policy_id)"
+    )
+
+    def add_policy(self, policy: AllocationPolicy) -> int:
+        ids = self.class_ids()
+        cursor = self.con.execute(
+            "INSERT INTO allocation_policy (effective_from, note, created_at, "
+            "corrects_policy_id) VALUES (?, ?, ?, ?)",
+            (
+                policy.effective_from.isoformat(),
+                policy.note,
+                self.clock.stamp(),
+                policy.corrects_policy_id,
+            ),
+        )
+        row_id = int(cursor.lastrowid or 0)
+        for target in policy.targets:
+            self.con.execute(
+                "INSERT INTO allocation_target (policy_id, class_id, target, band) "
+                "VALUES (?, ?, ?, ?)",
+                (row_id, ids[target.asset_class], to_text(target.target), to_text(target.band)),
+            )
+        return row_id
+
+    def _policy(self, row: sqlite3.Row) -> AllocationPolicy:
+        targets = tuple(
+            Target(
+                asset_class=str(r["name"]),
+                target=mappers.to_decimal(r["target"]),
+                band=mappers.to_decimal(r["band"]),
+            )
+            for r in self.con.execute(
+                "SELECT a.name, t.target, t.band FROM allocation_target t "
+                "JOIN asset_class a USING (class_id) WHERE t.policy_id = ? "
+                "ORDER BY a.is_builtin DESC, a.name",
+                (int(row["policy_id"]),),
+            )
+        )
+        return AllocationPolicy(
+            policy_id=int(row["policy_id"]),
+            effective_from=mappers.to_date(row["effective_from"]),
+            targets=targets,
+            note=row["note"],
+            corrects_policy_id=row["corrects_policy_id"],
+        )
+
+    def policy_in_force(self, on: date) -> AllocationPolicy | None:
+        """The policy in force on *on*, or None: a missing policy is the
+        caller's error to raise (PT-E-ALLOCATION-NO-POLICY), never a zero."""
+        row = self.con.execute(
+            "SELECT * FROM allocation_policy p WHERE effective_from <= ? "  # noqa: S608 -- a class constant; values are bound
+            f"AND {self._CURRENT_POLICY} ORDER BY effective_from DESC LIMIT 1",
+            (on.isoformat(),),
+        ).fetchone()
+        return None if row is None else self._policy(row)
+
+    def policies(self, *, include_corrected: bool = False) -> list[AllocationPolicy]:
+        where = "" if include_corrected else f" WHERE {self._CURRENT_POLICY}"
+        return [
+            self._policy(r)
+            for r in self.con.execute(
+                f"SELECT * FROM allocation_policy p{where} ORDER BY effective_from, policy_id"  # noqa: S608 -- a class constant
+            )
+        ]
+
+
 class BenchmarkRepository(_Repository):
     def add(self, benchmark: Benchmark) -> int:
         cursor = self.con.execute(
@@ -2397,6 +2591,7 @@ class Repositories:
         self.designations = DesignationRepository(con, clock)
         self.wash_sales = WashSaleRepository(con, clock)
         self.equivalences = EquivalenceRepository(con, clock)
+        self.allocation = AllocationRepository(con, clock)
 
     #: Derived tables, with the column ordering that makes a digest of them
     #: stable, and the surrogate key to exclude from it. Surrogate ids are
@@ -2507,6 +2702,10 @@ class Repositories:
         "instrument_option",
         "instrument_bond",
         "instrument_equivalence",
+        # ADR 0048: the owner's classes, and what they say of each instrument.
+        "asset_class",
+        "classification",
+        "classification_part",
         "price",
         "statement_position",
         "price_acceptance",
@@ -2516,6 +2715,8 @@ class Repositories:
         "benchmark_level",
         "portfolio_benchmark",
         "return_policy",
+        "allocation_policy",
+        "allocation_target",
         "portfolio_event",
         "settings",
         "report_issue",

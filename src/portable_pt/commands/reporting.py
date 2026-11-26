@@ -23,7 +23,7 @@ from portable_core.formatters import Column, ColumnKind, CommandResult, Table
 from portable_core.importers import TabularAdapter
 from portable_core.importers.source import REALIZED
 from portable_core.persistence.repositories import Repositories
-from portable_core.services import benchmarks, cash_flow, restatement, wash_sales
+from portable_core.services import allocation, benchmarks, cash_flow, restatement, wash_sales
 from portable_core.services import holdings as holdings_service
 from portable_core.services.reconciliation import (
     ExternalHolding,
@@ -70,7 +70,10 @@ def holdings(
         view, replay_warnings = holdings_service.holdings_on(
             repos, accounts, ctx.as_of, staleness_tolerance_days=tolerance
         )
-        rows = [_holding_row(view, line) for line in view.lines]
+        if by in ("asset-class", "asset_class"):
+            rows = _by_class(repos, view, ctx.as_of)
+        else:
+            rows = [_holding_row(view, line, None) for line in view.lines]
         rows = _group_holdings(rows, by, view)
 
         stale = sorted(
@@ -142,8 +145,39 @@ def holdings(
     dispatch(action)
 
 
+def _by_class(
+    repos: Repositories, view: holdings_service.HoldingsView, on: date
+) -> list[dict[str, object]]:
+    """One row per line and class, for `--by asset-class` (ADR 0048 §6).
+
+    The classification in force on --as-of, as `pt allocation drift` reads
+    it: a holding split across classes puts each class its weight of the
+    holding's market value, cost and unrealized P&L, and a declared dividend
+    is under cash. An instrument no classification covers is grouped as
+    "(unclassified)", so the groups still sum to the total.
+    """
+    rows: list[dict[str, object]] = []
+    with money_context():
+        for line in view.lines:
+            shares = allocation.classes_of(repos, line, on)
+            if shares is None:
+                rows.append(_holding_row(view, line, None))
+                continue
+            for share in shares:
+                row = _holding_row(view, line, share.asset_class)
+                for field in ("market_value", "cost_basis", "unrealized"):
+                    value = row[field]
+                    if isinstance(value, Decimal):
+                        row[field] = value * share.weight
+                rows.append(row)
+    return rows
+
+
 def _holding_row(
-    view: holdings_service.HoldingsView, line: holdings_service.HoldingLine
+    view: holdings_service.HoldingsView,
+    line: holdings_service.HoldingLine,
+    #: The class this row is grouped under, for `--by asset-class` alone.
+    asset_class: str | None,
 ) -> dict[str, object]:
     instrument = line.instrument
     is_cash = line.kind in {holdings_service.LineKind.CASH, holdings_service.LineKind.MARGIN}
@@ -152,7 +186,7 @@ def _holding_row(
         "position_id": line.position_id,
         "symbol": "CASH" if is_cash else (instrument.symbol if instrument else "INCOME"),
         "sector": instrument.sector if instrument else None,
-        "asset_class": "cash" if is_cash else (instrument.asset_class if instrument else None),
+        "asset_class": asset_class,
         "role": line.role,
         "quantity": line.quantity,
         "price": line.price.price if line.price else None,

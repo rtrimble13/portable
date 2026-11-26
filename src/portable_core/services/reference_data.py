@@ -27,10 +27,10 @@ instrument is refused: resolution would become ambiguous.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Final
+from typing import Final, NoReturn
 
 from portable_core.domain.models import Account, Instrument
-from portable_core.errors import ValidationError
+from portable_core.errors import UsageError, ValidationError
 from portable_core.errors.kinds import E_RESTATES_HISTORY
 from portable_core.persistence.repositories import Repositories
 
@@ -38,6 +38,7 @@ __all__ = [
     "ACCOUNT_FIELDS",
     "INSTRUMENT_FIELDS",
     "refuse_account_change",
+    "refuse_free_text_class",
     "update_account",
     "update_instrument",
 ]
@@ -56,7 +57,6 @@ INSTRUMENT_FIELDS: Final = (
     "figi",
     "sector",
     "industry",
-    "asset_class",
     "country",
 )
 
@@ -93,6 +93,26 @@ _ACCOUNT_REFUSALS: Final[dict[str, tuple[str | None, str, str]]] = {
         "It needs an effective date, as a tax rate has (ADR 0025), and has none yet.",
     ),
 }
+
+
+def refuse_free_text_class(symbol: str) -> NoReturn:
+    """Raise for `--asset-class` on `pt instrument add` or `update` (ADR 0048).
+
+    A class is declared, effective-dated, with weights, by `pt allocation
+    classify`, and drift and `pt holdings --by asset-class` read nothing else.
+    The free-text column is kept for files written before schema 13, whose
+    migration seeded the classification from it, and nothing writes it now:
+    two places to say what a holding is would be two answers.
+    """
+    raise UsageError(
+        f"{symbol}'s asset class is not set here",
+        remedy=(
+            f"pt allocation classify {symbol} CLASS --effective-from DATE, or "
+            "CLASS=WEIGHT ... for a split (ADR 0048). `pt allocation class list` "
+            "shows the classes."
+        ),
+        symbol=symbol,
+    )
 
 
 def refuse_account_change(account: Account, field: str) -> None:

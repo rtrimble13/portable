@@ -94,9 +94,8 @@ def test_an_instrument_is_corrected_and_found_by_its_new_identifier(
     port = str(portfolio)
     run_pt("--port", port, "instrument", "add", "XYZ", "--name", "Xyz Crop")
     data = run_pt("--port", port, "instrument", "update", "XYZ", "--name", "Xyz Corp",
-                  "--cusip", "123456789", "--asset-class", "us_equity").data  # fmt: skip
+                  "--cusip", "123456789").data  # fmt: skip
     assert data["changed"] == {
-        "asset_class": {"was": None, "now": "us_equity"},
         "cusip": {"was": None, "now": "123456789"},
         "name": {"was": "Xyz Crop", "now": "Xyz Corp"},
     }
@@ -106,6 +105,23 @@ def test_an_instrument_is_corrected_and_found_by_its_new_identifier(
     same = run_pt("--port", port, "instrument", "update", "XYZ", "--name", "Xyz Corp").json()
     assert same["data"]["changed"] == {}
     assert same["warnings"] == ["every value given is the one already recorded"]
+
+
+def test_the_free_text_asset_class_is_refused_with_where_a_class_is_declared(
+    run_pt: CliRunner, portfolio: Path
+) -> None:
+    """ADR 0048: one place says what a holding is, dated, with weights."""
+    port = str(portfolio)
+    refused = run_pt("--port", port, "instrument", "add", "XYZ", "--asset-class", "us_equity",
+                     expect=2).json()["error"]  # fmt: skip
+    assert "pt allocation classify XYZ" in refused["remedy"]
+    run_pt("--port", port, "instrument", "add", "XYZ")
+    refused = run_pt("--port", port, "instrument", "update", "XYZ", "--name", "Xyz",
+                     "--asset-class", "us_equity", expect=2).json()["error"]  # fmt: skip
+    assert "pt allocation classify XYZ" in refused["remedy"]
+    # Refused whole: the name given beside it is not written either.
+    shown = run_pt("--port", port, "instrument", "show", "XYZ").data
+    assert (shown["name"], shown["classification"]) == (None, None)
 
 
 def test_an_identifier_another_instrument_holds_is_refused(

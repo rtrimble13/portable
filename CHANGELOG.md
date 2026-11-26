@@ -18,6 +18,94 @@ Two rules specific to this repository:
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-25
+
+### Added
+
+- **`pt allocation`** (issue 61, ADR 0048): policy allocation and drift. It
+  proposes no trade.
+  - **Classes and classification.** `pt allocation class add NAME
+    --description TEXT` adds one of the owner's classes, beside the built-in
+    `cash`, and `class list` shows them.
+    `pt allocation classify SYMBOL CLASS` classifies an instrument from
+    `--effective-from`. `CLASS=WEIGHT ...` splits it, the weights summing to
+    exactly 1.
+  - **The policy.** `pt allocation target set CLASS=TARGET:BAND ...` sets one
+    portfolio-level target and absolute band per class, from a date, cash
+    included, summing to 1. `target show` shows the policy in force and every
+    one recorded.
+  - **Effective-dated, never edited.** A row entered wrongly is replaced on
+    its own date with `--corrects`, and kept as history (ADR 0025).
+  - **`pt allocation drift`** gives each class's target, band, value, weight
+    and difference on `--as-of`, against the policy in force that day, and
+    whether it is inside, above or below its band. A weight exactly on the
+    edge is inside. Each account's own mix and its contribution to every
+    portfolio weight are shown, so an internal transfer moves contributions
+    and no portfolio weight. `--account` shows one account's mix.
+  - **Valued as `pt mark` values the accounts.** The total is the snapshot
+    market value. A bond's accrued interest is in its class, and a declared
+    dividend is in `cash` with the cash, net of any margin loan. Operating
+    cash is left out.
+  - **Nothing guessed.**
+    - A holding that cannot be valued leaves every weight unknown, so drift
+      refuses it (`PT-E-ALLOCATION-UNPRICED`, exit 5). `--estimate
+      MAX_SHARE` instead values it at a carried price (ADR 0044) within that
+      share of the total, and marks the report estimated.
+    - Unclassified holdings are named, counted in the total and in no class.
+    - A held class with no target is shown without one. Either leaves the
+      report incomplete.
+    - A missing policy is an error, `PT-E-ALLOCATION-NO-POLICY`, not a zero.
+    - Weights that do not sum to 1 are refused, `PT-E-ALLOCATION-WEIGHTS`.
+    - A class not declared is refused, `PT-E-ALLOCATION-UNKNOWN-CLASS`.
+  - **JSON** is the new `allocation-drift-1.0`, at full precision.
+- **The sample** declares `us_equity` and `us_treasury`, classifies every
+  instrument from inception, and sets a policy, so `pt allocation drift` runs
+  on the committed file. `tests/integration/test_sample_allocation.py` checks
+  two of its weights against hand arithmetic from `sample_prices.csv`.
+
+### Changed
+
+- **`pt holdings --by asset-class` reads the declared classification**, as
+  drift does (ADR 0048, answer 5). A split holding puts each class its weight
+  of the holding's market value, cost and unrealized gain. An
+  `accrued_dividend` line now groups under `cash`, no longer under the paying
+  security, so the two reports agree. An unclassified holding groups as
+  `(unclassified)`.
+- **`pt instrument add` and `pt instrument update` refuse `--asset-class`**
+  (exit 2), with a pointer to `pt allocation classify`. The free text is
+  undated and read by nothing that computes. Two places to say what a
+  holding is would give two answers. `pt instrument show` gives the
+  classification in force on `--as-of` in place of the free text.
+
+### Fixed
+
+- **`make bump` failed wherever the native extension was built.** Its check
+  that every version agrees asked the compiled module, which carries the
+  number it was built with until the next `make install`. That test is now
+  one of those `make bump` leaves to the fresh install, as it already left
+  pip's record. CI and the release workflow install first, so they still run
+  it.
+
+### Schema
+
+- **`schema_version` 12 → 13**, migration `0013_policy_allocation` (ADR 0048,
+  accepted by the owner). Additive: five new tables and no rebuild.
+  - **The tables.** `asset_class` holds the owner's classes, with `cash` built
+    in, undeletable and never renamed. `classification` and
+    `classification_part` say which class or classes an instrument belongs to
+    from a date, by weights that sum to 1. `allocation_policy` and
+    `allocation_target` hold the portfolio's target and band for each class.
+  - **Effective-dated and never edited.** Triggers refuse an update or delete,
+    and a row entered wrongly is corrected on its own date (ADR 0025).
+  - **Seeded from the free-text `instrument.asset_class`.** Each distinct value
+    becomes a class, and each instrument that has one is classified into it at
+    weight 1 from the portfolio's inception. An instrument with none is left
+    unclassified, not guessed. The column is kept.
+  - **Stamped from the runner's clock.** A migration may now write
+    `:applied_at`, bound to the runner's clock (ADR 0035), so the rows it
+    seeds and its own record carry one stamp.
+  - `pt migrate` applies it, and `pt export` carries the new tables.
+
 ## [0.2.0] - 2026-11-25
 
 ### Added

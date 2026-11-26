@@ -131,6 +131,10 @@ def test_decimals_are_specified_as_strings_not_numbers() -> None:
             ("--port", "examples/sample.port", "lot", "candidates", "--as-of", "2025-06-30"),
         ),
         (
+            "allocation-drift-1.0.json",
+            ("--port", "examples/sample.port", "--as-of", "2025-06-30", "allocation", "drift"),
+        ),
+        (
             "cash-flows-1.0.json",
             (
                 "--port",

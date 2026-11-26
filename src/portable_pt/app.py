@@ -22,6 +22,7 @@ from portable_core.domain.enums import TransactionType
 from portable_pt import state
 from portable_pt.commands import (
     account,
+    allocation,
     cash,
     corporate_actions,
     importing,
@@ -151,6 +152,7 @@ app.add_typer(positions.position_app, name="position")
 positions.lot_app.add_typer(lot_designations.app, name="designation")
 app.add_typer(positions.lot_app, name="lot")
 app.add_typer(reporting.policy_app, name="policy")
+app.add_typer(allocation.app, name="allocation")
 app.add_typer(reporting.benchmark_app, name="benchmark")
 app.add_typer(corporate_actions.app, name="ca")
 app.add_typer(options.app, name="option")

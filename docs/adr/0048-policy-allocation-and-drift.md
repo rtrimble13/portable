@@ -1,7 +1,7 @@
 # ADR 0048 — Policy allocation and drift: declared classes, an effective-dated target, and drift at the market value a snapshot records
 
-- **Status:** Accepted (owner, 2026-11-25), with the recommended answer to each of its five questions. See Owner's answers
-- **Date:** 2026-11-24; accepted 2026-11-25
+- **Status:** Implemented (2026-11-25). Accepted by the owner the same day, with the recommended answer to each of its five questions: see Owner's answers, and As built for where the implementation differs from the text above it
+- **Date:** 2026-11-24; accepted and implemented 2026-11-25
 - **Milestone:** v0.2, issue 61 (P1)
 - **Governs:** `PORT-GIPS-A06` (accrued income is part of value), `PORT-GIPS-A07` (cash is in the total), `PORT-GIPS-A09` (the price a holding is valued at); `CLAUDE.md` invariants 3, 6, 9 and 10
 - **Depends on:** [ADR 0010](0010-derived-state-and-replay.md) (config rows are effective-dated, not edited), [ADR 0013](0013-cash-sweep-is-cash.md) (a sweep is cash), [ADR 0021](0021-derived-state-as-of-a-past-date.md) (state as of a date), [ADR 0024](0024-valuation-snapshots-are-valued-state.md) (what a snapshot values), [ADR 0025](0025-config-rows-dated-into-history.md) (corrections on a row's own date), [ADR 0028](0028-instrument-with-no-market-price.md) (zero at level 5), [ADR 0041](0041-bonds-at-face-with-accrued-interest.md) (accrued interest), [ADR 0044](0044-estimated-returns-over-unpriced-days.md) (carried prices, on request)
@@ -260,6 +260,53 @@ And from this ADR:
    - **Holdings follow drift.** With that, holdings follows §4 for a declared
      dividend: its `accrued_dividend` line groups under `cash`, not under the
      paying security, so the two reports agree.
+
+## As built (2026-11-25)
+
+Released in 0.3.0. Where the implementation differs from the decision as
+written, or settles what it left open:
+
+1. **Five tables, not three.** A classification is a header row
+   (`classification`) with one row per class (`classification_part`), and a
+   policy likewise (`allocation_policy`, `allocation_target`). A split is
+   then rows, not a repeated date, and a correction replaces the whole set.
+2. **Weights are checked in `Decimal`, in the service, not by SQL.** §7 asked
+   for CHECK constraints and a trigger on the sum. SQLite would compare the
+   canonical decimal `TEXT` as text, or sum it as `REAL`, which invariant 1
+   forbids. So `services/allocation.py` checks each share, target and band,
+   and that they sum to exactly 1, when it writes and again when it reads.
+   The triggers hold what SQL can hold exactly: rows are never edited, a
+   correction names a row of the same key, `cash` stays, a name is fixed.
+3. **`--corrects` is a flag, not an id.** One row per instrument and date (one
+   per date for the policy), so the row to replace is the one on the date
+   given, as `pt policy set` and tax rates have it (ADR 0025).
+4. **The seed is the migration's own SQL**, stamped with `:applied_at`, which
+   the runner now binds from its injected clock (ADR 0035). The migration is
+   additive, so down is dropping its five tables; the test holds every
+   existing row unchanged, which is what that direction needs.
+5. **An export written before schema 13** imports with nothing classified.
+   Drift then names every holding as unclassified rather than refusing,
+   since the gap is the owner's to close with `pt allocation classify`.
+6. **`pt allocation drift --estimate MAX_SHARE`** is answer 4. It carries a
+   price only for a missing or stale price. A bond's accrued interest after
+   an unrecorded coupon is not a price, so that refusal stands with
+   `--estimate`.
+7. **A class the policy names and nothing holds** is a row at zero, outside
+   its band if the band does not reach zero. A class held and named by no
+   target is a `no_target` row.
+8. **`pt instrument add` refuses `--asset-class` too**, as `update` does
+   (answer 5), with a usage error (exit 2) pointing to
+   `pt allocation classify`. `pt instrument show` shows the classification
+   in force on `--as-of`. The free-text column is kept for files written
+   before schema 13, and nothing writes it.
+9. **`pt holdings --by asset-class` splits a holding** by its weights: each
+   class gets its weight of the market value, the cost and the unrealized
+   gain. An unclassified holding groups as `(unclassified)`, so the groups
+   still sum to the total.
+10. **The sample** declares `us_equity` and `us_treasury` through the
+    service, classifies every instrument from inception, and sets a policy.
+    `tests/integration/test_sample_allocation.py` works two of its weights
+    on 2025-12-31 by hand.
 
 ## Consequences
 
