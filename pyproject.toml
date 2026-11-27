@@ -37,6 +37,7 @@ fafnir = []
 [project.scripts]
 pt = "portable_pt.__main__:main"
 pert = "portable_pert.__main__:main"
+bmk = "portable_bmk.__main__:main"
 po = "portable_po.__main__:main"
 risky = "portable_risky.__main__:main"
 portable = "portable_core.cli.portable_cmd:main"
@@ -59,6 +60,7 @@ wheel.packages = [
   "src/portable_core",
   "src/portable_pt",
   "src/portable_pert",
+  "src/portable_bmk",
   "src/portable_po",
   "src/portable_risky",
 ]
@@ -112,7 +114,7 @@ ignore = [
 "src/portable_core/formatters/**" = ["T20"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["portable_core", "portable_pt", "portable_pert", "portable_po", "portable_risky"]
+known-first-party = ["portable_core", "portable_pt", "portable_pert", "portable_bmk", "portable_po", "portable_risky"]
 
 # ── mypy ─────────────────────────────────────────────────────────────────────
 [tool.mypy]

@@ -224,10 +224,10 @@ CREATE TABLE IF NOT EXISTS reconstitution_member (
     -- Under `cap`: the share of the count that floats, more than 0, at most
     -- 1. NULL is full shares, which is what fafnir carries (no float in
     -- SF1). Stated with its source when given.
-    float_factor    TEXT,  -- decimal
-    float_source    TEXT,
+    free_float    TEXT,  -- decimal
+    free_float_source    TEXT,
     PRIMARY KEY (reconstitution_id, security_id),
-    CHECK ((float_factor IS NULL) = (float_source IS NULL))
+    CHECK ((free_float IS NULL) = (free_float_source IS NULL))
 );
 
 -- @table security_event

@@ -287,10 +287,8 @@ def reconstitute(
             remedy="Name the members alone, or set a `custom` methodology from this date.",
         )
     for m in members:
-        if m.float_factor is not None and not ZERO < m.float_factor <= ONE:
-            raise _refuse(
-                f"a float factor of {m.float_factor} is not more than 0 and at most 1"
-            )
+        if m.free_float is not None and not ZERO < m.free_float <= ONE:
+            raise _refuse(f"a float factor of {m.free_float} is not more than 0 and at most 1")
         repos.security(m.security_id)
     same = [r for r in repos.reconstitutions() if r.effective_date == on]
     corrected = _same_date(same, corrects=corrects, what="the membership", on=on)

@@ -108,7 +108,7 @@ class IndexRepositories:
             "1",
         ),
         "reconstitution_member": (
-            "reconstitution_id, security_id, weight, float_factor, float_source",
+            "reconstitution_id, security_id, weight, free_float, free_float_source",
             "1",
         ),
         "security_event": (
@@ -314,9 +314,9 @@ class IndexRepositories:
         row_id = int(cur.lastrowid)
         self.con.executemany(
             "INSERT INTO reconstitution_member (reconstitution_id, security_id, weight, "
-            "float_factor, float_source) VALUES (?, ?, ?, ?, ?)",
+            "free_float, free_float_source) VALUES (?, ?, ?, ?, ?)",
             [
-                (row_id, m.security_id, _t(m.weight), _t(m.float_factor), m.float_source)
+                (row_id, m.security_id, _t(m.weight), _t(m.free_float), m.free_float_source)
                 for m in recon.members
             ],
         )
@@ -339,8 +339,8 @@ class IndexRepositories:
                 Member(
                     security_id=int(m["security_id"]),
                     weight=_d(m["weight"]),
-                    float_factor=_d(m["float_factor"]),
-                    float_source=m["float_source"],
+                    free_float=_d(m["free_float"]),
+                    free_float_source=m["free_float_source"],
                 )
                 for m in self.con.execute(
                     "SELECT * FROM reconstitution_member WHERE reconstitution_id = ? "

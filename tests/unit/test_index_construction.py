@@ -158,7 +158,7 @@ def test_price_weighted_by_hand() -> None:
     assert built.levels[1].price_level == _exact(lambda: D(73) / D("0.7"))
 
 
-def test_cap_weighted_by_hand_with_a_float_factor() -> None:
+def test_cap_weighted_by_hand_with_a_free_float() -> None:
     """Caps on 01-02: A 1,000, B 3,000, C 6,000, so 0.1, 0.3 and 0.6.
 
     01-03  100 x (0.1 x 1.1 + 0.3 x 1 + 0.6 x 1.05) = 104
@@ -175,7 +175,7 @@ def test_cap_weighted_by_hand_with_a_float_factor() -> None:
     }
     assert {w.security_id: w.weighting_cap for w in built.weights}[3] == D(6000)
 
-    half = (Member(1), Member(2), Member(3, float_factor=D("0.5"), float_source="test"))
+    half = (Member(1), Member(2), Member(3, free_float=D("0.5"), free_float_source="test"))
     floated = construct(_inputs(Weighting.CAP, members=half, caps=caps))
     targets = {w.security_id: w.target_weight for w in floated.weights}
     assert targets[3] == _exact(lambda: D(3000) / D(7000))

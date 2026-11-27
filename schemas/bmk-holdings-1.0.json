@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rtrimble13/portable/schemas/bmk-holdings-1.0.json",
+  "title": "bmk holdings",
+  "description": "What an index held at the close of the envelope's `as_of`, a day it was built for (ADR 0050): each security's units, its close (or, on the day it left by a declared event, what it paid), its value in index points, and its weight. The points sum to the price level, and the weights to 1. Every decimal is a string at full precision.",
+  "allOf": [{ "$ref": "envelope-1.0.json" }],
+  "type": "object",
+  "properties": {
+    "command": { "const": "holdings" },
+    "disclaimer": { "type": "null" },
+    "data": {
+      "type": "object",
+      "required": ["rows", "columns", "price_level", "total_return_level", "divisor"],
+      "properties": {
+        "price_level": { "$ref": "#/$defs/decimal" },
+        "total_return_level": { "$ref": "#/$defs/decimal" },
+        "divisor": { "$ref": "#/$defs/decimal" },
+        "rows": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["symbol", "units", "close", "points", "weight"],
+            "additionalProperties": false,
+            "properties": {
+              "symbol": { "type": "string", "minLength": 1 },
+              "units": { "$ref": "#/$defs/decimal" },
+              "close": { "$ref": "#/$defs/decimal" },
+              "points": { "$ref": "#/$defs/decimal" },
+              "weight": { "$ref": "#/$defs/decimal" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "decimal": { "$ref": "envelope-1.0.json#/$defs/decimal" }
+  }
+}

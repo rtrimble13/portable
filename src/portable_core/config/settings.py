@@ -75,6 +75,8 @@ class Source(StrEnum):
 DEFAULTS: Final[dict[str, Any]] = {
     # Where the portfolio is, when --port is not given.
     "port": None,
+    # Where the index is, when --bmk is not given (ADR 0050).
+    "bmk": None,
     # Output.
     "format": "table",
     "no_color": False,
@@ -92,6 +94,9 @@ DEFAULTS: Final[dict[str, Any]] = {
     "price_file": None,
     "action_file": None,
     "benchmark_file": None,
+    # An index built from files: its calendar and, cap-weighted, its caps.
+    "calendar_file": None,
+    "cap_file": None,
     # Behaviour.
     "dry_run": False,
     "yes": False,

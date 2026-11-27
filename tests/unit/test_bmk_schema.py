@@ -153,7 +153,7 @@ def test_inputs_carry_their_basis_whole_or_not_at_all(tmp_path: Path) -> None:
     )
     with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
         con.execute(
-            "INSERT INTO reconstitution_member (reconstitution_id, security_id, float_factor) "
+            "INSERT INTO reconstitution_member (reconstitution_id, security_id, free_float) "
             "VALUES (1, 1, '0.9')"
         )
     # A delisting states what it paid, even if that is nothing.

@@ -60,7 +60,7 @@ from portable_core.domain.index import (
     SyntheticSecurity,
     Weighting,
 )
-from portable_core.errors import DataUnavailableError, ValidationError
+from portable_core.errors import DataUnavailableError, PortableError, ValidationError
 from portable_core.errors.kinds import (
     E_INDEX_CAP_MISSING,
     E_INDEX_CLOSE_MISSING,
@@ -68,11 +68,24 @@ from portable_core.errors.kinds import (
     E_INDEX_DIVIDEND_GAP,
     E_INDEX_EVENT_UNDECLARED,
     E_INDEX_NO_SCHEDULE,
+    E_INDEX_NOT_BUILT,
     E_INDEX_ONE_ISSUER,
 )
+from portable_core.persistence.connection import scratch_transaction
 from portable_core.persistence.index_repositories import IndexRepositories
 
-__all__ = ["GAP_DAYS", "BuiltIndex", "IndexInputs", "build", "construct", "inputs_of"]
+__all__ = [
+    "GAP_DAYS",
+    "BuiltIndex",
+    "Holding",
+    "IndexInputs",
+    "build",
+    "composition",
+    "construct",
+    "current_build",
+    "inputs_of",
+    "verify",
+]
 
 ZERO: Final = Decimal(0)
 ONE: Final = Decimal(1)
@@ -508,7 +521,7 @@ class _Builder:
                 )
             return {s: w for s, w in weights.items() if w is not None}
         if weighting is Weighting.CAP:
-            floats = {m.security_id: m.float_factor or ONE for m in self.recon.members}
+            floats = {m.security_id: m.free_float or ONE for m in self.recon.members}
             caps: dict[int, Decimal] = {}
             for s in members:
                 cap = self.inputs.caps.get((s, today))
@@ -732,3 +745,119 @@ def build(repos: IndexRepositories, *, through: date | None, built_by: str) -> I
     repos.clear_built()
     repos.write_built(record, built.levels, built.holdings, built.weights, built.reinvestments)
     return record
+
+
+def current_build(repos: IndexRepositories) -> IndexBuild:
+    """The build, refused if there is none or the inputs have changed since."""
+    record = repos.build()
+    if record is None:
+        raise DataUnavailableError(
+            "the index has not been built",
+            code=E_INDEX_NOT_BUILT,
+            remedy="`bmk refresh`, then `bmk build`.",
+        )
+    if record.inputs_hash != repos.inputs_hash():
+        raise DataUnavailableError(
+            "the index was built from inputs that have changed since",
+            code=E_INDEX_NOT_BUILT,
+            remedy=(
+                "`bmk build` again. Its levels would no longer be the ones its definition "
+                "and inputs give."
+            ),
+            built_from=record.inputs_hash,
+        )
+    return record
+
+
+@dataclass(frozen=True, slots=True)
+class Holding:
+    """One security on a built day: its units, close, value and weight."""
+
+    security: SyntheticSecurity
+    units: Decimal
+    close: Decimal
+    #: Its value in index points: units x close / divisor.
+    points: Decimal
+    weight: Decimal
+
+
+def composition(repos: IndexRepositories, on: date) -> tuple[LevelRow, list[Holding]]:
+    """What the index held on a built day, valued at that day's closes."""
+    current_build(repos)
+    levels = repos.levels(on, on)
+    if not levels:
+        raise DataUnavailableError(
+            f"{on.isoformat()} is not a day the index was built for",
+            code=E_INDEX_NOT_BUILT,
+            remedy="Ask for a trading day between the base date and the build's last day.",
+        )
+    (level,) = levels
+    closes = repos.closes()
+    held: list[tuple[SyntheticSecurity, Decimal, Decimal]] = []
+    for span in repos.holdings_on(on):
+        close = closes.get((span.security_id, on))
+        if close is None:
+            # Valued that day at what it paid: a member leaving by its event.
+            event = next(
+                e
+                for e in repos.events()
+                if e.security_id == span.security_id and e.event_date == on
+            )
+            price = (
+                event.cash_per_share
+                if event.cash_per_share is not None
+                else (event.received_ratio or ZERO)
+                * closes[(event.received_security_id or 0, on)].close
+            )
+        else:
+            price = close.close
+        held.append((repos.security(span.security_id), span.units, price))
+    with money_context():
+        total = sum((u * p for _, u, p in held), ZERO)
+        holdings = [
+            Holding(
+                security=security,
+                units=units,
+                close=price,
+                points=units * price / level.divisor,
+                weight=units * price / total,
+            )
+            for security, units, price in held
+        ]
+    return level, holdings
+
+
+def verify(repos: IndexRepositories) -> list[tuple[str, str]]:
+    """What is wrong with a file: its build, and whether a rebuild reproduces it.
+
+    Read-only: the rebuild runs in a transaction that is always rolled back, so
+    the file is byte-identical afterwards (ADR 0016's rule for `pt validate`).
+    """
+    problems: list[tuple[str, str]] = [
+        ("meta", f"missing required metadata key {key!r}") for key in repos.missing_meta()
+    ]
+    if problems:
+        return problems
+    record = repos.build()
+    if record is None:
+        problems.append(("build", "the index has not been built"))
+    elif record.inputs_hash != repos.inputs_hash():
+        problems.append(("build", "built from inputs that have changed since; `bmk build`"))
+    stored = repos.built_digest()
+    try:
+        with scratch_transaction(repos.con):
+            built = construct(inputs_of(repos), through=record.last_date if record else None)
+            repos.clear_built()
+            if record is not None:
+                repos.write_built(
+                    record, built.levels, built.holdings, built.weights, built.reinvestments
+                )
+            rebuilt = repos.built_digest()
+    except PortableError as cannot:
+        problems.append(("definition", f"[{cannot.code}] {cannot.message}"))
+        return problems
+    if record is not None and rebuilt != stored:
+        problems.append(
+            ("rebuild", "the stored levels are not the ones a rebuild gives; `bmk build`")
+        )
+    return problems

@@ -144,8 +144,8 @@ class Member:
     #: The target under `custom`; None under every other method.
     weight: Decimal | None = None
     #: Under `cap`: the share of the count that floats. None is full shares.
-    float_factor: Decimal | None = None
-    float_source: str | None = None
+    free_float: Decimal | None = None
+    free_float_source: str | None = None
 
     def __post_init__(self) -> None:
         check_decimal_fields(self)
