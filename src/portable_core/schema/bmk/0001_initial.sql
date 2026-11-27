@@ -1,4 +1,4 @@
--- portable .bmk schema, version 1. DRAFT for the owner's review (ADR 0050).
+-- portable .bmk schema, version 1 (ADR 0050).
 --
 -- @schema_version 1
 -- @name initial

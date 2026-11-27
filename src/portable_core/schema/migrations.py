@@ -102,10 +102,14 @@ class Migration:
         return hashlib.sha256(normalised).hexdigest()
 
 
-def available_migrations() -> list[Migration]:
-    """Every migration shipped with this build, in version order."""
+def available_migrations(directory: Path = _SCHEMA_DIR) -> list[Migration]:
+    """Every migration shipped with this build, in version order.
+
+    The `.port` file's by default. A `.bmk` file's are in `schema/bmk/`, read
+    by the same runner (ADR 0050 §2).
+    """
     found: list[Migration] = []
-    for path in sorted(_SCHEMA_DIR.glob("*.sql")):
+    for path in sorted(directory.glob("*.sql")):
         match = _FILENAME.match(path.name)
         if match is None:
             raise PortfolioFileError(
@@ -233,7 +237,10 @@ def check_preconditions(con: sqlite3.Connection, migration: Migration) -> None:
         PortfolioFileError: with every offending row named, and a remedy that
             addresses the data rather than the migration.
     """
-    check = _PRECONDITIONS.get(migration.version)
+    # The preconditions are the `.port` file's; a `.bmk` migration of the same
+    # number is a different migration.
+    ours = migration.path.parent == _SCHEMA_DIR
+    check = _PRECONDITIONS.get(migration.version) if ours else None
     if check is None:
         return
     problems = check(con)
@@ -492,6 +499,24 @@ def check_openable(
             ),
             file_version=version,
             supported_version=CURRENT_SCHEMA_VERSION,
+            path=str(path) if path else None,
+        )
+    is_port = (
+        version > 0
+        and con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'transaction'"
+        ).fetchone()
+        is not None
+    )
+    if version > 0 and not is_port:
+        # A `.bmk` index carries a schema version too, and read as a `.port` at
+        # version 1 it would be offered `pt migrate`, which would apply the
+        # portfolio's migrations to it (ADR 0050).
+        raise PortfolioFileError(
+            "file is not a .port portfolio: it has no ledger (a .bmk index is read by "
+            "`bmk`, not `pt`)",
+            code=E_PORTFOLIO_CORRUPT,
+            remedy="Point --port at a .port file. `pt init FILE` creates one.",
             path=str(path) if path else None,
         )
     if version == 0:

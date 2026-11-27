@@ -139,6 +139,30 @@ E_ALLOCATION_UNPRICED: Final = "PT-E-ALLOCATION-UNPRICED"
 E_ALLOCATION_WEIGHTS: Final = "PT-E-ALLOCATION-WEIGHTS"
 #: ADR 0048. A class named that the portfolio does not have.
 E_ALLOCATION_UNKNOWN_CLASS: Final = "PT-E-ALLOCATION-UNKNOWN-CLASS"
+#: ADR 0050. An index definition that cannot be built: no methodology or
+#: membership on the base date, weights that do not sum to 1, a weight a
+#: method does not take, a security named that the file does not hold.
+E_INDEX_DEFINITION: Final = "PT-E-INDEX-DEFINITION"
+#: ADR 0050 §5. A member with no close on a trading day of the index.
+E_INDEX_CLOSE_MISSING: Final = "PT-E-INDEX-CLOSE-MISSING"
+#: ADR 0050 §5. A member that stops trading, merges or spins off, with no
+#: security event declaring what it became.
+E_INDEX_EVENT_UNDECLARED: Final = "PT-E-INDEX-EVENT-UNDECLARED"
+#: ADR 0050, answer 3. A member with no declared distribution schedule.
+E_INDEX_NO_SCHEDULE: Final = "PT-E-INDEX-NO-SCHEDULE"
+#: ADR 0050, answer 3. A gap between dividends longer than the declared
+#: schedule allows, or a dividend from a declared non-payer.
+E_INDEX_DIVIDEND_GAP: Final = "PT-E-INDEX-DIVIDEND-GAP"
+#: ADR 0050 §6. A `cap` member with no market cap on a rebalance date.
+E_INDEX_CAP_MISSING: Final = "PT-E-INDEX-CAP-MISSING"
+#: ADR 0050 §6. Two securities of one issuer in one membership.
+E_INDEX_ONE_ISSUER: Final = "PT-E-INDEX-ONE-ISSUER"
+#: ADR 0050. A refresh that would change an input a level was built from,
+#: without --restate.
+E_INDEX_RESTATEMENT: Final = "PT-E-INDEX-RESTATEMENT"
+#: ADR 0050. Levels asked for from a file not built, or built from inputs
+#: that have changed since.
+E_INDEX_NOT_BUILT: Final = "PT-E-INDEX-NOT-BUILT"
 
 E_CASH_INSUFFICIENT: Final = "PT-E-CASH-INSUFFICIENT"
 E_CASH_NOT_CONSERVED: Final = "PT-E-CASH-NOT-CONSERVED"
@@ -264,6 +288,15 @@ ERROR_CODES: Final[tuple[str, ...]] = (
     E_ALLOCATION_UNPRICED,
     E_ALLOCATION_WEIGHTS,
     E_ALLOCATION_UNKNOWN_CLASS,
+    E_INDEX_DEFINITION,
+    E_INDEX_CLOSE_MISSING,
+    E_INDEX_EVENT_UNDECLARED,
+    E_INDEX_NO_SCHEDULE,
+    E_INDEX_DIVIDEND_GAP,
+    E_INDEX_CAP_MISSING,
+    E_INDEX_ONE_ISSUER,
+    E_INDEX_RESTATEMENT,
+    E_INDEX_NOT_BUILT,
     E_CASH_INSUFFICIENT,
     E_CASH_NOT_CONSERVED,
     E_FRACTIONAL_SHARE,
