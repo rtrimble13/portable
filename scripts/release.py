@@ -289,6 +289,8 @@ class Changes:
     """What a release changes that the owner acts on after `git pull`."""
 
     previous: str | None
+    #: What changed that pip must also act on: dependencies, or C++ to compile.
+    #: `make install` is in every release's notes whatever this holds.
     reinstall: list[str]
     migrations: list[str]
     raised_schemas: list[str]
@@ -304,7 +306,7 @@ def changes_since(version: str) -> Changes:
         or None
     )  # fmt: skip
     if previous is None:
-        return Changes(None, ["this is the first release"], [], [])
+        return Changes(None, [], [], [])
     changed = git("diff", "--name-only", previous, "HEAD", check=False).splitlines()
     reinstall = sorted(
         {
@@ -333,11 +335,24 @@ def section_of(changelog: str, version: str) -> str:
     return changelog[found.end() : following.start() if following else len(changelog)].strip()
 
 
+def _why_install(changes: Changes) -> str:
+    """Why `make install` follows the pull: every release changes the version.
+
+    An editable install reads the Python from the checkout, but pip's record
+    and the compiled extension keep the number they were installed with until
+    pip runs again, and `make check` holds both to the source.
+    """
+    if changes.previous is None:
+        return "this is the first release"
+    if changes.reinstall:
+        return f"every release, and {', '.join(changes.reinstall)} changed"
+    return "every release: pip and the native extension record the version"
+
+
 def notes(version: str, changes: Changes, changelog: str, repository: str) -> str:
     """The release's notes: what to run after the pull, then what changed."""
-    lines = ["## Upgrading", "", "```bash", "git pull"]
-    if changes.reinstall:
-        lines.append(f"make install    # {', '.join(changes.reinstall)}")
+    install = f"make install    # {_why_install(changes)}"
+    lines = ["## Upgrading", "", "```bash", "git pull", install]
     if changes.migrations:
         lines.append("pt --port FILE migrate    # every .port file; it takes a backup first")
     elif changes.previous is None:
