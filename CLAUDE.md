@@ -453,7 +453,7 @@ its `CHANGELOG.md` section, or the version gate in `make check` fails.
   | 0047 | Lot-level sale candidates: each open lot priced, taxed and checked for a wash as if sold alone today, and nothing proposed |
   | 0048 | Policy allocation and drift: declared classes, an effective-dated target, and drift at the market value a snapshot records |
   | 0049 | Every version on main is a release: one number in source, raised by the pull request, published by the merge |
-  | 0050 | Benchmarks are built, not only read: a `.bmk` file holds units of securities, and its total return is computed from their prices and every distribution (proposed) |
+  | 0050 | Benchmarks are built, not only read: a `.bmk` file holds units of securities, and its total return is computed from their prices and every distribution |
 
 - `docs/architecture.md` — how the pieces fit, how to add a module
 - `docs/domain-model.md` — the concepts, written for a portfolio manager

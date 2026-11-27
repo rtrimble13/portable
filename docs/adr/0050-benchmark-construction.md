@@ -1,6 +1,6 @@
 # ADR 0050 — Benchmarks are built, not only read: a `.bmk` file holds units of securities, and its total return is computed from their prices and every distribution
 
-- **Status:** Proposed (2026-11-27). Ten questions for the owner, below
+- **Status:** Accepted (owner, 2026-11-27). Questions 1–4 and 6–10 as recommended; question 5 answered from fafnir's daily market cap, `duk mc`. See Owner's answers
 - **Date:** 2026-11-27
 - **Milestone:** v0.2, issue 6 (P1)
 - **Governs:** `PORT-GIPS-G01` (total return only), `G02` (a benchmark or a stated reason), `G03` (a blend is a stored object with an explicit rebalancing rule), `G04` (changes disclosed), `G05` (periodicity and withholding), `J04` (theoretical is never linked to actual); `CLAUDE.md` invariants 1, 3, 6, 9 and 10
@@ -75,8 +75,8 @@ The owner wants a benchmark tool inside `portable`:
 
 ### 1. A new CLI, sharing `portable_core`
 
-- **A standalone CLI**, alongside `pt`, `pert`, `po` and `risky`. Its name
-  is question 1.
+- **A standalone CLI, `bmk`**, alongside `pt`, `pert`, `po` and `risky`
+  (answer 1).
 - **Thin**, as `pt` is. The logic is in `portable_core`, so `pt` and
   `pert` can read a `.bmk` file without importing the CLI (`CLAUDE.md`: no
   CLI imports another).
@@ -104,7 +104,8 @@ It holds three kinds of rows:
   - the base date and base level.
 - **The inputs**, each with its source and as-of:
   - unadjusted closes, splits and cash dividends;
-  - shares outstanding, where the method needs them.
+  - for `cap`, each constituent's market cap on each rebalance date, with
+    the count, the share factor and the balance sheet behind it.
 
   The file is self-contained: it rebuilds without a network, and two
   builds of the same file give the same bytes.
@@ -126,7 +127,7 @@ It holds three kinds of rows:
   |---|---|---|
   | `custom` | the declared weights, effective-dated | weights summing to 1 |
   | `equal` | 1/N each | nothing more |
-  | `cap` | each constituent's market value, shares × price, over the total | shares outstanding (question 5) |
+  | `cap` | each constituent's market cap that day, over the total | fafnir's daily market cap, `duk mc` (§6) |
   | `price` | one unit of each security, and a divisor | nothing more; the divisor is §5's |
 
   These four are what the owner named. Capped, inverse-volatility and
@@ -177,9 +178,32 @@ If question 3 is answered as recommended:
 
 - **Prices, splits and dividends** through `duk`, in `providers/fafnir.py`
   and nowhere else (ADR 0032). Files fill any gaps, as for `pt`.
-- **Shares outstanding** are not in fafnir. They come from a file,
-  effective-dated, with their source. They can be added to `duk` later
-  (question 5).
+- **Market caps** through `duk mc`, fafnir's daily market cap, built for
+  cap-weighted index construction. On each day it is the raw close × the
+  shares outstanding of the latest balance sheet known that day × SF1's share
+  factor (an ADR's ratio, a multi-class issuer's conversion).
+  - **Point in time.** The count steps on the day a filing became known, and
+    only splits move it between filings, so no later filing or restatement
+    reaches an earlier day. A backtest of the index is not looking ahead.
+  - **Read at each rebalance.** The method sets weights from that day's caps.
+    Between rebalances the units hold, so the index drifts with prices and a
+    new filing moves nothing until the next rebalance, as a published
+    cap-weighted index does.
+  - **Stored with its basis.** Each cap read is stored with its count,
+    factor, `fiscal_date` and `known_from`, so a weight traces to the filing
+    behind it.
+  - **No cap stops the build.** `duk mc` gives none for a fund or an ETF, a
+    security Sharadar does not feed, a day before the first filing or more
+    than two years after the last, or a secondary share class. The build
+    names the constituent and the reason. A file can supply the cap instead,
+    marked as such.
+  - **One issuer, one line.** `duk mc` counts every class of a multi-class
+    issuer under its primary class, so a definition holding two classes of
+    one issuer is refused, rather than holding it twice.
+  - **Full shares, no float.** SF1 carries no float. A float factor can be
+    declared per constituent, dated, with its source, and the report says
+    which.
+  - `providers/fafnir.py` gains the read, through `duk` alone (ADR 0032).
 - **The trading calendar** through `duk`, as `pt` reads it.
 
 ### 7. How a portfolio uses a `.bmk`
@@ -268,13 +292,10 @@ And from this ADR:
      is the convention of the major index providers, and it keeps each
      constituent's weight what the method says. Reinvesting in the paying
      security instead tilts the index toward high payers between rebalances.
-5. **Shares outstanding for cap weighting.** fafnir does not carry them.
-   - **Recommendation: a file now**, effective-dated per constituent with its
-     source, full shares unless a float factor is stated. Open an issue in
-     fafnir for `duk` to carry shares and float, since a capability `duk`
-     lacks is added to `duk` (`CLAUDE.md`). Is a file practical for the
-     indexes you have in mind? A broad cap-weighted index needs every
-     constituent's shares at every reconstitution.
+5. **Market caps for cap weighting.** The draft said fafnir did not carry
+   shares outstanding and proposed a file. The owner pointed out that fafnir
+   stores fundamentals. It does more: `duk mc` serves a point-in-time daily
+   market cap built for this. Answered in §6.
 6. **Rebalancing timing.**
    - **Recommendation: at the close of the last trading day of the period**,
      with the targets set from that close. Some providers fix the weights from
@@ -308,6 +329,28 @@ And from this ADR:
       - the benchmark's periodicity is disclosed when it is less frequent
         than monthly (`G05`).
 
+## Owner's answers (2026-11-27)
+
+1. **The name:** `bmk`, the same word as the file.
+2. **Units or weights:** units, with weights derived from them.
+3. **A total return from fafnir's closes and dividends:** allowed, with the
+   three safeguards, and ADR 0006 §1 is amended when this is built.
+4. **Reinvestment:** across the whole index at the ex-date close.
+5. **Market caps:** from fafnir through `duk mc`, point in time, read at
+   each rebalance, with no float unless one is declared (§6). A file supplies
+   a cap only where `duk mc` has none, and is marked.
+6. **Rebalancing:** at the close of the period's last trading day.
+7. **Long-short:** version 1 is long-only and fully invested. A long-short
+   factor is the difference of two legs, computed where the factor model
+   lives.
+8. **Copy into the `.port`:** yes, with the `.bmk` file's content hash.
+9. **The policy benchmark:** its own `.bmk`, seeded from the policy, and not
+   tied to later target changes. `pt allocation drift` warns when they
+   differ.
+10. **Active return:** arithmetic. A row whose window lacks a benchmark level
+    at either end shows none, with the reason. The periodicity is disclosed
+    when less frequent than monthly.
+
 ## Consequences
 
 - **A fifth CLI**, built, and the `CLAUDE.md` table and README updated in
@@ -328,7 +371,7 @@ And from this ADR:
 
 1. **The `.bmk` core and the CLI**: definition, inputs, `custom`, `equal`
    and `price`, every rule, rebuild, the sample.
-2. **`cap`**, with shares from a file.
+2. **`cap`**, with caps from `duk mc`.
 3. **`pt benchmark assign`**, and the benchmark and active return in
    `pert twr` and `pert periods`.
 
