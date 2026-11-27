@@ -146,6 +146,30 @@ cap-weighted and rebalanced quarterly, with a split, quarterly dividends, a
 free float and a reconstitution. `make fixtures` rebuilds it, and
 `tests/integration/test_sample_index.py` checks a level by hand.
 
+## Rehearsed on fafnir (2026-11-27)
+
+`bmk` was run against the live warehouse through `duk` 3.2.0, and each result
+was checked against references computed from `duk` directly, outside
+`portable`. No price is recorded here, only how far apart the two came out.
+
+| Check | Index | Reference | Agreement |
+|---|---|---|---|
+| Cap weights at a quarterly rebalance | AAPL, MSFT, XOM, JPM, cap-weighted, quarterly, 2024-01-02 to 2025-06-30 | each `duk mc` cap over their sum | identical, every digit |
+| Price return over a quarter with no rebalance | the same | the units held × `duk ph --exact` closes | identical, every digit |
+| Total return over 18 months, six dividends each | AAPL alone; XOM alone | the `duk ph` closes and `duk ca` dividends, compounded by hand | within 1e-32 |
+| The same, against fafnir's adjusted series | AAPL alone; XOM alone | `duk ph --adj` | −1.3 and +0.9 bp |
+| A cap-weighted index holding an ETF, or a secondary share class | AAPL with SPY; AAPL with GOOG | none: `duk mc` has no cap | refused, `PT-E-INDEX-CAP-MISSING`, naming it |
+
+**The adjusted series is a different convention, not a missing dividend.**
+`duk ph --adj` compounds `close ÷ (previous close − dividend)` on an
+ex-date. Recomputed that way from the same closes and dividends, it agrees
+with `--adj` within what rounding `--adj` to the cent allows (−0.39 bp
+against ±0.52 for AAPL, −0.89 against ±1.02 for XOM). `bmk` instead reinvests
+at the ex-date close, `(close + dividend) ÷ previous close`, as the major index
+providers do (ADR 0050, answer 4). The two conventions differ by about a basis
+point a year at these yields. Comparing a `bmk` total return with an adjusted
+price series means knowing which convention each uses.
+
 ## Output
 
 `bmk levels` (`bmk-levels-1.0`) and `bmk holdings` (`bmk-holdings-1.0`) are

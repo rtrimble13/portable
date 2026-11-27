@@ -402,6 +402,18 @@ left open, or differs from it:
     five fictional stocks, cap-weighted and quarterly, with a split,
     quarterly dividends, a free float and a reconstitution. It is held to a
     fresh build, and its first day is checked by hand.
+12. **Rehearsed on fafnir** through `duk` 3.2.0, against references computed
+    from `duk` directly (`docs/bmk-format.md`):
+    - cap weights and a quarter's price return matched to every digit;
+    - an 18-month total return matched the dividends compounded by hand
+      within 1e-32;
+    - an ETF and a secondary share class were refused by name.
+
+    `duk ph --adj` differs by about 1 bp, because it compounds
+    `close ÷ (previous close − dividend)` where `bmk` reinvests at the ex-date
+    close. The difference is the convention, and is within cent rounding
+    once that is allowed for. The fake `duk` the unit tests use answers
+    `mc` in the shape the real one does.
 
 ## Consequences
 
