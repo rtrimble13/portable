@@ -179,7 +179,16 @@ Then:
    such days. It shares `twr-2.0` with item 4. A fiscal year end must be a
    month end.
 6. **Benchmarks** (issue 6) — blends with explicit rebalancing rules, active
-   return, tracking error. **Total-return series only** (`PORT-GIPS-G01`).
+   return. **Total-return series only** (`PORT-GIPS-G01`). Accepted as
+   [ADR 0050](adr/0050-benchmark-construction.md): benchmarks are built in a
+   `.bmk` file by a new CLI, `bmk`, which also builds synthetic indexes for
+   factor work. Tracking error and capture move to item 10.
+   - *Phases 1 and 2 done*: `bmk` builds custom, equal, cap and price-weighted
+     indexes from fafnir or files. Caps come from `duk mc`. Every dividend is
+     reinvested and audited, and a schedule guards against a missing one
+     ([docs/bmk-format.md](bmk-format.md)).
+   - *Phase 3 to come*: `pt benchmark assign` from a `.bmk`, and the
+     benchmark and active return in `pert twr` and `pert periods`.
 7. **Money-weighted return (XIRR)** (issue 4) — annualized since-inception,
    daily external cash flows, Newton with a bisection fallback, and an explicit
    refusal on pathological flow patterns rather than a plausible root.

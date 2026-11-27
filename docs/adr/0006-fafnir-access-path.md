@@ -1,6 +1,6 @@
 # ADR 0006 — fafnir access path: direct warehouse SQL, `duk` for the yield curve
 
-- **Status:** Superseded in part by [ADR 0029](0029-prices-through-duk.md) — prices now come through `duk -S db ph`, and every relation is read from fafnir's `mart` and `ref`, never `core`, which the owner's `fafnir_app` role cannot see. Since [ADR 0032](0032-fafnir-through-duk-alone.md) every read goes through `duk`, with no database driver, and `duk` resolves the DSN. The yield curve through `duk`, and the two capabilities fafnir does not have, stand as decided here
+- **Status:** Superseded in part by [ADR 0029](0029-prices-through-duk.md) — prices now come through `duk -S db ph`, and every relation is read from fafnir's `mart` and `ref`, never `core`, which the owner's `fafnir_app` role cannot see. Since [ADR 0032](0032-fafnir-through-duk-alone.md) every read goes through `duk`, with no database driver, and `duk` resolves the DSN. The yield curve through `duk`, and the two capabilities fafnir does not have, stand as decided here. §1 below is amended by [ADR 0050](0050-benchmark-construction.md): fafnir still holds no total-return index, but a synthetic index `bmk` defines is built from its closes and every dividend, audited and guarded by declared schedules
 - **Date:** 2026-08-27
 - **Milestone:** v0.1
 
@@ -95,6 +95,15 @@ recorded here so nobody later assumes otherwise.
    is rejected — `PT-E-GIPS-PRICE-ONLY-BENCHMARK`. Synthesising a total return by
    adding `core.corporate_action` dividends to a price series would be a
    defensible-looking wrong number of exactly the kind this repo exists to avoid.
+
+   *Amended by ADR 0050 (2026-11-27).* What this guards against is a price
+   series plus partial dividends passed off as a published index's total
+   return. An index defined by its own constituents, computed from every
+   distribution they paid, is that index's total return. `bmk` builds one,
+   with three safeguards: every dividend reinvested is a stored row, each
+   constituent declares how it pays and a longer gap stops the build, and the
+   source is named on the index. `FafnirProvider` still declares no benchmark
+   capability: it serves no index levels.
 2. **No treasury curve in the warehouse.** Hence the `duk` shell-out above, and
    hence the risk-free rate is a declared, named series on the result
    (`PORT-GIPS-F05`), not an ambient constant.

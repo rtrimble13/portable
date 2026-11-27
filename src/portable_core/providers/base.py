@@ -13,7 +13,7 @@ yield every year.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -34,6 +34,9 @@ __all__ = [
     "DailyRangeCapability",
     "EndOfDayPriceCapability",
     "FxCapability",
+    "IndexDataCapability",
+    "IndexSecurityKey",
+    "MarketCapRecord",
     "MarketDataProvider",
     "RiskFreeRate",
     "RiskFreeRateCapability",
@@ -44,6 +47,7 @@ __all__ = [
     "as_corporate_action_provider",
     "as_daily_range_provider",
     "as_eod_provider",
+    "as_index_data_provider",
     "as_security_master",
     "as_trading_calendar_provider",
     "require_capability",
@@ -63,6 +67,8 @@ class Capability(StrEnum):
     RISK_FREE_RATE = "risk_free_rate"
     FX = "fx"
     TRADING_CALENDAR = "trading_calendar"
+    #: A security's market cap on each day, for cap-weighted indexes (ADR 0050).
+    MARKET_CAP = "market_cap"
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +89,39 @@ class CorporateActionRecord:
     split_denominator: Decimal | None = None
     cash_amount: Decimal | None = None
     provider_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IndexSecurityKey:
+    """How an index names a security to a provider: fafnir's id, else its ticker.
+
+    A `.bmk` holds fafnir's ``security_id`` for every security fafnir carries,
+    so its prices and actions are read by that id, never by a ticker that may
+    have named another issuer (ADR 0050 §2).
+    """
+
+    symbol: str
+    fafnir_sid: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MarketCapRecord:
+    """A security's market cap on a day, with what it was computed from.
+
+    From `duk mc`: the raw close x the shares outstanding of the latest balance
+    sheet known that day x SF1's share factor, and the filing behind the count.
+    From a file, the cap alone may be stated, and the record says so.
+    """
+
+    cap_date: date
+    market_cap: Decimal
+    source: str
+    close_raw: Decimal | None = None
+    shares_outstanding: Decimal | None = None
+    share_factor: Decimal | None = None
+    fiscal_date: date | None = None
+    known_from: date | None = None
+    currency: str = "USD"
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +230,26 @@ class CorporateActionCapability(Protocol):
     def corporate_actions(
         self, symbol: str, start: date, end: date
     ) -> list[CorporateActionRecord]: ...
+
+
+@runtime_checkable
+class IndexDataCapability(Protocol):
+    """What a `.bmk` index is built from, read by its own key (ADR 0050 §6).
+
+    Every method answers the range asked and nothing else, and an empty list
+    means the source holds nothing there: the build, not the provider, decides
+    whether that is a gap.
+    """
+
+    def index_closes(self, key: IndexSecurityKey, start: date, end: date) -> list[Price]: ...
+
+    def index_actions(
+        self, key: IndexSecurityKey, start: date, end: date
+    ) -> list[CorporateActionRecord]: ...
+
+    def index_market_caps(
+        self, keys: Sequence[IndexSecurityKey], start: date, end: date
+    ) -> dict[IndexSecurityKey, list[MarketCapRecord]]: ...
 
 
 @runtime_checkable
@@ -330,6 +389,25 @@ def as_benchmark_provider(provider: MarketDataProvider) -> BenchmarkCapability:
     require_capability(provider, Capability.BENCHMARKS)
     if not isinstance(provider, BenchmarkCapability):
         raise _mismatch(provider, Capability.BENCHMARKS)
+    return provider
+
+
+def as_index_data_provider(provider: MarketDataProvider) -> IndexDataCapability:
+    """Narrow a provider to what an index is built from, or refuse (ADR 0050).
+
+    Closes, corporate actions and a calendar, all three: an index built from
+    prices with no source of dividends is a price-only index that looks like a
+    total-return one (``PORT-GIPS-G01``). Market caps are asked of a
+    cap-weighted index only, by :data:`Capability.MARKET_CAP`.
+    """
+    for needed in (
+        Capability.EOD_PRICES,
+        Capability.CORPORATE_ACTIONS,
+        Capability.TRADING_CALENDAR,
+    ):
+        require_capability(provider, needed)
+    if not isinstance(provider, IndexDataCapability):
+        raise _mismatch(provider, Capability.EOD_PRICES)
     return provider
 
 

@@ -207,7 +207,8 @@ def test_fafnir_is_read_through_duk_alone() -> None:
         )
     }
     assert not imported & {"psycopg", "psycopg2", "sqlite3", "sqlalchemy"}, imported
-    assert set(DUK_COMMANDS) == {"th", "ph", "ca", "tc", "yc"}
+    # `mc` since ADR 0050: the market caps a cap-weighted index is weighted by.
+    assert set(DUK_COMMANDS) == {"th", "ph", "ca", "tc", "yc", "mc"}
 
 
 def _adapter_source() -> str:

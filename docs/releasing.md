@@ -61,8 +61,8 @@ make bump BUMP=minor               # set this branch's version; then commit it
    of it, the workflow:
    - **installs the commit** as `make install` does, with the native extension;
    - **checks that the number matches everywhere**: the source, the
-     distribution metadata, the extension, and all five CLIs (`pt`, `pert`,
-     `po`, `risky`, `portable`);
+     distribution metadata, the extension, and all six CLIs (`pt`, `pert`,
+     `bmk`, `po`, `risky`, `portable`);
    - **creates the tag `vX.Y.Z`** at that commit, with the GitHub release.
 
    The notes open with what to run after the pull ([Upgrading](#upgrading)),

@@ -93,3 +93,11 @@ def test_reference_written_with_out_is_utf8_with_lf_whatever_the_code_page(
     actual = out.read_bytes()
     expected = _expected()
     assert actual == expected, _explain(actual, expected)
+
+
+def test_the_bmk_reference_is_what_the_generator_writes(tmp_path: Path) -> None:
+    """ADR 0050: the .bmk schema is documented from its DDL, as the .port's is."""
+    out = tmp_path / "bmk-schema.md"
+    _docgen("--bmk", "--out", str(out), env=CP1252)
+    committed = (ROOT / "docs" / "bmk-schema.md").read_bytes().replace(b"\r\n", b"\n")
+    assert out.read_bytes() == committed, "Run `make docs` and commit docs/bmk-schema.md."

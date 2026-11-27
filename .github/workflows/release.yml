@@ -106,7 +106,7 @@ jobs:
                  "extension (${NATIVE}) must all say ${VERSION}. The version wiring is broken." >&2
             exit 1
           fi
-          for cli in pt pert po risky portable; do
+          for cli in pt pert bmk po risky portable; do
             printf '%-9s %s\n' "${cli}" "$("${cli}" --version)"
             test "$("${cli}" --version)" = "${VERSION}"
           done

@@ -56,6 +56,10 @@ _DDL = (
         currency TEXT DEFAULT 'USD', source TEXT DEFAULT 'sharadar')""",
     """CREATE TABLE trading_calendar (
         exchange_code TEXT, trade_date TEXT, is_open INTEGER, session_note TEXT)""",
+    # mart.fn_daily_market_cap's rows (fafnir migration 0042).
+    """CREATE TABLE market_cap (
+        security_id INTEGER, trade_date TEXT, close_raw TEXT, shares_outstanding TEXT,
+        share_factor TEXT, market_cap TEXT, fiscal_date TEXT, known_from TEXT)""",
 )
 
 
@@ -123,6 +127,14 @@ class _Warehouse:
             "INSERT INTO trading_calendar (exchange_code, trade_date, is_open) "
             "VALUES (?, ?, ?)",
             [(exchange, on, int(is_open)) for on in days],
+        )
+
+    def cap(
+        self, security_id: int, on: str, close: str, shares: str, factor: str = "1"
+    ) -> None:
+        self.db.execute(
+            "INSERT INTO market_cap VALUES (?, ?, ?, ?, ?, ?, '2023-12-31', '2024-02-01')",
+            (security_id, on, close, shares, factor, str(D(close) * D(shares) * D(factor))),
         )
 
     def dividend(self, security_id: int, ex_date: str, amount: str) -> None:
@@ -285,6 +297,39 @@ class _Duk:
             record["corporate_action_id"] = str(record["corporate_action_id"])
             record["security_id"] = str(record["security_id"])
             records.append(record)
+        return 0, json.dumps(records) + "\n", ""
+
+    def _mc(self, argv: list[str]) -> tuple[int, str, str]:
+        """`duk mc sid:A [sid:B ...]`: one row per security and day with a cap."""
+        named = []
+        for argument in argv[4:]:
+            if argument.startswith("--"):
+                break
+            named.append(argument)
+        assert "--exact" in argv and "--json" in argv
+        ids = [self._resolve(n) for n in named]
+        if None in ids:
+            return 1, "", f"No security found for {named[ids.index(None)]}."
+        records = []
+        for security_id in ids:
+            for row in self.warehouse.db.execute(
+                "SELECT trade_date, close_raw, shares_outstanding, share_factor, market_cap, "
+                "fiscal_date, known_from FROM market_cap WHERE security_id = ? "
+                "AND trade_date BETWEEN ? AND ? ORDER BY trade_date",
+                (security_id, _option(argv, "--start-date"), _option(argv, "--end-date")),
+            ):
+                on, close, shares, factor, cap, fiscal, known = row
+                record = {
+                    "date": on, "close_raw": _numeric(close),
+                    "shares_outstanding": format(D(shares), "f"),
+                    "share_factor": _numeric(factor), "market_cap": format(D(cap), "f"),
+                    "currency": "USD", "fiscal_date": fiscal, "known_from": known,
+                }  # fmt: skip
+                if len(ids) > 1:
+                    record |= {"symbol": f"S{security_id}", "security_id": security_id}
+                records.append(record)
+        if not records:
+            return self._nothing("No market cap for the securities named")
         return 0, json.dumps(records) + "\n", ""
 
     def _tc(self, argv: list[str]) -> tuple[int, str, str]:
@@ -1129,3 +1174,55 @@ def test_an_unknown_tenor_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     _duk(monkeypatch, _CURVE)
     with pytest.raises(ValidationError, match="unknown tenor"):
         FafnirProvider(dsn="host=fake").risk_free_rate(date(2025, 6, 27), tenor="3W")
+
+
+# ── what an index is built from (ADR 0050 §6) ───────────────────────────────
+
+
+def test_an_index_security_is_read_by_its_fafnir_id_whatever_its_ticker(
+    fafnir: FafnirProvider, warehouse: _Warehouse, duk: _Duk
+) -> None:
+    """No `duk th`: the id the index holds is the question."""
+    from portable_core.providers import IndexSecurityKey
+
+    warehouse.security(7, "OLD")
+    warehouse.bar(7, "2024-01-02", "10.5")
+    warehouse.dividend(7, "2024-01-02", "0.25")
+    key = IndexSecurityKey("NEW", fafnir_sid=7)
+    (close,) = fafnir.index_closes(key, date(2024, 1, 1), date(2024, 1, 31))
+    assert (close.price_date, close.price) == (date(2024, 1, 2), D("10.500000"))
+    (action,) = fafnir.index_actions(key, date(2024, 1, 1), date(2024, 1, 31))
+    assert (action.action_type, action.cash_amount) == ("cash_dividend", D("0.250000"))
+    assert not [c for c in duk.calls if c[3] == "th"]
+    with pytest.raises(DataUnavailableError, match="no fafnir security id"):
+        fafnir.index_closes(IndexSecurityKey("X"), date(2024, 1, 1), date(2024, 1, 31))
+
+
+def test_market_caps_come_from_duk_mc_with_the_filing_behind_each(
+    fafnir: FafnirProvider, warehouse: _Warehouse, duk: _Duk
+) -> None:
+    from portable_core.providers import IndexSecurityKey
+
+    for sid in (7, 8):
+        warehouse.security(sid, f"S{sid}")
+    warehouse.cap(7, "2024-03-28", "100", "1000000")
+    warehouse.cap(8, "2024-03-28", "50", "5000000", factor="0.2")
+    keys = [IndexSecurityKey("S7", 7), IndexSecurityKey("S8", 8)]
+    found = fafnir.index_market_caps(keys, date(2024, 3, 28), date(2024, 3, 28))
+    (a,), (b,) = found[keys[0]], found[keys[1]]
+    assert a.market_cap == D("100000000")
+    assert (b.market_cap, b.share_factor, b.shares_outstanding) == (
+        D("50000000.0"),
+        D("0.200000"),
+        D("5000000"),
+    )
+    assert (b.fiscal_date, b.known_from, b.source) == (
+        date(2023, 12, 31),
+        date(2024, 2, 1),
+        "fafnir:duk mc",
+    )
+    (call,) = [c for c in duk.calls if c[3] == "mc"]
+    assert call[4:6] == ["sid:7", "sid:8"]
+    # One security: duk's rows carry no id, and are still that security's.
+    (one,) = fafnir.index_market_caps(keys[:1], date(2024, 3, 28), date(2024, 3, 28))[keys[0]]
+    assert one.market_cap == D("100000000")

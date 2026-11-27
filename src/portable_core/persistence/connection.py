@@ -25,6 +25,8 @@ from portable_core.errors.kinds import (
 #: The file extension a portfolio uses. Not enforced -- a user may name a file
 #: anything -- but it is what `pt init` appends and what the docs assume.
 PORT_SUFFIX: Final[str] = ".port"
+#: The extension of an index file (ADR 0050), appended by `bmk init`.
+BMK_SUFFIX: Final[str] = ".bmk"
 
 _ADAPTERS_REGISTERED = False
 
@@ -84,14 +86,37 @@ def open_portfolio(
     Raises:
         PortfolioFileError: missing, locked, or not a database.
     """
+    return _open(
+        path,
+        read_only=read_only,
+        must_exist=must_exist,
+        noun="portfolio",
+        remedy="Create it with `pt init {path}` or check --port / PORTABLE_PORT.",
+    )
+
+
+def open_index(path: Path | str, *, must_exist: bool = True) -> sqlite3.Connection:
+    """Open a `.bmk` index file, configured exactly as a `.port` is (ADR 0050)."""
+    return _open(
+        path,
+        read_only=False,
+        must_exist=must_exist,
+        noun="index",
+        remedy="Create it with `bmk init {path}` or check --bmk / PORTABLE_BMK.",
+    )
+
+
+def _open(
+    path: Path | str, *, read_only: bool, must_exist: bool, noun: str, remedy: str
+) -> sqlite3.Connection:
     _register_adapters()
     file_path = Path(path)
 
     if must_exist and not file_path.exists():
         raise PortfolioFileError(
-            f"portfolio file not found: {file_path}",
+            f"{noun} file not found: {file_path}",
             code=E_PORTFOLIO_NOT_FOUND,
-            remedy=f"Create it with `pt init {file_path}` or check --port / PORTABLE_PORT.",
+            remedy=remedy.format(path=file_path),
             path=str(file_path),
         )
 
@@ -113,13 +138,13 @@ def open_portfolio(
         message = str(exc)
         if "locked" in message or "busy" in message:
             raise PortfolioFileError(
-                f"portfolio is locked by another process: {file_path}",
+                f"{noun} is locked by another process: {file_path}",
                 code=E_PORTFOLIO_LOCKED,
                 remedy="Close the other `portable` process and retry.",
                 path=str(file_path),
             ) from exc
         raise PortfolioFileError(
-            f"cannot open portfolio: {file_path}: {message}",
+            f"cannot open {noun}: {file_path}: {message}",
             code=E_PORTFOLIO_CORRUPT,
             path=str(file_path),
         ) from exc

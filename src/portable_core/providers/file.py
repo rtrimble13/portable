@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import csv
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -29,13 +29,18 @@ from portable_core.providers.base import (
     BenchmarkSeries,
     Capability,
     CorporateActionRecord,
+    IndexSecurityKey,
+    MarketCapRecord,
     MarketDataProvider,
+    TradingCalendar,
 )
 
 __all__ = ["FileProvider"]
 
 _PRICE_COLUMNS = {"symbol", "date", "price"}
 _ACTION_COLUMNS = {"symbol", "action_type", "ex_date"}
+_CALENDAR_COLUMNS = {"exchange", "date"}
+_CAP_COLUMNS = {"symbol", "date", "market_cap"}
 
 
 class FileProvider(MarketDataProvider):
@@ -49,6 +54,14 @@ class FileProvider(MarketDataProvider):
             ``ex_date``.
         benchmark_file: JSON only. Each series **must** declare
             ``return_type``; see :meth:`benchmark_series`.
+        calendar_file: CSV or JSON, ``exchange`` and ``date``: every session
+            of each exchange, and nothing else. The calendar an index built
+            from files is computed on (ADR 0050); its span is from its first
+            session to its last.
+        cap_file: CSV or JSON, ``symbol``, ``date``, ``market_cap``; optional
+            ``close_raw``, ``shares_outstanding``, ``share_factor``,
+            ``fiscal_date``, ``known_from``, ``source``. Market caps for a
+            cap-weighted index where fafnir has none.
     """
 
     name = "file"
@@ -59,10 +72,14 @@ class FileProvider(MarketDataProvider):
         price_file: Path | str | None = None,
         action_file: Path | str | None = None,
         benchmark_file: Path | str | None = None,
+        calendar_file: Path | str | None = None,
+        cap_file: Path | str | None = None,
     ) -> None:
         self.price_file = Path(price_file) if price_file else None
         self.action_file = Path(action_file) if action_file else None
         self.benchmark_file = Path(benchmark_file) if benchmark_file else None
+        self.calendar_file = Path(calendar_file) if calendar_file else None
+        self.cap_file = Path(cap_file) if cap_file else None
         self._prices: dict[str, list[Price]] | None = None
 
     @property
@@ -80,6 +97,10 @@ class FileProvider(MarketDataProvider):
             found.update({Capability.CORPORATE_ACTIONS, Capability.DIVIDENDS})
         if self.benchmark_file is not None:
             found.add(Capability.BENCHMARKS)
+        if self.calendar_file is not None:
+            found.add(Capability.TRADING_CALENDAR)
+        if self.cap_file is not None:
+            found.add(Capability.MARKET_CAP)
         return frozenset(found)
 
     # ── loading ──────────────────────────────────────────────────────────────
@@ -298,6 +319,75 @@ class FileProvider(MarketDataProvider):
             instrument_type=InstrumentType.EQUITY,
             source=f"file:{self.price_file.name if self.price_file else '?'}",
         )
+
+    # ── what an index is built from (ADR 0050) ───────────────────────────────
+
+    def trading_calendar(self, exchange: str | None, start: date, end: date) -> TradingCalendar:
+        """*exchange*'s sessions from the calendar file: what it lists and no more."""
+        self.require(Capability.TRADING_CALENDAR)
+        assert self.calendar_file is not None
+        wanted = (exchange or "").strip().upper()
+        days = sorted(
+            date.fromisoformat(str(row["date"]).strip())
+            for row in self._rows(self.calendar_file, _CALENDAR_COLUMNS)
+            if str(row["exchange"]).strip().upper() == wanted
+        )
+        if not days:
+            raise DataUnavailableError(
+                f"{self.calendar_file} lists no sessions of {wanted or 'an unnamed exchange'}",
+                code=E_PRICE_MISSING,
+                remedy="Add the exchange's sessions to the calendar file.",
+                exchange=wanted,
+            )
+        return TradingCalendar(
+            exchange=wanted,
+            open_days=frozenset(d for d in days if start <= d <= end),
+            first=days[0],
+            last=days[-1],
+            source=f"file:{self.calendar_file.name}",
+        )
+
+    def index_closes(self, key: IndexSecurityKey, start: date, end: date) -> list[Price]:
+        """The file's closes for the symbol in the range; none is an empty list."""
+        self.require(Capability.EOD_PRICES)
+        series = self._load_prices().get(key.symbol.strip().upper(), [])
+        return [p for p in series if start <= p.price_date <= end]
+
+    def index_actions(
+        self, key: IndexSecurityKey, start: date, end: date
+    ) -> list[CorporateActionRecord]:
+        return self.corporate_actions(key.symbol, start, end)
+
+    def index_market_caps(
+        self, keys: Sequence[IndexSecurityKey], start: date, end: date
+    ) -> dict[IndexSecurityKey, list[MarketCapRecord]]:
+        self.require(Capability.MARKET_CAP)
+        assert self.cap_file is not None
+        by_symbol = {k.symbol.strip().upper(): k for k in keys}
+        found: dict[IndexSecurityKey, list[MarketCapRecord]] = {k: [] for k in keys}
+        for row in self._rows(self.cap_file, _CAP_COLUMNS):
+            key = by_symbol.get(str(row["symbol"]).strip().upper())
+            on = date.fromisoformat(str(row["date"]).strip())
+            if key is None or not start <= on <= end:
+                continue
+            found[key].append(
+                MarketCapRecord(
+                    cap_date=on,
+                    market_cap=from_text(str(row["market_cap"]).strip()),
+                    source=(
+                        f"file:{self.cap_file.name}"
+                        + (f" ({str(row['source']).strip()})" if row.get("source") else "")
+                    ),
+                    close_raw=_optional_decimal(row.get("close_raw")),
+                    shares_outstanding=_optional_decimal(row.get("shares_outstanding")),
+                    share_factor=_optional_decimal(row.get("share_factor")),
+                    fiscal_date=_optional_date(row.get("fiscal_date")),
+                    known_from=_optional_date(row.get("known_from")),
+                )
+            )
+        for records in found.values():
+            records.sort(key=lambda r: r.cap_date)
+        return found
 
 
 def _optional_decimal(value: Any) -> Decimal | None:

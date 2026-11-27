@@ -30,6 +30,8 @@ import typer
 from typer.main import get_command
 from typer.testing import CliRunner
 
+import portable_bmk.app
+import portable_bmk.argv
 import portable_core.cli.portable_cmd
 import portable_pert
 import portable_pert.app
@@ -104,6 +106,14 @@ def test_each_cli_moves_exactly_the_flags_its_root_declares(cli: str) -> None:
     flags, value_flags = _declared(app)
     assert set(argv.GLOBAL_FLAGS) == flags
     assert set(argv.GLOBAL_VALUE_FLAGS) == value_flags
+
+
+def test_bmk_moves_exactly_the_flags_its_root_declares() -> None:
+    """`bmk` reads a .bmk, not the sample .port, so its flags are tried in
+    either position in tests/integration/test_bmk_cli.py."""
+    flags, value_flags = _declared(portable_bmk.app.app)
+    assert set(portable_bmk.argv.GLOBAL_FLAGS) == flags
+    assert set(portable_bmk.argv.GLOBAL_VALUE_FLAGS) == value_flags
 
 
 def _cases() -> list[tuple[str, str]]:

@@ -23,6 +23,7 @@ import sys
 
 import pytest
 
+import portable_bmk
 import portable_core
 import portable_pert
 import portable_po
@@ -40,7 +41,7 @@ VERSION_FILE = ROOT / "src" / "portable_core" / "__init__.py"
 SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 
 #: Every console script in `[project.scripts]`, each asked by the release.
-CLIS = ("pt", "pert", "po", "risky", "portable")
+CLIS = ("pt", "pert", "bmk", "po", "risky", "portable")
 
 
 def test_the_version_is_three_numbers() -> None:
@@ -52,7 +53,7 @@ def test_the_version_is_three_numbers() -> None:
 
 def test_every_package_reports_the_same_version() -> None:
     """The re-exports are the mechanism; this is what they exist for."""
-    for package in (portable_pt, portable_pert, portable_po, portable_risky):
+    for package in (portable_pt, portable_pert, portable_bmk, portable_po, portable_risky):
         assert package.__version__ == portable_core.__version__, package.__name__
 
 
@@ -63,6 +64,7 @@ def test_every_cli_reports_the_version(cli: str) -> None:
     entry = {
         "pt": "portable_pt",
         "pert": "portable_pert",
+        "bmk": "portable_bmk",
         "po": "portable_po",
         "risky": "portable_risky",
         "portable": "portable_core.cli.portable_cmd",

@@ -68,12 +68,14 @@ cpp:  ## Configure, build, and run the Catch2 suite
 schemas:  ## Validate every schemas/*.json and every recorded command output
 	$(BIN)/pytest tests/unit/test_json_schemas.py -q
 
-docs:  ## Regenerate docs/schema.md from the DDL comments
+docs:  ## Regenerate docs/schema.md and docs/bmk-schema.md from the DDL comments
 	$(BIN)/python -m portable_core.schema.docgen --out docs/schema.md
-	@echo "docs/schema.md regenerated"
+	$(BIN)/python -m portable_core.schema.docgen --bmk --out docs/bmk-schema.md
+	@echo "docs/schema.md and docs/bmk-schema.md regenerated"
 
-fixtures:  ## Rebuild examples/sample.port and sample_prices.csv from the generator
+fixtures:  ## Rebuild examples/sample.port, sample_prices.csv and sample.bmk from the generators
 	$(BIN)/python scripts/build_sample_portfolio.py --out examples/sample.port --force
+	$(BIN)/python scripts/build_sample_index.py --out examples/sample.bmk --force
 
 # One version, in one place (ADR 0049). `make version` reports; `make bump` sets
 # the version a pull request releases, and merging it publishes the release.
