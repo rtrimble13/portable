@@ -151,6 +151,8 @@ free float and a reconstitution. `make fixtures` rebuilds it, and
 `bmk` was run against the live warehouse through `duk` 3.2.0, and each result
 was checked against references computed from `duk` directly, outside
 `portable`. No price is recorded here, only how far apart the two came out.
+`scripts/rehearse_index.py --work DIR` repeats every check where `duk`
+reaches the warehouse, and exits 1 if one fails.
 
 | Check | Index | Reference | Agreement |
 |---|---|---|---|

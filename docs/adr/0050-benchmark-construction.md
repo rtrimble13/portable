@@ -413,7 +413,8 @@ left open, or differs from it:
     `close ÷ (previous close − dividend)` where `bmk` reinvests at the ex-date
     close. The difference is the convention, and is within cent rounding
     once that is allowed for. The fake `duk` the unit tests use answers
-    `mc` in the shape the real one does.
+    `mc` in the shape the real one does. `scripts/rehearse_index.py`
+    repeats the rehearsal: eight checks, all passing on 2026-11-27.
 
 ## Consequences
 

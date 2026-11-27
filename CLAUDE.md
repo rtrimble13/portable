@@ -140,11 +140,12 @@ scripts/                 # bootstrap, fixture generator, the spreadsheet-to-CSV 
   `portable` must never couple to fafnir internals outside that module, and that
   module reaches fafnir **only by running `duk`**: no SQL, no database driver, no
   fafnir config file (ADR 0032). A capability `duk` lacks is added to `duk`, in
-  fafnir, not worked around here. The one exception is outside `portable`:
-  `scripts/rehearse_reconciliation.py` reads `duk` directly, on purpose, because
-  it is the outside reference that `portable`'s fafnir path is checked
-  against, and a reference read through the same code would check it against
-  itself.
+  fafnir, not worked around here. The exceptions are outside `portable`:
+  `scripts/rehearse_reconciliation.py` (for `pt` and `pert`) and
+  `scripts/rehearse_index.py` (for `bmk`) read `duk` directly, on purpose,
+  because each is the outside reference that `portable`'s fafnir path is
+  checked against, and a reference read through the same code would check it
+  against itself.
 - New output formatting rules go in `formatters/`, once, not inline at call sites.
 - **Valuation, cash-flow, and return logic must satisfy `docs/gips-standard.md`.** Cite the
   requirement ID (`PORT-GIPS-B02`, `PORT-GIPS-F01`, …) in the code comment and in the test
