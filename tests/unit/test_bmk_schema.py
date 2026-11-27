@@ -15,10 +15,10 @@ from pathlib import Path
 
 import pytest
 
+import portable_core.schema.bmk as bmk
 from portable_core.clock import FixedClock
 from portable_core.errors import PortfolioFileError
 from portable_core.persistence.connection import open_index, open_portfolio
-from portable_core.schema import bmk
 from portable_core.schema import migrations as M
 
 pytestmark = pytest.mark.unit

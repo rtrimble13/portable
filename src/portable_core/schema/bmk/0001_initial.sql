@@ -237,7 +237,11 @@ CREATE TABLE IF NOT EXISTS reconstitution_member (
 CREATE TABLE IF NOT EXISTS security_event (
     event_id        INTEGER PRIMARY KEY,
     security_id     INTEGER NOT NULL REFERENCES security (security_id),
-    -- The last day the member is held, at its close.
+    -- A delisting or a merger: the last day the member is held. It is valued
+    -- that day at what it paid (cash_per_share, or received_ratio x the
+    -- received security's close), and that value is reinvested across the
+    -- index at the close. A spinoff: its ex-date, when the received shares
+    -- are added at the open, as a split's are.
     event_date      TEXT NOT NULL,
     event_type      TEXT NOT NULL
         CHECK (event_type IN ('delisting', 'cash_merger', 'stock_merger', 'spinoff')),
@@ -245,8 +249,9 @@ CREATE TABLE IF NOT EXISTS security_event (
     -- across the index at the close. A delisting at zero states zero.
     cash_per_share  TEXT,  -- decimal
     -- stock_merger, spinoff: the security received, and how many of it per
-    -- share held. A spinoff keeps the parent; the child is held until the
-    -- next reconstitution or rebalance unless it is a member.
+    -- share held. A spinoff keeps the parent. What is received and is not a
+    -- member is held until the next rebalance or reconstitution (the owner's
+    -- answer, 2026-11-27), when the targets, set over members only, drop it.
     received_security_id INTEGER REFERENCES security (security_id),
     received_ratio  TEXT,  -- decimal
     source          TEXT NOT NULL,
