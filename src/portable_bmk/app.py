@@ -16,6 +16,7 @@ from typing import Annotated
 
 import typer
 
+import portable_core.schema.bmk as bmk_schema
 from portable_bmk import state
 from portable_core import __version__
 from portable_core.cli.context import parse_date, parse_decimal
@@ -193,7 +194,12 @@ def init(
                 calendar=calendar,
             )
             with ctx.write():
-                index_definition.create(ctx.repos, meta)
+                index_definition.create(
+                    ctx.repos,
+                    meta,
+                    version=__version__,
+                    schema_version=bmk_schema.CURRENT_BMK_SCHEMA_VERSION,
+                )
             data = {
                 "path": str(path),
                 "index_name": meta.index_name,
@@ -934,8 +940,6 @@ def validate() -> None:
     """Check the file: its metadata, its schema, and that a rebuild reproduces it."""
 
     def action() -> CommandResult:
-        import portable_core.schema.bmk as bmk_schema
-
         ctx = state.open_context()
         problems = [("schema", p) for p in bmk_schema.verify_checksums(ctx.connection)]
         problems += index_construction.verify(ctx.repos)

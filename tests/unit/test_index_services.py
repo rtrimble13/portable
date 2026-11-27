@@ -86,7 +86,10 @@ def repos(tmp_path: Path) -> Iterator[IndexRepositories]:
     found = IndexRepositories(con, clock=CLOCK)
     with transaction(con):
         index_definition.create(
-            found, IndexMeta("Two-stock equal weight", "test", BASE, D(100), "USD", "xnys")
+            found,
+            IndexMeta("Two-stock equal weight", "test", BASE, D(100), "USD", "xnys"),
+            version="test",
+            schema_version=bmk.CURRENT_BMK_SCHEMA_VERSION,
         )
     yield found
     con.close()

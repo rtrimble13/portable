@@ -17,7 +17,6 @@ from itertools import pairwise
 from statistics import median
 from typing import Final
 
-from portable_core import __version__
 from portable_core.domain.enums import InstrumentType
 from portable_core.domain.index import (
     DistributionSchedule,
@@ -37,7 +36,6 @@ from portable_core.errors import ValidationError
 from portable_core.errors.kinds import E_INDEX_DEFINITION
 from portable_core.persistence.index_repositories import IndexRepositories
 from portable_core.providers import MarketDataProvider, as_security_master
-from portable_core.schema.bmk import CURRENT_BMK_SCHEMA_VERSION
 from portable_core.services.index_construction import GAP_DAYS
 
 __all__ = [
@@ -69,11 +67,15 @@ def _refuse(message: str, remedy: str | None = None, **context: object) -> Valid
     return ValidationError(message, code=E_INDEX_DEFINITION, remedy=remedy, **context)
 
 
-def create(repos: IndexRepositories, meta: IndexMeta, *, version: str = __version__) -> None:
+def create(
+    repos: IndexRepositories, meta: IndexMeta, *, version: str, schema_version: int
+) -> None:
     """Write a fresh file's identity. The schema is already applied.
 
-    *version* is what the file says wrote it: this release, unless a
-    generator pins it (ADR 0049 §5).
+    *version* is what the file says wrote it: the running release, or what a
+    generator pins (ADR 0049 §5). *schema_version* is the one just applied.
+    Both are the caller's to pass: a service reads neither the package nor
+    the schema (``tests/unit/test_layering.py``).
     """
     if not meta.index_name.strip():
         raise _refuse(
@@ -84,7 +86,7 @@ def create(repos: IndexRepositories, meta: IndexMeta, *, version: str = __versio
     if meta.currency != "USD":
         raise _refuse(f"currency {meta.currency}: version 1 indexes are in USD")
     values = {
-        "schema_version": str(CURRENT_BMK_SCHEMA_VERSION),
+        "schema_version": str(schema_version),
         "index_name": meta.index_name.strip(),
         "description": meta.description.strip(),
         "base_date": meta.base_date.isoformat(),

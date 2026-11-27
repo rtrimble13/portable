@@ -172,6 +172,7 @@ def build(path: Path, *, force: bool = False) -> dict[str, int]:
                     calendar="XNYS",
                 ),
                 version=STAMPED_VERSION,
+                schema_version=bmk_schema.CURRENT_BMK_SCHEMA_VERSION,
             )
             ids = {}
             for symbol in STOCKS:
