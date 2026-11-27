@@ -12,6 +12,8 @@ from portable_core.providers.base import (
     CorporateActionRecord,
     DailyRange,
     DailyRangeCapability,
+    IndexSecurityKey,
+    MarketCapRecord,
     MarketDataProvider,
     RiskFreeRate,
     TradingCalendar,
@@ -20,6 +22,7 @@ from portable_core.providers.base import (
     as_corporate_action_provider,
     as_daily_range_provider,
     as_eod_provider,
+    as_index_data_provider,
     as_security_master,
     as_trading_calendar_provider,
     require_capability,
@@ -34,6 +37,8 @@ __all__ = [
     "DailyRange",
     "DailyRangeCapability",
     "FileProvider",
+    "IndexSecurityKey",
+    "MarketCapRecord",
     "MarketDataProvider",
     "NullProvider",
     "OfflineProvider",
@@ -44,6 +49,7 @@ __all__ = [
     "as_corporate_action_provider",
     "as_daily_range_provider",
     "as_eod_provider",
+    "as_index_data_provider",
     "as_security_master",
     "as_trading_calendar_provider",
     "build_provider",
@@ -63,6 +69,8 @@ def build_provider(name: str, **options: object) -> MarketDataProvider:
                 price_file=options.get("price_file"),  # type: ignore[arg-type]
                 action_file=options.get("action_file"),  # type: ignore[arg-type]
                 benchmark_file=options.get("benchmark_file"),  # type: ignore[arg-type]
+                calendar_file=options.get("calendar_file"),  # type: ignore[arg-type]
+                cap_file=options.get("cap_file"),  # type: ignore[arg-type]
             )
         case "fafnir":
             from portable_core.providers.fafnir import FafnirProvider

@@ -54,7 +54,7 @@ import os
 import re
 import shutil
 import subprocess
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
@@ -73,6 +73,8 @@ from portable_core.providers.base import (
     Capability,
     CorporateActionRecord,
     DailyRange,
+    IndexSecurityKey,
+    MarketCapRecord,
     MarketDataProvider,
     RiskFreeRate,
     TradingCalendar,
@@ -86,6 +88,7 @@ DUK_COMMANDS: Final[dict[str, str]] = {
     "th": "ticker history: which security a ticker named, and when",
     "ph": "price history: raw daily bars, as stored",
     "ca": "corporate actions: splits and cash dividends",
+    "mc": "daily market cap, point in time, with the filing behind each count",
     "tc": "trading calendar: venues, spans and sessions",
     "yc": "the treasury curve, from FMP",
 }
@@ -105,6 +108,7 @@ _THROUGH_DUK: Final = frozenset(
         Capability.DIVIDENDS,
         Capability.TRADING_CALENDAR,
         Capability.RISK_FREE_RATE,
+        Capability.MARKET_CAP,
     }
 )
 
@@ -649,6 +653,110 @@ class FafnirProvider(MarketDataProvider):
                         lambda why, asking=asking: self._unreadable(asking, why),
                     )
                 )
+        return found
+
+    # ── what an index is built from (ADR 0050) ───────────────────────────────
+
+    def _index_segment(self, key: IndexSecurityKey, start: date, end: date) -> _Segment:
+        """An index security is named to `duk` by fafnir's id, whatever its ticker."""
+        if key.fafnir_sid is None:
+            raise DataUnavailableError(
+                f"{key.symbol} has no fafnir security id in the index, so fafnir cannot "
+                "be asked for it",
+                code=E_PRICE_MISSING,
+                remedy="Read it from files (--source file), or add it again from fafnir.",
+                symbol=key.symbol,
+                provider=self.name,
+            )
+        return _Segment(key.fafnir_sid, start, end)
+
+    def index_closes(self, key: IndexSecurityKey, start: date, end: date) -> list[Price]:
+        """Unadjusted closes by fafnir's id, through ``duk ph sid:<id> --exact``."""
+        self.require(Capability.EOD_PRICES)
+        segment = self._index_segment(key, start, end)
+        return [
+            Price(
+                instrument_id=0,
+                price_date=on,
+                price=bar["close"],
+                source=f"{self.name}:duk ph",
+                as_of=datetime.combine(on, time.min, tzinfo=UTC),
+                valuation_level=1,
+                valuation_basis=ValuationBasis.EXCHANGE_CLOSE,
+                is_estimate=False,
+                provider_ref=f"security_id={segment.security_id};trade_date={on.isoformat()}",
+            )
+            for on, bar in self._bars(segment.named, segment, ("close",))
+        ]
+
+    def index_actions(
+        self, key: IndexSecurityKey, start: date, end: date
+    ) -> list[CorporateActionRecord]:
+        """Splits and cash dividends by fafnir's id, through ``duk ca sid:<id> --exact``."""
+        self.require(Capability.CORPORATE_ACTIONS)
+        segment = self._index_segment(key, start, end)
+        asking = f"the corporate actions of {segment.named} ({segment.describe()})"
+        argv = [
+            self.duk_path, "-S", "db", "ca", segment.named,
+            "--start-date", start.isoformat(), "--end-date", end.isoformat(),
+            "--json", "--exact",
+        ]  # fmt: skip
+        return [
+            _action(record, key.symbol, segment, lambda why: self._unreadable(asking, why))
+            for record in self._duk_records(argv, asking=asking)
+        ]
+
+    def index_market_caps(
+        self, keys: Sequence[IndexSecurityKey], start: date, end: date
+    ) -> dict[IndexSecurityKey, list[MarketCapRecord]]:
+        """Daily market caps through ``duk mc sid:<id>... --exact``, in one read.
+
+        fafnir derives each on read: the raw close x the shares outstanding of
+        the latest balance sheet known that day x SF1's share factor, with the
+        filing behind the count. A day with none in force has no row, so an
+        empty list is fafnir having no cap, which the build refuses by name.
+        """
+        self.require(Capability.MARKET_CAP)
+        by_sid = {self._index_segment(k, start, end).security_id: k for k in keys}
+        found: dict[IndexSecurityKey, list[MarketCapRecord]] = {k: [] for k in keys}
+        if not by_sid:
+            return found
+        asking = f"the market caps of {len(by_sid)} securities"
+        argv = [
+            self.duk_path, "-S", "db", "mc", *(f"sid:{sid}" for sid in by_sid),
+            "--start-date", start.isoformat(), "--end-date", end.isoformat(),
+            "--json", "--exact",
+        ]  # fmt: skip
+
+        def refuse(why: str) -> DataUnavailableError:
+            return self._unreadable(asking, why)
+
+        only = next(iter(by_sid)) if len(by_sid) == 1 else None
+        for record in self._duk_records(argv, asking=asking, about_one_security=False):
+            stated = record.get("security_id")
+            sid = only if stated is None else int(str(stated))
+            key = by_sid.get(sid) if sid is not None else None
+            if key is None:
+                raise refuse(f"a row for a security not asked for: {record!r}")
+            cap = _exact(record.get("market_cap"), "market_cap", refuse)
+            if cap is None:
+                raise refuse(f"a row with no market cap: {record!r}")
+            fiscal, known = record.get("fiscal_date"), record.get("known_from")
+            found[key].append(
+                MarketCapRecord(
+                    cap_date=_iso_date(record.get("date"), refuse),
+                    market_cap=cap,
+                    source=f"{self.name}:duk mc",
+                    close_raw=_exact(record.get("close_raw"), "close_raw", refuse),
+                    shares_outstanding=_exact(
+                        record.get("shares_outstanding"), "shares_outstanding", refuse
+                    ),
+                    share_factor=_exact(record.get("share_factor"), "share_factor", refuse),
+                    fiscal_date=_iso_date(fiscal, refuse) if fiscal is not None else None,
+                    known_from=_iso_date(known, refuse) if known is not None else None,
+                    currency=str(record.get("currency") or "USD"),
+                )
+            )
         return found
 
     # ── trading calendar ─────────────────────────────────────────────────────

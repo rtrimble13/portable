@@ -464,6 +464,12 @@ class IndexRepositories:
             [(d.isoformat(), source, as_of) for d in days],
         )
 
+    def remove_trading_days(self, days: Iterable[date]) -> None:
+        """A restated calendar: sessions the source no longer lists."""
+        self.con.executemany(
+            "DELETE FROM trading_day WHERE trade_date = ?", [(d.isoformat(),) for d in days]
+        )
+
     def closes(self) -> dict[tuple[int, date], Close]:
         return {
             (int(r["security_id"]), to_date(r["trade_date"])): Close(
