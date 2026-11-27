@@ -9,7 +9,7 @@ every agent session here.
 
 `portable` is a family of standalone Python CLIs for investment portfolio analysis,
 sharing one framework (`portable_core`), one on-disk portfolio format (`.port`, SQLite),
-and one set of output conventions. Some tools are pure Python; some are Python front-ends
+one index format (`.bmk`, SQLite, ADR 0050), and one set of output conventions. Some tools are pure Python; some are Python front-ends
 over C++ back-ends.
 
 The owner is a CFA charterholder who uses these tools on a real, tax-aware, multi-account
@@ -22,6 +22,7 @@ When in doubt, refuse and explain.
 |---|---|---|
 | `pt` | Portfolio and account definition, transactions, history | **built** |
 | `pert` | Performance, attribution, risk-adjusted returns | **partly built** — `pert twr` (ADR 0040), `pert periods` (ADR 0045) and `pert mwr` (ADR 0046), each with `--estimate` (ADR 0044); the rest is milestone `v0.2` |
+| `bmk` | Benchmark and synthetic indexes, built from units of securities in a `.bmk` file | **built** — custom, equal, cap and price weighting (ADR 0050); assigning one to a `.port` is phase 3 |
 | `po` | Portfolio optimization (wraps `rtrimble13/po`) | stub — see milestone `v0.3` |
 | `risky` | Risk and scenario analysis | stub — see milestone `v0.4` |
 | `portable` | Commands shared by the family: `portable config show` | **built** |
@@ -117,6 +118,7 @@ src/portable_core/
   errors/        # PortableError hierarchy, stable error codes
   cli/           # shared CLI plumbing every tool builds on
 src/portable_pt/         # the pt CLI — thin
+src/portable_bmk/        # the bmk CLI — thin; the index arithmetic is in portable_core
 src/portable_pert/ po/ risky/   # stubs
 cpp/                     # CMake + pybind11 modules, Catch2 tests
 tests/unit/ integration/ property/ fixtures/
@@ -175,6 +177,10 @@ Use these words precisely; the code does.
 - **External cash flow** — capital entering or leaving. **Income is not an external cash
   flow**, and an internal transfer nets to zero at portfolio level while counting at
   account level. See the trap below and `PORT-GIPS-B02`.
+- **Index** — one `.bmk` file: a benchmark or synthetic index that holds **units** of
+  securities, its weights following from prices between rebalances. Its total-return level
+  reinvests every dividend; its price level is never a benchmark. Theoretical: never linked
+  onto a portfolio's own returns (ADR 0050).
 - **Return basis** — gross-of-fees, net-of-external-costs-only, or net-of-fees. Which fees
   are deducted differs by basis and is not a matter of taste (`PORT-GIPS-D01`).
 - **Asset class** — declared by the owner, with `cash` built in. An instrument is
@@ -336,8 +342,8 @@ make test                     # full pytest suite incl. property + integration
 make test-fast                # unit only — the pre-commit subset
 make cpp                      # configure, build, and run Catch2
 make schemas                  # regenerate + validate JSON Schemas
-make docs                     # regenerate docs/schema.md from DDL comments
-make fixtures                 # rebuild examples/sample.port and sample_prices.csv
+make docs                     # regenerate docs/schema.md and docs/bmk-schema.md
+make fixtures                 # rebuild examples/sample.port, sample_prices.csv, sample.bmk
 make version                  # this branch's version, main's, the last release
 make bump BUMP=minor          # set the version this branch releases (ADR 0049)
 make check                    # everything CI runs, the version gate included
@@ -464,6 +470,8 @@ its `CHANGELOG.md` section, or the version gate in `make check` fails.
 - `docs/tax-methodology.md` — relief methods, holding periods, basis adjustments,
   what is estimated vs. exact
 - `docs/port-format.md`, `docs/schema.md` — the `.port` file
+- `docs/bmk-format.md`, `docs/bmk-schema.md` — the `.bmk` index file and `bmk`: how an
+  index is computed, what stops a build, where its market data comes from
 - `docs/market-data.md` — provider interface, the fafnir adapter (every read a `duk`
   command), cache and staleness
 - `docs/broker-import.md` — how custodian exports become ledger rows: the two

@@ -35,9 +35,11 @@ A `duk` too old for these commands stops the run with its usage error.
 1. **No total-return benchmark series.** The warehouse carries security prices,
    not index levels. ``PORT-GIPS-G01`` prohibits price-only benchmarks and
    requires `portable` to *refuse* rather than warn -- so this provider declares
-   **no benchmark capability at all**. Synthesising a total return by adding
-   dividends to a price series would produce a defensible-looking wrong number
-   of exactly the kind this repository exists to prevent.
+   **no benchmark capability at all**. Adding dividends to a price series and
+   calling it a published index would be a defensible-looking wrong number.
+   A synthetic index `bmk` defines is another thing: built from these closes
+   and every dividend, each one stored and checked against a declared
+   schedule (ADR 0050, amending ADR 0006 §1).
 2. **No treasury curve.** fafnir's own docs say ``duk yc`` reads FMP in every
    mode, the warehouse holding no treasury data. So the risk-free rate comes
    from ``duk -S live yc``.

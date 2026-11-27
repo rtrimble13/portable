@@ -115,10 +115,12 @@ This is the most important part of this page, and it is why ADR 0006 exists.
 1. **No total-return benchmark series.** The warehouse carries security prices,
    not index levels. `PORT-GIPS-G01` prohibits price-only benchmarks and
    requires `portable` to *refuse* rather than warn — so `FafnirProvider`
-   declares **no benchmark capability at all**. Synthesising a total return by
-   adding fafnir's dividends to a price series would be a
-   defensible-looking wrong number of exactly the kind this repository exists to
-   prevent. Benchmarks come from `FileProvider` with an explicit `return_type`.
+   declares **no benchmark capability at all**. Adding fafnir's dividends to a
+   price series and calling it a published index would be a defensible-looking
+   wrong number. Benchmarks come from `FileProvider` with an explicit
+   `return_type`, or are built by `bmk` from their constituents' closes and
+   every dividend, each stored and checked against a declared schedule
+   (ADR 0050, amending ADR 0006 §1).
 2. **No treasury curve.** fafnir's own documentation says `duk yc` reads FMP in
    every mode, the warehouse holding no treasury data, so the rate comes from
    `duk -S live yc`.
@@ -207,6 +209,15 @@ prices fail with a sentence telling the user what to do, rather than an
 default when no source is configured.
 
 ---
+
+## What an index reads
+
+A `.bmk` index (ADR 0050) reads its securities by fafnir's id: `duk ph
+sid:N`, `duk ca sid:N` and `duk tc`. A cap-weighted one also reads `duk mc
+sid:N... --exact`, fafnir's point-in-time daily market cap, with the filing
+behind each count. `FileProvider` supplies the same from a `calendar_file`
+and a `cap_file` beside its price and action files. See
+[docs/bmk-format.md](bmk-format.md).
 
 ## The price cache
 

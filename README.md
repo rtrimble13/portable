@@ -21,6 +21,7 @@ failure mode**, worse than a crash and worse than a missing feature. When
 |---|---|---|
 | **`pt`** | Portfolio and account definition, transactions, history | **built** (v0.1) |
 | `pert` | Performance, attribution, risk-adjusted returns | **partly built**: `pert twr` (ADR 0040), `pert periods` (ADR 0045) and `pert mwr` (ADR 0046), each with `--estimate` (ADR 0044); the rest is milestone `v0.2` |
+| `bmk` | Benchmark and synthetic indexes in a `.bmk` file | **built**: custom, equal, cap and price weighting ([ADR 0050](docs/adr/0050-benchmark-construction.md), [docs/bmk-format.md](docs/bmk-format.md)) |
 | `po` | Portfolio optimization (wraps [`rtrimble13/po`](https://github.com/rtrimble13/po)) | stub — milestone `v0.3` |
 | `risky` | Risk and scenario analysis | stub — milestone `v0.4` |
 | `portable` | Commands shared by the family: `portable config show` | **built** |

@@ -69,8 +69,12 @@ def _refuse(message: str, remedy: str | None = None, **context: object) -> Valid
     return ValidationError(message, code=E_INDEX_DEFINITION, remedy=remedy, **context)
 
 
-def create(repos: IndexRepositories, meta: IndexMeta) -> None:
-    """Write a fresh file's identity. The schema is already applied."""
+def create(repos: IndexRepositories, meta: IndexMeta, *, version: str = __version__) -> None:
+    """Write a fresh file's identity. The schema is already applied.
+
+    *version* is what the file says wrote it: this release, unless a
+    generator pins it (ADR 0049 §5).
+    """
     if not meta.index_name.strip():
         raise _refuse(
             "an index needs a name", remedy="A specific one: it is what reports show."
@@ -88,7 +92,7 @@ def create(repos: IndexRepositories, meta: IndexMeta) -> None:
         "currency": meta.currency,
         "calendar": meta.calendar.strip().upper(),
         "created_at": repos.clock.stamp(),
-        "portable_version": __version__,
+        "portable_version": version,
     }
     for key, value in values.items():
         repos.meta_set(key, value)

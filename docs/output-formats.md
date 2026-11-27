@@ -84,6 +84,14 @@ portfolio's, so when any line cannot be valued:
 
 The schema enforces all three.
 
+`bmk levels` (`bmk-levels-1.0`, ADR 0050) is refused unless the index's
+build is current, and carries the hash of the inputs it was built from. Its
+`return_types` labels `total_return_level` `total_return` and `price_level`
+`price_only`, and `is_theoretical` is fixed `true`, so a consumer cannot take
+the price level for a benchmark or the index for a track record unawares.
+`bmk holdings` (`bmk-holdings-1.0`) gives each security's units, close,
+points and weight on a built day.
+
 `pt allocation drift` (`allocation-drift-1.0`, ADR 0048) values as
 `pt holdings` does, so its `total_market_value` is the snapshot market value
 too. It never states a weight over a part of the portfolio, so a holding it
