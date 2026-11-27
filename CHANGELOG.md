@@ -18,6 +18,8 @@ Two rules specific to this repository:
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-27
+
 ### Added
 
 - **`bmk`, a fifth CLI: benchmark and synthetic indexes** (issue 6,
